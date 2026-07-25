@@ -720,6 +720,40 @@ mod tests {
         assert!(doc.notes.iter().any(|n| n.level == Level::Warn || n.level == Level::Error));
     }
 
+    /// The two things a written texture can have to say about itself, in both languages.
+    ///
+    /// `psnr: None` is not "we did not measure" — it is the two formats that come back *identical*,
+    /// a channel swap and a palette the image fits inside. A line that printed a number there, or
+    /// printed nothing, would be reporting the wrong one of the two results the write path has.
+    #[test]
+    fn a_written_texture_says_which_of_the_two_results_it_got() {
+        let exact = NoteKind::Replaced {
+            name: "240SX_DOORLINE".into(),
+            into: "/out/TEXTURES.BIN".into(),
+            moved: false,
+            psnr: None,
+        };
+        let lossy = NoteKind::Replaced {
+            name: "240SX_BADGING".into(),
+            into: "/out/TEXTURES.BIN".into(),
+            moved: true,
+            psnr: Some(39.94),
+        };
+        for lang in [crate::i18n::Lang::Tr, crate::i18n::Lang::En] {
+            let t = lang.strings();
+            let a = exact.text(t);
+            assert!(a.contains("240SX_DOORLINE") && a.contains(t.rep_exact), "{a}");
+            assert!(!a.contains("dB"), "an identical read-back must not report a figure: {a}");
+            assert!(!a.contains(t.rep_moved), "nothing moved: {a}");
+
+            let b = lossy.text(t);
+            assert!(b.contains("39.9 dB"), "{b}");
+            assert!(b.contains(t.rep_moved), "a relocated pack says so: {b}");
+        }
+        let failed = NoteKind::ReplaceFailed { error: "8×8, not 128×64".into() };
+        assert!(failed.text(crate::i18n::Lang::En.strings()).contains("8×8"));
+    }
+
     #[test]
     fn node_lookup_finds_a_nested_chunk_by_its_offset() {
         let leaf = chunk(0x0000_0002, &[7; 8]);
