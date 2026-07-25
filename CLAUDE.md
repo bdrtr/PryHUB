@@ -40,6 +40,26 @@ cargo test -p gizmo-nfs geometry_bin_parses     # by name substring
 export NFSU2_ROOT="/path/to/Need for Speed Underground 2"
 ```
 
+### Architecture: what runs where
+
+Three layers, and the boundary between them is the point:
+
+1. **`gizmo-nfs` is synchronous and pure.** Almost everything it does is CPU work over `&[u8]` with
+   no waiting in it, so there is nothing for `async` to manage: it would infect every call with
+   `.await`, put a runtime inside a crate whose value is having no dependencies, and make nothing
+   faster. Kept sync, it is callable from any runtime, any thread, and any test.
+2. **The app never does that work on the frame the user is looking at.** `pryhub::jobs` is one
+   worker thread and two channels; opening a file, decoding a pack and exporting are requests, and
+   results arrive in `collect_jobs()` at the top of the next frame. The document is immutable once
+   parsed and shared as an `Arc`, so a job reads it without copying or locking, and results carry
+   the identity of what they were computed *for* — a decode that lands after the user opened another
+   file is dropped rather than applied to the wrong document. `--shot` waits for the worker to go
+   quiet, or it would photograph an empty window.
+3. **The CLI parallelises over independent work.** `ug2 export CARS/` runs on `available_parallelism()`
+   threads capped at 8 (each worker holds a car's bytes plus its parsed geometry — tens of MB), with
+   `--jobs N` to override. Output stays in **car order**, not completion order, so a run is
+   reproducible: 80 models in 0.7 s where sequential took 2.3 s, and two runs are byte-identical.
+
 ### The app (`crates/pryhub`)
 
 
@@ -150,7 +170,7 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
 6. **`geometry`** — `parse_geometry()`: `GEOMETRY.BIN` → `Vec<NfsMeshPart>`. Solids without a mesh (mount/dummy points) are skipped.
 7. **`texture`** — `Tpk::parse()`: `TEXTURES.BIN` (TPK) → per-texture RGBA8 images. Each texture is independent: its 24-byte descriptor (`0x33310003`) gives hash + **whole-file** offset + compressed/decompressed size; the blob is decompressed by magic (JDLZ) and an embedded `OldTextureInfo` header near its tail gives width/height/format, which `dxt` then decodes (DXT1/3/5) or unpacks (RGBA). HUFF-compressed textures are listed in `entries` but absent from `textures` — **counted, never silently dropped**. See its module docs for the byte-level table. `texture::write` puts one back: `blob_of` hands out the decompressed blob, `replace_blob` recompresses it and writes it **in place**, updating only the descriptor's compressed size. In place because a TPK cannot simply be reassembled — its descriptors point at blobs by absolute file offset, and measured over 30 real packs the blobs are neither in descriptor order (1 of 30) nor contiguous (1 of 30). 66% of a real install's blobs fit their own slot when recompressed; the rest need relocation, which is the next piece of work.
 8. **`placement`** — what a solid's local matrix *means*: a placement to apply, or a pose already baked into the vertices (`should_place`). Format semantics, so every consumer (the app, the CLI exporter, the game's engine layer) decides it the same way.
-9. **`parts`** — **pure policy**: which material group a name is (`group_of`), what its `KIT##`/`KITW##`/`STYLE##` token says, and which parts make up a configuration (`select_car`). Lives here so the `ug2` CLI, the app and the game (a separate repo) all select identically; the game re-exports it as `nfsu2::parts`.
+9. **`parts`** — **pure policy**, and deterministic: `select_car` returns the chosen parts in **file order**. It used to return them in `HashMap` iteration order, which Rust randomises per process — two exports of one car came out byte-different and the game drew the same parts in a different order every launch.: which material group a name is (`group_of`), what its `KIT##`/`KITW##`/`STYLE##` token says, and which parts make up a configuration (`select_car`). Lives here so the `ug2` CLI, the app and the game (a separate repo) all select identically; the game re-exports it as `nfsu2::parts`.
 10. **`inspect`** — a chunk's bytes read back as labelled fields, each with the offset it came from (`model`). What an inspector pane draws; it reads through `geometry::format` so a viewer cannot drift from the parser about what a file says.
 11. **`validate`** — the checks a person would run by hand: stride, bbox, normals, index range, chunk bounds. Every rule records **what it examined**, so "no findings" is never confused with "nobody looked".
 12. **`discover`** — the inverse of `inspect`: read an *undecoded* chunk through a `Schema` (header + stride + column kinds) a person typed. It carries no per-chunk knowledge, only the arithmetic that cracks layouts in this format: `leading_filler` (the `0x11` run that is not part of the records), `stride_candidates`/`ranked_candidates` (strides that divide exactly, scored by whether their *lanes* hold a consistent kind of value — a divisor of the true stride mixes fields between lanes and scores badly, a multiple ties, so the answer is the best-scoring **shortest** stride), `stride_for` (`size / n`), and `guess_columns`. A golden test asserts `propose()` re-derives a real car's stride-36 vertex layout from bytes alone.

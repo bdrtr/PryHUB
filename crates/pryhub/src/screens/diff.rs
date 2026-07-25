@@ -30,9 +30,9 @@ pub struct State {
 }
 
 impl State {
-    /// Load the other side. Called by the path field and by a file dropped on this screen.
-    pub fn open_right(&mut self, path: &std::path::Path) {
-        match Doc::open(path) {
+    /// Take a parsed second file, or the failure to parse it. Called from the job collector.
+    pub fn adopt(&mut self, result: Result<Doc, String>, _path: &std::path::Path) {
+        match result {
             Ok(doc) => {
                 self.right = Some(doc);
                 self.report = None;
@@ -121,7 +121,7 @@ fn picker(app: &mut PryHub, ui: &mut egui::Ui, left_name: &str) {
         );
         if ui.button(t.m_open).clicked() {
             let path = std::path::PathBuf::from(app.diff.path_input.trim());
-            app.diff.open_right(&path);
+            app.open_other(&path);
         }
     });
 }

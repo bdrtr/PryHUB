@@ -171,6 +171,9 @@ enum Command {
         /// Skip textures (geometry only).
         #[arg(long)]
         no_textures: bool,
+        /// Threads to export a folder of cars on (default: cores, capped at 8).
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
         /// Write only one of the two formats.
         #[arg(long, value_name = "FMT", value_parser = ["glb", "obj", "both"], default_value = "both")]
         format: String,
@@ -188,8 +191,8 @@ fn main() -> ExitCode {
         Command::Globalb { path, filter } => globalb::run(&path, filter.as_deref()),
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
-        Command::Export { car, out, config, all, no_textures, format } => {
-            export::run(&car, &out, config.into(), all, !no_textures, &format)
+        Command::Export { car, out, config, all, no_textures, format, jobs } => {
+            export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)
         }
     };
     match result {

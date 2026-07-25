@@ -14,7 +14,10 @@ pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let mut clicked = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
-        for note in doc.notes.iter().filter(|n| app.log_filter.accepts(n.level)) {
+        // What parsing found, then what the session did: the document is immutable, so its notes
+        // and the session's are two lists that read as one.
+        let notes = doc.notes.iter().chain(app.log.iter());
+        for note in notes.filter(|n| app.log_filter.accepts(n.level)) {
             let resp = ui
                 .horizontal(|ui| {
                     ui.label(RichText::new(note.level.icon()).color(level_colour(note.level)).size(11.0));

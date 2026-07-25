@@ -71,6 +71,8 @@ pub struct Strings {
     pub stock_car: &'static str,
     /// The texture tab: the empty states, and the counts over the contact sheet.
     pub no_textures: &'static str,
+    /// Shown while the worker is decoding a pack, instead of a frozen window.
+    pub decoding: &'static str,
     pub pick_texture: &'static str,
     pub textures_count: &'static str,
     pub textures_undecoded: &'static str,
@@ -81,6 +83,8 @@ pub struct Strings {
     /// The units an export's summary line counts in.
     pub ex_parts: &'static str,
     pub ex_materials: &'static str,
+    /// Written out rather than a `▲`: the bundled font has no triangle, and a missing glyph is a box.
+    pub ex_triangles: &'static str,
     /// The discovery screen: the schema controls, and the table's own vocabulary.
     pub d_header: &'static str,
     pub d_stride: &'static str,
@@ -175,6 +179,7 @@ static TR: Strings = Strings {
     drag_hint: "sürükle döndür · kaydır yakınlaş",
     stock_car: "stok araç",
     no_textures: "Bu dosyada doku yok — yanında TEXTURES.BIN de bulunamadı",
+    decoding: "Dokular çözülüyor…",
     pick_texture: "Izgaradan bir doku seç",
     textures_count: "doku",
     textures_undecoded: "çözülemedi",
@@ -183,6 +188,7 @@ static TR: Strings = Strings {
     export_failed: "dışa aktarılamadı",
     ex_parts: "parça",
     ex_materials: "materyal",
+    ex_triangles: "üçgen",
     d_header: "başlık",
     d_stride: "stride",
     d_records: "kayıt",
@@ -271,6 +277,7 @@ static EN: Strings = Strings {
     drag_hint: "drag to orbit · scroll to zoom",
     stock_car: "showroom car",
     no_textures: "No textures in this file — and no TEXTURES.BIN beside it",
+    decoding: "Decoding textures…",
     pick_texture: "Pick a texture from the grid",
     textures_count: "textures",
     textures_undecoded: "could not be decoded",
@@ -279,6 +286,7 @@ static EN: Strings = Strings {
     export_failed: "export failed",
     ex_parts: "parts",
     ex_materials: "materials",
+    ex_triangles: "triangles",
     d_header: "header",
     d_stride: "stride",
     d_records: "records",

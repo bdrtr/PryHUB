@@ -12,6 +12,7 @@ mod doc;
 mod export;
 mod gpu;
 mod i18n;
+mod jobs;
 mod names;
 mod panels;
 mod screens;
@@ -57,7 +58,7 @@ fn main() -> eframe::Result {
                 .and_then(|i| args.get(i + 1))
                 .cloned();
             let file = args.first().filter(|a| !a.starts_with("--")).cloned();
-            let mut app = app::PryHub::new(file, shot, screen);
+            let mut app = app::PryHub::new(&cc.egui_ctx, file, shot, screen);
             if let Some(tab) = tab {
                 app.tab = match tab.as_str() {
                     "3d" => app::Tab::ThreeD,
@@ -69,7 +70,7 @@ fn main() -> eframe::Result {
                 app.select(offset);
             }
             if let Some(other) = compare {
-                app.diff.open_right(std::path::Path::new(&other));
+                app.open_other(std::path::Path::new(&other));
             }
             app.render_state = cc.wgpu_render_state.clone();
             Ok(Box::new(app))

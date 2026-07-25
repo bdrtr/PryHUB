@@ -9,12 +9,12 @@
 //! There is no file dialog (see `Cargo.toml`): the files land under `pryhub-export/` in the
 //! working directory and the log says the full path, the same way `ug2` prints what it wrote.
 
-use crate::app::{PryHub, Tab};
 use crate::doc::Doc;
 use crate::i18n::Strings;
 use gizmo_nfs::export::{self, MaterialPlan};
 use gizmo_nfs::NfsMeshPart;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// What an export produced.
 pub struct Written {
@@ -24,41 +24,64 @@ pub struct Written {
     pub files: Vec<PathBuf>,
 }
 
-/// Write what the centre area is currently showing.
+/// What to write, decided on the UI thread and carried to the worker.
+///
+/// It holds no borrows: the job runs while the interface keeps drawing, so anything it reads has to
+/// be owned or shared. The already-decoded textures come along when there are some, and the job
+/// decodes them itself when there are not — which is fine off the UI thread, where blocking is
+/// what the thread is for.
+pub struct ExportSpec {
+    pub kind: Kind,
+    /// The selected chunk, which decides *which* model is written.
+    pub selection: Option<usize>,
+    /// The interface's language, so the summary line reads in it.
+    pub strings: &'static Strings,
+    pub textures: Option<Arc<gizmo_nfs::Tpk>>,
+}
+
+/// The three things the button can mean.
+pub enum Kind {
+    /// Every decoded texture in the pack.
+    Textures,
+    /// The model the 3D tab is showing, as glTF + OBJ + its textures.
+    Model,
+    /// Just the one image the preview pane has up.
+    OneTexture(gizmo_nfs::AssetHash),
+}
+
+/// Write what the centre area was showing when the button was pressed.
 ///
 /// # Errors
-/// Returns a human-readable message when there is nothing to write (no file open, no texture
+/// Returns a human-readable message when there is nothing to write (no textures, no texture
 /// selected, a car whose `GEOMETRY.BIN` holds no parts) or when a write fails.
-pub fn run(app: &mut PryHub) -> Result<Written, String> {
-    // Decoding is lazy, and the texture tab may never have been opened; ask first, then read the
-    // result immutably so the parts and the textures can be looked at together.
-    if let Some(doc) = &mut app.doc {
-        let _ = doc.textures();
-    }
-    let t = app.lang.strings();
-    let doc = app.doc.as_ref().ok_or("no file")?;
+pub fn run(doc: &Doc, spec: &ExportSpec) -> Result<Written, String> {
     let out = out_dir(doc)?;
-    let has_images =
-        doc.decoded_textures().is_some_and(|tpk| !tpk.textures.is_empty());
-    match app.tab {
-        Tab::Texture => textures(doc, &out, t),
+    // Decoding here rather than on the UI thread is the point of this being a job.
+    let decoded = match &spec.textures {
+        Some(tpk) => Some(Arc::clone(tpk)),
+        None => doc.decode_textures().map(Arc::new),
+    };
+    let tpk = decoded.as_deref();
+    let has_images = tpk.is_some_and(|t| !t.textures.is_empty());
+    match spec.kind {
+        Kind::OneTexture(hash) => one_texture(tpk, &out, hash),
+        Kind::Textures => textures(tpk, &out, spec.strings),
         // A TPK has only its textures to give, whichever tab happens to be open — refusing to
         // export one because the hex tab was in front would be pedantry, not fidelity.
-        _ if doc.parts.is_empty() && has_images => textures(doc, &out, t),
-        _ => model(doc, app.selection, &out, t),
+        Kind::Model if doc.parts.is_empty() && has_images => textures(tpk, &out, spec.strings),
+        Kind::Model => model(doc, tpk, spec.selection, &out, spec.strings),
     }
 }
 
 /// One texture as a PNG — what the preview pane is showing.
-///
-/// # Errors
-/// When the texture is no longer in the pack, cannot be encoded, or cannot be written.
-pub fn one_texture(app: &PryHub, hash: gizmo_nfs::AssetHash) -> Result<Written, String> {
-    let doc = app.doc.as_ref().ok_or("no file")?;
-    let tpk = doc.decoded_textures().ok_or("no textures")?;
+fn one_texture(
+    tpk: Option<&gizmo_nfs::Tpk>,
+    out: &Path,
+    hash: gizmo_nfs::AssetHash,
+) -> Result<Written, String> {
+    let tpk = tpk.ok_or("no textures")?;
     let tex = tpk.texture(hash).ok_or("no such texture")?;
-    let out = out_dir(doc)?;
-    create_dir(&out)?;
+    create_dir(out)?;
     let path = out.join(export::png_name(tex));
     let bytes = export::png_bytes(tex).map_err(|e| format!("{}: {e}", path.display()))?;
     write(&path, &bytes)?;
@@ -69,8 +92,8 @@ pub fn one_texture(app: &PryHub, hash: gizmo_nfs::AssetHash) -> Result<Written, 
 }
 
 /// Every decoded texture in the pack, as PNGs in one folder.
-fn textures(doc: &Doc, out: &Path, t: &Strings) -> Result<Written, String> {
-    let tpk = doc.decoded_textures().ok_or("no textures")?;
+fn textures(tpk: Option<&gizmo_nfs::Tpk>, out: &Path, t: &Strings) -> Result<Written, String> {
+    let tpk = tpk.ok_or("no textures")?;
     if tpk.textures.is_empty() {
         return Err("no textures were decoded".into());
     }
@@ -95,12 +118,17 @@ fn textures(doc: &Doc, out: &Path, t: &Strings) -> Result<Written, String> {
 }
 
 /// The parts the 3D tab would show, as OBJ + MTL + the textures they reference.
-fn model(doc: &Doc, selection: Option<usize>, out: &Path, t: &Strings) -> Result<Written, String> {
+fn model(
+    doc: &Doc,
+    tpk: Option<&gizmo_nfs::Tpk>,
+    selection: Option<usize>,
+    out: &Path,
+    t: &Strings,
+) -> Result<Written, String> {
     let parts = shown_parts(doc, selection);
     if parts.is_empty() {
         return Err("this file holds no parts to export".into());
     }
-    let tpk = doc.decoded_textures();
     let stem = stem(doc);
     let mtl_name = format!("{stem}.mtl");
 
@@ -136,9 +164,10 @@ fn model(doc: &Doc, selection: Option<usize>, out: &Path, t: &Strings) -> Result
     let tris: usize = parts.iter().map(|p| p.triangle_count()).sum();
     Ok(Written {
         summary: format!(
-            "GLB + OBJ · {} {} · {tris} ▲ · {} {} · {} PNG",
+            "GLB + OBJ · {} {} · {tris} {} · {} {} · {} PNG",
             parts.len(),
             t.ex_parts,
+            t.ex_triangles,
             plan.materials.len(),
             t.ex_materials,
             files.len().saturating_sub(3)

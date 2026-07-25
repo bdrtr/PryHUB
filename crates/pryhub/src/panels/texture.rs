@@ -24,14 +24,18 @@ const THUMB: usize = 96;
 /// Draw the tab.
 pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
-    let Some(doc) = &mut app.doc else {
+    if app.doc.is_none() {
         note(ui, t.no_file);
         return;
-    };
-    let Some(tpk) = doc.textures() else {
-        note(ui, t.no_textures);
+    }
+    // The decode is a job, so this panel may be drawn while it is still running. Saying so beats a
+    // frozen window, which is what the lazy version did on first open.
+    app.want_textures();
+    let Some(tpk) = app.textures.ready().map(std::sync::Arc::clone) else {
+        note(ui, if matches!(app.textures, crate::app::Textures::Decoding) { t.decoding } else { t.no_textures });
         return;
     };
+    let tpk = tpk.as_ref();
 
     // A stable order, so the grid does not reshuffle between frames (the table is a HashMap).
     let mut entries: Vec<(&AssetHash, &NfsTexture)> = tpk.textures.iter().collect();
@@ -137,8 +141,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         app.texture_selection = Some(hash);
     }
     if let Some(hash) = save_one {
-        let result = crate::export::one_texture(app, hash);
-        app.report_export(result);
+        app.export_now(crate::export::Kind::OneTexture(hash));
     }
 }
 

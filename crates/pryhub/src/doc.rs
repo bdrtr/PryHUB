@@ -77,12 +77,8 @@ pub struct Doc {
     /// What the checks concluded. Computed once at open; the tree, the log and the validation
     /// screen are three views of this one report.
     pub report: gizmo_nfs::validate::Report,
-    /// The car's textures. Loaded lazily, the first time the texture tab is opened: `Tpk::parse`
-    /// expands every image to RGBA8 up front, and a car ships 57–76 of them — that is not a cost
-    /// to pay for someone who only wanted to read the chunk tree. The outer `Option` is "not tried
-    /// yet", the inner one "tried, and there are none".
-    textures: Option<Option<gizmo_nfs::Tpk>>,
-    /// Anything worth telling the user about the open.
+    /// Anything worth telling the user about *the open*. The document is immutable, so this is
+    /// only what parsing found; what happens later in the session is the app's log.
     pub notes: Vec<Note>,
 }
 
@@ -198,7 +194,6 @@ impl Doc {
             rows,
             parts,
             report,
-            textures: None,
             notes,
         })
     }
@@ -241,30 +236,20 @@ impl Doc {
         best
     }
 
-    /// The car's textures, decoded on first use.
+    /// Decode this document's textures: the open file when it is itself a TPK, else the
+    /// `TEXTURES.BIN` beside it — a car's geometry and its textures are two files.
     ///
-    /// Either the open file is itself a TPK, or its `TEXTURES.BIN` sits beside it — a car's
-    /// geometry and its textures are two files, and the design's texture tab is about the pair.
-    pub fn textures(&mut self) -> Option<&gizmo_nfs::Tpk> {
-        if self.textures.is_none() {
-            let own = gizmo_nfs::Tpk::parse(&self.bytes).ok().filter(|t| !t.entries.is_empty());
-            let tpk = own.or_else(|| {
-                let beside = self.path.parent()?.join("TEXTURES.BIN");
-                let bytes = std::fs::read(beside).ok()?;
-                gizmo_nfs::Tpk::parse(&bytes).ok()
-            });
-            self.textures = Some(tpk);
-        }
-        self.textures.as_ref().and_then(Option::as_ref)
-    }
-
-    /// The textures, but only if [`Doc::textures`] has already decoded them.
-    ///
-    /// The immutable half of the pair: an export needs the textures *and* the parts at the same
-    /// time, which a `&mut self` accessor cannot hand out.
+    /// Pure, `&self`, and slow: 73 images expanded to RGBA8. It is called from the worker thread
+    /// ([`crate::jobs`]) rather than lazily from a panel, which is why a `Doc` needs no interior
+    /// mutability and can be shared by an `Arc` instead of borrowed mutably.
     #[must_use]
-    pub fn decoded_textures(&self) -> Option<&gizmo_nfs::Tpk> {
-        self.textures.as_ref().and_then(Option::as_ref)
+    pub fn decode_textures(&self) -> Option<gizmo_nfs::Tpk> {
+        let own = gizmo_nfs::Tpk::parse(&self.bytes).ok().filter(|t| !t.entries.is_empty());
+        own.or_else(|| {
+            let beside = self.path.parent()?.join("TEXTURES.BIN");
+            let bytes = std::fs::read(beside).ok()?;
+            gizmo_nfs::Tpk::parse(&bytes).ok()
+        })
     }
 
     /// The `0x80134010` solid a chunk belongs to, if any. A vertex buffer's stride can only be

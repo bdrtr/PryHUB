@@ -160,12 +160,13 @@ fn overlay(app: &PryHub, ui: &egui::Ui, rect: egui::Rect) {
             rect.left_top() + egui::vec2(10.0, 10.0),
             egui::Align2::LEFT_TOP,
             format!(
-                "{what}   {} {:.2} × {:.2} × {:.2} m · {} ▲",
+                "{what}   {} {:.2} × {:.2} × {:.2} m · {} {}",
                 t.bbox,
                 ext[0],
                 ext[1],
                 ext[2],
-                preview.triangles()
+                preview.triangles(),
+                t.ex_triangles
             ),
             mono.clone(),
             theme::muted(65),

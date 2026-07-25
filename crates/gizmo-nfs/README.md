@@ -30,6 +30,10 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | `GLOBALB.LZC` global data | `global` | 🔜 later |
 | World / city (`STREAM*.BUN`, `L4RA.BUN`) | `world` | 🔴 research-frontier |
 
+The crate is **synchronous on purpose**: it is CPU work over byte slices with no I/O to wait for,
+so it stays callable from any thread or runtime, and consumers decide where to run it (PryHUB gives
+it a worker thread; `ug2` gives it several).
+
 Several NFSU2 sub-formats have **no clean public byte-level spec**; those modules are
 built defensively and their exact offsets are locked empirically using the `ug2` tool
 (`ug2 dump` / `ug2 probe`) against a legally-owned game install — never by assuming

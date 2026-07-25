@@ -63,7 +63,7 @@ fn door_zone_verts(p: &NfsMeshPart) -> usize {
 /// a lower body LOD, so its body component picks the LOD with the best [`door_zone_verts`] coverage.
 #[must_use]
 pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMeshPart> {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     // A requested variant that has no part for its target slots falls back to stock (0).
     let has = |ns: Ns, slots: &[Slot]| {
@@ -117,15 +117,24 @@ pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMes
     };
 
     let fill_body_door = !has_paintable_door_skin(all);
-    let mut best: HashMap<&str, &NfsMeshPart> = HashMap::new();
-    for p in all {
+    // Keyed by component, holding an *index* into `all` — so the winners can be emitted in file
+    // order at the end. Returning them in hash-map order (which is what this used to do) made the
+    // result depend on the run: Rust randomises a `HashMap`'s iteration per process, so two exports
+    // of the same car came out byte-different and the game drew the same parts in a different order
+    // every launch.
+    let mut best: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, p) in all.iter().enumerate() {
         // Drop the TRUNK_AUDIO second shell (z-fights the TRUNK) and any hidden/decal Skip parts.
         if !admit(&p.name) || p.name.contains("TRUNK_AUDIO") || group_of(&p.name) == Grp::Skip {
             continue;
         }
         let prefer_door_fill = fill_body_door && p.name.contains("_BODY");
-        best.entry(component_key(&p.name))
-            .and_modify(|cur| {
+        match best.entry(component_key(&p.name)) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(i);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let cur = &all[*slot.get()];
                 let better = if prefer_door_fill {
                     // Door coverage first, triangles as the tie-break.
                     (door_zone_verts(p), p.triangle_count())
@@ -134,12 +143,14 @@ pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMes
                     p.triangle_count() > cur.triangle_count()
                 };
                 if better {
-                    *cur = p;
+                    slot.insert(i);
                 }
-            })
-            .or_insert(p);
+            }
+        }
     }
-    best.into_values().collect()
+    let mut chosen: Vec<usize> = best.into_values().collect();
+    chosen.sort_unstable();
+    chosen.into_iter().map(|i| &all[i]).collect()
 }
 
 /// The default (showroom) car — [`select_car`] with the stock [`CarConfig`]. Kept as a named
@@ -151,6 +162,36 @@ pub fn select_stock_car(all: &[NfsMeshPart]) -> Vec<&NfsMeshPart> {
 
 #[cfg(test)]
 mod tests {
+    /// The order parts come back in is the order they sit in the file.
+    ///
+    /// This used to be a `HashMap`'s iteration order, which Rust randomises per process — so an
+    /// export was byte-different every run and the game drew the same car in a different order every
+    /// launch. Enough distinct components here that hash order would not match file order by luck.
+    #[test]
+    fn selection_comes_back_in_file_order() {
+        let names = [
+            "CAR_KIT00_BODY_A",
+            "CAR_KIT00_HOOD_A",
+            "CAR_KIT00_FRONT_WHEEL_A",
+            "CAR_KIT00_REAR_WHEEL_A",
+            "CAR_KIT00_WINDOW_FRONT_A",
+            "CAR_KIT00_BUMPER_FRONT_A",
+            "CAR_KIT00_BUMPER_REAR_A",
+            "CAR_KIT00_DOOR_LEFT_A",
+            "CAR_KIT00_DOOR_RIGHT_A",
+            "CAR_KIT00_TRUNK_A",
+        ];
+        let all: Vec<NfsMeshPart> = names.iter().map(|n| part(n, 100)).collect();
+        let picked = select_stock_car(&all);
+        let picked_names: Vec<&str> = picked.iter().map(|p| p.name.as_str()).collect();
+        let expected: Vec<&str> =
+            all.iter().map(|p| p.name.as_str()).filter(|n| picked_names.contains(n)).collect();
+        assert_eq!(picked_names, expected, "selection must not reorder the file");
+        // And the same call twice gives the same thing, which a random order cannot promise.
+        let again: Vec<&str> = select_stock_car(&all).iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(picked_names, again);
+    }
+
     use super::*;
 
     fn body_lod(name: &str, tris: usize, door_verts: usize) -> NfsMeshPart {

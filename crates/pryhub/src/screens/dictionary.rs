@@ -122,16 +122,16 @@ fn collect(app: &mut PryHub) -> Vec<Row> {
         }
     };
 
-    // Textures first, because they are the only place the file leaves a name.
-    if let Some(doc) = &mut app.doc {
-        if let Some(tpk) = doc.textures() {
-            for tex in tpk.textures.values() {
-                let name = (!tex.name.is_empty()).then(|| tex.name.clone());
-                add(tex.hash.0, name, |s| s.texture = true);
-            }
-            for entry in &tpk.entries {
-                add(entry.hash.0, None, |s| s.texture = true);
-            }
+    // Textures first, because they are the only place the file leaves a name. They may still be
+    // decoding — the table simply grows when they arrive.
+    app.want_textures();
+    if let Some(tpk) = app.textures.ready() {
+        for tex in tpk.textures.values() {
+            let name = (!tex.name.is_empty()).then(|| tex.name.clone());
+            add(tex.hash.0, name, |s| s.texture = true);
+        }
+        for entry in &tpk.entries {
+            add(entry.hash.0, None, |s| s.texture = true);
         }
     }
     if let Some(doc) = &app.doc {
