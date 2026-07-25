@@ -32,6 +32,7 @@ impl PryHub {
                     ui.label(RichText::new(t.brand_sub).size(10.0).color(theme::muted(50)));
                     ui.add_space(theme::token::SPACE_2);
 
+                    let mut active_rect = None;
                     for (screen, label) in [
                         (Screen::Workspace, t.nav_workspace),
                         (Screen::Validation, t.nav_validation),
@@ -39,9 +40,16 @@ impl PryHub {
                         (Screen::Diff, t.nav_diff),
                         (Screen::Dictionary, t.nav_dict),
                     ] {
-                        if nav_button(ui, label, self.screen == screen).clicked() {
+                        let resp = nav_button(ui, label, self.screen == screen);
+                        if self.screen == screen {
+                            active_rect = Some(resp.rect);
+                        }
+                        if resp.clicked() {
                             self.screen = screen;
                         }
+                    }
+                    if let Some(rect) = active_rect {
+                        slide_underline(ui, egui::Id::new("nav_underline"), rect, 2.0);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -84,6 +92,7 @@ impl PryHub {
     pub(crate) fn status_bar(&mut self, ui: &mut egui::Ui) {
         let t = self.lang.strings();
         let busy = self.jobs.busy();
+        let progress = self.jobs.progress();
         egui::Panel::bottom("statusbar")
             .exact_size(22.0)
             .frame(egui::Frame::new().fill(token::SURFACE).inner_margin(egui::Margin::symmetric(10, 0)))
@@ -108,11 +117,21 @@ impl PryHub {
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 small(ui, t.st_scale.to_string(), false);
-                                // What the worker is doing, if anything. An immediate-mode
-                                // interface cannot show a frozen frame, so it has to show a word.
+                                // What the worker is doing, if anything. A word, plus a spinner that
+                                // is *moving* — a static "open…" is indistinguishable from a hang.
                                 if let Some(job) = busy {
+                                    if let Some(share) = progress {
+                                        ui.add_sized(
+                                            [60.0, 8.0],
+                                            egui::ProgressBar::new(share)
+                                                .fill(token::ACCENT)
+                                                .corner_radius(0),
+                                        );
+                                    } else {
+                                        ui.add(egui::Spinner::new().size(11.0).color(token::ACCENT));
+                                    }
                                     ui.label(
-                                        RichText::new(format!("· {job}…"))
+                                        RichText::new(format!("· {job}"))
                                             .font(theme::font::mono(10.5))
                                             .color(token::ACCENT),
                                     );
@@ -130,15 +149,32 @@ impl PryHub {
     }
 }
 
-/// A top-bar navigation button: flat, with the accent underline the design uses for "current".
+/// A top-bar navigation button: flat, and the ink of the label fades between states rather than
+/// switching. The underline is drawn once, afterwards, so it can *slide* to the active button.
 fn nav_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    let color = if active { token::ACCENT } else { theme::muted(65) };
+    let id = ui.id().with(label);
+    let on = ui.ctx().animate_bool_with_time(id, active, MOVE_TIME);
+    let color = theme::muted(65).lerp_to_gamma(token::ACCENT, on);
     let text = RichText::new(label).font(theme::font::heading(11.5)).color(color);
-    let resp = ui.add(egui::Button::new(text).fill(egui::Color32::TRANSPARENT).frame(false));
-    if active {
-        let r = resp.rect;
-        ui.painter().hline(r.x_range(), r.bottom() + 2.0, egui::Stroke::new(2.0_f32, token::ACCENT));
-    }
-    resp
+    ui.add(egui::Button::new(text).fill(egui::Color32::TRANSPARENT).frame(false))
+}
+
+/// How long a moving mark takes to arrive. Long enough to be followed by the eye, short enough that
+/// it never delays a click — the point is to show *what moved*, not to perform.
+pub(crate) const MOVE_TIME: f32 = 0.12;
+
+/// Slide a 2 px accent underline to `rect`, remembering where it was under `id`.
+///
+/// Drawn rather than attached to the button: an underline that jumps between two labels reads as two
+/// unrelated marks, while one that travels reads as the same mark following the selection.
+pub(crate) fn slide_underline(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, y_offset: f32) {
+    let ctx = ui.ctx();
+    let x = ctx.animate_value_with_time(id.with("x"), rect.left(), MOVE_TIME);
+    let w = ctx.animate_value_with_time(id.with("w"), rect.width(), MOVE_TIME);
+    ui.painter().hline(
+        x..=(x + w),
+        rect.bottom() + y_offset,
+        egui::Stroke::new(2.0_f32, token::ACCENT),
+    );
 }
 

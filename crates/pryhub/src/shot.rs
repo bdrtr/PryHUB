@@ -2,7 +2,10 @@
 //!
 //! This machine's compositor will not hand out a screen grab, so this flag is the only way to look
 //! at the interface — every screenshot in the project's commit messages came from it. It waits for
-//! the worker to go quiet first, or it would photograph a window that has not loaded anything yet.
+//! two things before pressing the shutter: the worker going quiet, or it photographs a window that
+//! has not loaded anything yet, and then a moment of wall-clock time for the animations to land.
+//! Frames are drawn back to back here, so counting frames would not do it: an animation measured in
+//! milliseconds needs milliseconds, not repaints.
 //!
 //! The PNG is written by hand rather than through the `png` crate: this is one file's worth of
 //! deflate-free encoding, and the app has no other reason to carry an image encoder.
@@ -15,8 +18,14 @@ pub(crate) struct Shot {
     /// Frames to draw before asking for the image: the first frame has no layout yet, and the
     /// font atlas is built lazily.
     pub(crate) warmup: u8,
+    /// When the animations will have finished. Set once the worker goes quiet.
+    pub(crate) settled_at: Option<std::time::Instant>,
     pub(crate) asked: bool,
 }
+
+/// Long enough for every animation in the interface to arrive (the longest is
+/// [`crate::chrome::MOVE_TIME`]), short enough not to slow a scripted screenshot noticeably.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl PryHub {
     /// Drive a pending `--shot`: warm up, ask for the image, save it, quit.
@@ -32,6 +41,13 @@ impl PryHub {
         }
         if shot.warmup > 0 {
             shot.warmup -= 1;
+            ctx.request_repaint();
+            return;
+        }
+        // Let the sliding underline and the fading thumbnails finish, so two runs of the same
+        // command produce the same picture.
+        let deadline = *shot.settled_at.get_or_insert_with(|| std::time::Instant::now() + SETTLE);
+        if std::time::Instant::now() < deadline {
             ctx.request_repaint();
             return;
         }

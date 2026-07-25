@@ -11,6 +11,7 @@
 //! record no column has claimed.
 
 use crate::app::PryHub;
+use crate::doc::Doc;
 use crate::panels;
 use crate::theme::{self, token};
 use egui::RichText;
@@ -22,6 +23,13 @@ pub struct State {
     /// Header offset of the chunk the schema describes, so a new selection re-seeds it.
     chunk: Option<usize>,
     pub schema: Schema,
+    /// The ranked strides, and what they were ranked for.
+    ///
+    /// Scoring a candidate means guessing every lane of every record, so doing it per frame cost
+    /// 2 ms of a 16 ms budget while nothing was changing. It only depends on the chunk and the
+    /// header offset, so it is computed when one of those moves and kept otherwise.
+    candidates: Vec<discover::Candidate>,
+    ranked_for: Option<(usize, usize)>,
 }
 
 /// Draw the screen; returns a chunk offset when the tree was clicked.
@@ -52,7 +60,14 @@ fn body(app: &mut PryHub, ui: &mut egui::Ui) {
 
     // The payload of the selected chunk, copied out once: the schema reads it every frame, and
     // borrowing the doc through the closures below would fight the mutable app.
-    let Some((chunk_at, label, bytes)) = payload(app) else {
+    // The document is an `Arc`, so the panel borrows the chunk's bytes out of it rather than
+    // copying them per frame — which, with the root selected, meant copying 7.5 MB sixty times a
+    // second.
+    let Some(doc) = app.doc.clone() else {
+        ui.label(RichText::new(t.no_file).color(theme::muted(50)));
+        return;
+    };
+    let Some((chunk_at, label, bytes)) = payload(&doc, app.selection) else {
         ui.label(RichText::new(t.nothing_selected).color(theme::muted(50)));
         return;
     };
@@ -61,25 +76,25 @@ fn body(app: &mut PryHub, ui: &mut egui::Ui) {
     // reading of the wrong file half the time.
     if app.discover.chunk != Some(chunk_at) {
         app.discover.chunk = Some(chunk_at);
-        app.discover.schema = discover::propose(&bytes);
+        app.discover.schema = discover::propose(bytes);
     }
 
-    controls(app, ui, &label, &bytes);
+    controls(app, ui, &label, bytes);
     ui.add_space(theme::token::SPACE_2);
-    table(app, ui, &bytes);
+    table(app, ui, bytes);
 }
 
-/// The selected chunk: where its header is, what to call it, and its payload bytes.
-fn payload(app: &PryHub) -> Option<(usize, String, Vec<u8>)> {
-    let doc = app.doc.as_ref()?;
-    let node = app.selection.and_then(|o| doc.node_at(o))?;
+/// The selected chunk: where its header is, what to call it, and its payload — borrowed from the
+/// document, not copied.
+fn payload(doc: &Doc, selection: Option<usize>) -> Option<(usize, String, &[u8])> {
+    let node = selection.and_then(|o| doc.node_at(o))?;
     let label = format!(
         "{:#010x} · {} · {} B",
         node.header.id,
         panels::inspector::chunk_label(node.header.id),
         node.header.size
     );
-    Some((node.offset, label, node.data(&doc.bytes).to_vec()))
+    Some((node.offset, label, node.data(&doc.bytes)))
 }
 
 /// Header offset, stride, the strides that divide exactly, and what the arithmetic says.
@@ -103,7 +118,12 @@ fn controls(app: &mut PryHub, ui: &mut egui::Ui, label: &str, bytes: &[u8]) {
 
     // Ranked against the header the user typed, so the suggestions follow the edit rather than
     // the file — moving the header is how someone tests a filler theory.
-    let candidates = discover::ranked_candidates(bytes, app.discover.schema.header);
+    let key = (app.discover.chunk.unwrap_or_default(), app.discover.schema.header);
+    if app.discover.ranked_for != Some(key) {
+        app.discover.candidates = discover::ranked_candidates(bytes, app.discover.schema.header);
+        app.discover.ranked_for = Some(key);
+    }
+    let candidates = app.discover.candidates.clone();
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(t.d_candidates).size(11.0).color(theme::muted(60)));
         if candidates.is_empty() {

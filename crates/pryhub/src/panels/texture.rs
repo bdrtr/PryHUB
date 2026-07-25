@@ -180,10 +180,21 @@ fn cell(ui: &mut egui::Ui, handle: &TextureHandle, label: &str, on: bool) -> egu
     let side = THUMB as f32;
     ui.allocate_ui(egui::vec2(side, side + 16.0), |ui| {
         ui.vertical(|ui| {
+            // The image fades up the first time this cell is drawn. 73 thumbnails appearing at once
+            // is a flash; the same 73 arriving over a tenth of a second reads as the sheet filling.
+            let seen = ui.ctx().animate_bool_with_time(
+                ui.id().with(("thumb", label)),
+                true,
+                crate::chrome::MOVE_TIME,
+            );
             let resp = ui.add(
-                egui::Button::image(egui::Image::new(handle).max_size(egui::vec2(side, side)))
-                    .min_size(egui::vec2(side, side))
-                    .selected(on),
+                egui::Button::image(
+                    egui::Image::new(handle)
+                        .max_size(egui::vec2(side, side))
+                        .tint(egui::Color32::WHITE.gamma_multiply(seen)),
+                )
+                .min_size(egui::vec2(side, side))
+                .selected(on),
             );
             ui.add(
                 egui::Label::new(

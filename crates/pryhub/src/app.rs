@@ -109,6 +109,9 @@ pub struct PryHub {
     pub scroll_hex_to: Option<usize>,
     /// The last open error, shown on the welcome screen.
     pub error: Option<String>,
+    /// A selection asked for on the command line, applied when the file finally arrives. Opening is
+    /// a job now, so `--select` used to be overwritten by the root the moment the parse landed.
+    pub pending_selection: Option<usize>,
     /// Files opened this session, most recent first.
     pub recents: Vec<std::path::PathBuf>,
     /// The welcome screen's path field.
@@ -134,6 +137,12 @@ pub struct PryHub {
     pub texture_selection: Option<gizmo_nfs::AssetHash>,
     /// Uploaded texture handles, keyed by hash and by thumbnail-or-full-image.
     pub texture_cache: std::collections::HashMap<(u32, bool), egui::TextureHandle>,
+    /// `PRYHUB_FRAME_LOG=1`: print how long each frame took, and where it went.
+    ///
+    /// Read once at startup rather than per frame. It exists because "the interface feels slow" is
+    /// not something to fix by guessing: the tree panel was drawing all 7,246 rows every frame and
+    /// this is what said so.
+    frame_log: bool,
     /// Set when the density or language changed and the style must be rebuilt.
     pub(crate) restyle: bool,
     /// `--shot <path>`: draw a few frames, save the window as a PNG, and exit. The tool renders
@@ -167,6 +176,7 @@ impl PryHub {
             collapsed: std::collections::HashSet::new(),
             scroll_hex_to: None,
             error: None,
+            pending_selection: None,
             recents: Vec::new(),
             path_input: String::new(),
             model: None,
@@ -179,8 +189,14 @@ impl PryHub {
             discover: crate::screens::discovery::State::default(),
             texture_selection: None,
             texture_cache: std::collections::HashMap::new(),
+            frame_log: std::env::var_os("PRYHUB_FRAME_LOG").is_some(),
             restyle: false,
-            shot: shot.map(|p| crate::shot::Shot { path: p.into(), warmup: 4, asked: false }),
+            shot: shot.map(|p| crate::shot::Shot {
+                path: p.into(),
+                warmup: 4,
+                settled_at: None,
+                asked: false,
+            }),
         };
         if let Some(path) = open {
             app.open(std::path::Path::new(&path));
@@ -235,6 +251,9 @@ impl PryHub {
                     }
                 }
                 Outcome::Exported(result) => self.report_export(result),
+                // `poll` keeps progress to itself; this arm exists so the compiler says something
+                // if that ever changes.
+                Outcome::Progress { .. } => {}
                 Outcome::Failed(message) => self.log.push(Note {
                     level: Level::Error,
                     chunk: None,
@@ -247,7 +266,7 @@ impl PryHub {
 
     /// Make a freshly parsed document the open one.
     fn adopt(&mut self, doc: Doc, path: &std::path::Path) {
-        self.selection = doc.rows.first().map(|r| r.offset);
+        self.selection = self.pending_selection.take().or_else(|| doc.rows.first().map(|r| r.offset));
         self.collapsed.clear();
         self.error = None;
         self.recents.retain(|p| p != path);
@@ -258,7 +277,12 @@ impl PryHub {
         self.textures = Textures::Unasked;
         self.texture_selection = None;
         self.texture_cache.clear();
-        self.screen = Screen::Workspace;
+        // Only take the user to the workspace if they had nowhere else to be. Opening used to be
+        // synchronous, so this ran before the command line could pick a screen and before anyone
+        // could navigate; as a job it lands later, and forcing the workspace then overrode both.
+        if self.screen == Screen::Welcome {
+            self.screen = Screen::Workspace;
+        }
     }
 
     /// Ask for the open file's textures, unless they are already coming.
@@ -341,14 +365,17 @@ impl PryHub {
 
 impl eframe::App for PryHub {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let frame_start = std::time::Instant::now();
         if self.restyle {
             theme::apply(ui.ctx(), self.density);
             self.restyle = false;
         }
         self.collect_jobs();
         self.refresh_model();
+        let after_jobs = frame_start.elapsed();
         self.top_bar(ui);
         self.status_bar(ui);
+        let after_bars = frame_start.elapsed();
         match self.screen {
             Screen::Welcome => screens::welcome::show(self, ui),
             Screen::Workspace => screens::workspace::show(self, ui),
@@ -387,6 +414,16 @@ impl eframe::App for PryHub {
             }
         }
         self.screenshot(ui.ctx());
+        if self.frame_log {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+            eprintln!(
+                "frame {:.2} ms · jobs {:.2} · bars {:.2} · screen {:.2}",
+                ms(frame_start.elapsed()),
+                ms(after_jobs),
+                ms(after_bars - after_jobs),
+                ms(frame_start.elapsed() - after_bars),
+            );
+        }
     }
 }
 

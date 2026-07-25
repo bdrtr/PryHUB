@@ -110,10 +110,29 @@ that does not keeps a hollow ring and is stored as a note. Names live in
 `$XDG_CONFIG_HOME/pryhub/names.tsv` (`hash<TAB>name`, hand-editable, written on each edit) and the
 texture tab prefers them over the file's truncated ones.
 
+**Smoothness is measured, not felt.** `PRYHUB_FRAME_LOG=1` prints each frame's cost split into jobs
+/ bars / screen. It is how the interface went from 7–9 ms a frame to under 0.5: the tree panel was
+drawing all 7,246 rows every frame (egui clipped the pixels but did the work), the discovery screen
+was copying the selected chunk's payload — 7.5 MB with the root selected — sixty times a second, and
+its candidate scoring reran while nothing changed. The rules that came out of it: **virtualise any
+list that can be thousands long** (`show_rows`, and set `item_spacing.y` *before* it or the row
+pitch is wrong and the list stops short), **borrow from the `Arc<Doc>` rather than copying**, and
+**cache anything keyed by a selection that has not moved**.
+
+Animations are `egui`'s own, at one shared duration (`chrome::MOVE_TIME`, 120 ms): the nav and tab
+underlines *slide* between items with the label ink crossfading, the tree's selection wash fades in,
+and thumbnails fade up as they arrive. A job that can count reports progress and gets a bar; one
+that cannot gets a spinner — a moving spinner, because a static "open…" is indistinguishable from a
+hang.
+
 `--shot <png>` draws a few frames, writes the window and exits — this machine's compositor will
 not hand out a screen grab, so it is the only way to check the interface. `--screen <name>` opens
 on a screen other than the workspace, and `--select <offset>` (hex or decimal) preselects a chunk,
-which is how a screenshot shows a screen reading something other than the root.
+which is how a screenshot shows a screen reading something other than the root. Both are *pending*
+requests applied when the parse lands — opening is a job, so setting them at startup would otherwise
+be overwritten by the document's own defaults a frame later. `--shot` also waits 250 ms after the
+worker goes quiet, so the animations have arrived and two runs of the same command produce the same
+picture.
 
 `ug2 info <car>` lists the `KIT##`/`KITW##`/`STYLE##` numbers a given car actually ships, which are
 what `--kit`/`--wide`/`--hood`/`--light` take.

@@ -18,22 +18,32 @@ pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let mut clicked = None;
     let row_h = app.density.row_height();
 
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        // Skip anything nested inside a collapsed container: `hidden_below` is the depth at which
-        // we stopped drawing, cleared as soon as we come back up to it.
-        let mut hidden_below: Option<usize> = None;
-        for row in &doc.rows {
-            match hidden_below {
-                Some(d) if row.depth > d => continue,
-                Some(_) => hidden_below = None,
-                None => {}
-            }
+    // Which rows the collapse state leaves visible. One pass of depth comparisons over 7,246 rows
+    // costs microseconds; *drawing* all of them cost 7.5 ms a frame, which was most of the frame
+    // budget spent on rows scrolled out of sight. egui clipped the pixels but did the work anyway.
+    let mut visible: Vec<&crate::doc::Row> = Vec::with_capacity(doc.rows.len());
+    let mut hidden_below: Option<usize> = None;
+    for row in &doc.rows {
+        match hidden_below {
+            Some(d) if row.depth > d => continue,
+            Some(_) => hidden_below = None,
+            None => {}
+        }
+        if app.collapsed.contains(&row.offset) && row.has_children {
+            hidden_below = Some(row.depth);
+        }
+        visible.push(row);
+    }
+
+    // The row pitch has to be set *before* `show_rows`, which sizes the viewport from
+    // `row_height + item_spacing.y`. Setting it inside the closure left egui thinking every row was
+    // three pixels taller than it is, so it handed out too short a range and the tree stopped
+    // seven rows above the bottom of the panel.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    egui::ScrollArea::both().auto_shrink([false, false]).show_rows(ui, row_h, visible.len(), |ui, range| {
+        for row in &visible[range] {
             let selected = app.selection == Some(row.offset);
             let collapsed = app.collapsed.contains(&row.offset);
-            if collapsed && row.has_children {
-                hidden_below = Some(row.depth);
-            }
 
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), row_h),
@@ -42,8 +52,15 @@ pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
             if resp.clicked() {
                 clicked = Some(row.offset);
             }
-            if selected {
-                ui.painter().rect_filled(rect, 0.0, token::ACCENT.gamma_multiply(0.18));
+            // A fade rather than a snap: with 7,000 rows the eye needs a moment to see *which* row
+            // took the selection, and the same wash is what the hover uses one step lighter.
+            let lit = ui.ctx().animate_bool_with_time(
+                ui.id().with(row.offset),
+                selected,
+                crate::chrome::MOVE_TIME,
+            );
+            if lit > 0.0 {
+                ui.painter().rect_filled(rect, 0.0, token::ACCENT.gamma_multiply(0.18 * lit));
             } else if resp.hovered() {
                 ui.painter().rect_filled(rect, 0.0, token::SURFACE);
             }

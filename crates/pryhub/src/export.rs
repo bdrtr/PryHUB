@@ -54,7 +54,11 @@ pub enum Kind {
 /// # Errors
 /// Returns a human-readable message when there is nothing to write (no textures, no texture
 /// selected, a car whose `GEOMETRY.BIN` holds no parts) or when a write fails.
-pub fn run(doc: &Doc, spec: &ExportSpec) -> Result<Written, String> {
+pub fn run(
+    doc: &Doc,
+    spec: &ExportSpec,
+    tell: &dyn Fn(usize, usize),
+) -> Result<Written, String> {
     let out = out_dir(doc)?;
     // Decoding here rather than on the UI thread is the point of this being a job.
     let decoded = match &spec.textures {
@@ -65,11 +69,13 @@ pub fn run(doc: &Doc, spec: &ExportSpec) -> Result<Written, String> {
     let has_images = tpk.is_some_and(|t| !t.textures.is_empty());
     match spec.kind {
         Kind::OneTexture(hash) => one_texture(tpk, &out, hash),
-        Kind::Textures => textures(tpk, &out, spec.strings),
+        Kind::Textures => textures(tpk, &out, spec.strings, tell),
         // A TPK has only its textures to give, whichever tab happens to be open — refusing to
         // export one because the hex tab was in front would be pedantry, not fidelity.
-        Kind::Model if doc.parts.is_empty() && has_images => textures(tpk, &out, spec.strings),
-        Kind::Model => model(doc, tpk, spec.selection, &out, spec.strings),
+        Kind::Model if doc.parts.is_empty() && has_images => {
+            textures(tpk, &out, spec.strings, tell)
+        }
+        Kind::Model => model(doc, tpk, spec.selection, &out, spec.strings, tell),
     }
 }
 
@@ -92,7 +98,12 @@ fn one_texture(
 }
 
 /// Every decoded texture in the pack, as PNGs in one folder.
-fn textures(tpk: Option<&gizmo_nfs::Tpk>, out: &Path, t: &Strings) -> Result<Written, String> {
+fn textures(
+    tpk: Option<&gizmo_nfs::Tpk>,
+    out: &Path,
+    t: &Strings,
+    tell: &dyn Fn(usize, usize),
+) -> Result<Written, String> {
     let tpk = tpk.ok_or("no textures")?;
     if tpk.textures.is_empty() {
         return Err("no textures were decoded".into());
@@ -100,7 +111,9 @@ fn textures(tpk: Option<&gizmo_nfs::Tpk>, out: &Path, t: &Strings) -> Result<Wri
     let dir = out.join("tex");
     create_dir(&dir)?;
     let mut files = Vec::new();
-    for tex in tpk.textures.values() {
+    let total = tpk.textures.len();
+    for (i, tex) in tpk.textures.values().enumerate() {
+        tell(i, total);
         let path = dir.join(export::png_name(tex));
         let bytes = export::png_bytes(tex).map_err(|e| format!("{}: {e}", path.display()))?;
         write(&path, &bytes)?;
@@ -124,6 +137,7 @@ fn model(
     selection: Option<usize>,
     out: &Path,
     t: &Strings,
+    tell: &dyn Fn(usize, usize),
 ) -> Result<Written, String> {
     let parts = shown_parts(doc, selection);
     if parts.is_empty() {
@@ -151,7 +165,10 @@ fn model(
     if let Some(tpk) = tpk {
         let dir = out.join("tex");
         create_dir(&dir)?;
-        for hash in &plan.textures {
+        let total = plan.textures.len() + 2; // the model's two files are already written
+        tell(2, total);
+        for (i, hash) in plan.textures.iter().enumerate() {
+            tell(i + 2, total);
             if let Some(tex) = tpk.texture(*hash) {
                 let path = dir.join(export::png_name(tex));
                 let bytes = export::png_bytes(tex).map_err(|e| format!("{}: {e}", path.display()))?;

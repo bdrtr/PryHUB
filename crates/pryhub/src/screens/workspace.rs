@@ -82,23 +82,25 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
 fn tabs(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.horizontal(|ui| {
+        let mut active_rect = None;
         for (tab, label) in
             [(Tab::ThreeD, t.tab_3d), (Tab::Hex, t.tab_hex), (Tab::Texture, t.tab_tex)]
         {
             let on = app.tab == tab;
-            let colour = if on { token::ACCENT } else { theme::muted(65) };
+            // The ink crossfades with the underline's slide, so the two read as one movement.
+            let lit = ui.ctx().animate_bool_with_time(ui.id().with(label), on, crate::chrome::MOVE_TIME);
+            let colour = theme::muted(65).lerp_to_gamma(token::ACCENT, lit);
             let text = RichText::new(label).font(theme::font::heading(11.0)).color(colour);
             let resp = ui.add(egui::Button::new(text).frame(false));
             if on {
-                ui.painter().hline(
-                    resp.rect.x_range(),
-                    resp.rect.bottom() + 1.0,
-                    egui::Stroke::new(2.0_f32, token::ACCENT),
-                );
+                active_rect = Some(resp.rect);
             }
             if resp.clicked() {
                 app.tab = tab;
             }
+        }
+        if let Some(rect) = active_rect {
+            crate::chrome::slide_underline(ui, egui::Id::new("tab_underline"), rect, 1.0);
         }
         if let Some(node) = app.doc.as_ref().zip(app.selection).and_then(|(d, o)| d.node_at(o)) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

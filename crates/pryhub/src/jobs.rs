@@ -51,6 +51,9 @@ pub enum Outcome {
     /// `None` means the file has no textures, which is an answer rather than a failure.
     Decoded { for_path: PathBuf, tpk: Option<Arc<gizmo_nfs::Tpk>> },
     Exported(Result<Written, String>),
+    /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
+    /// a fact about the *worker*, not about the document.
+    Progress { done: usize, total: usize },
     /// A job panicked. The parser is panic-free by contract, but this layer is not the place to
     /// find out the hard way: the worker survives and says so.
     Failed(String),
@@ -71,6 +74,8 @@ impl Outcome {
 pub struct Jobs {
     to_worker: Sender<Request>,
     from_worker: Receiver<(&'static str, Outcome)>,
+    /// How far the running job says it has got, when it can say.
+    progress: Option<(usize, usize)>,
     /// Labels of the jobs sent but not yet collected, so the interface can say what it is waiting
     /// for rather than only that it is waiting.
     in_flight: Vec<&'static str>,
@@ -88,8 +93,12 @@ impl Jobs {
             .spawn(move || {
                 for request in requests {
                     let label = Outcome::label(&request);
+                    let tell = |done: usize, total: usize| {
+                        let _ = results.send((label, Outcome::Progress { done, total }));
+                        ctx.request_repaint();
+                    };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run(request)
+                        run(request, &tell)
                     }))
                     .unwrap_or_else(|_| {
                         Outcome::Failed("a background job panicked; the worker is still up".into())
@@ -101,7 +110,7 @@ impl Jobs {
                 }
             })
             .expect("spawn the worker thread");
-        Self { to_worker, from_worker, in_flight: Vec::new() }
+        Self { to_worker, from_worker, progress: None, in_flight: Vec::new() }
     }
 
     /// Queue a job.
@@ -117,9 +126,14 @@ impl Jobs {
     pub fn poll(&mut self) -> Vec<Outcome> {
         let mut done = Vec::new();
         while let Ok((label, outcome)) = self.from_worker.try_recv() {
+            if let Outcome::Progress { done, total } = outcome {
+                self.progress = Some((done, total));
+                continue; // not a result: the job is still running
+            }
             if let Some(i) = self.in_flight.iter().position(|l| *l == label) {
                 self.in_flight.remove(i);
             }
+            self.progress = None;
             done.push(outcome);
         }
         done
@@ -131,10 +145,20 @@ impl Jobs {
         self.in_flight.first().copied()
     }
 
+    /// How far along it is, `0.0..=1.0`, for the jobs that can say. A job that cannot — a parse is
+    /// one call into the parser — reports nothing and gets a spinner instead of a lying bar.
+    #[must_use]
+    pub fn progress(&self) -> Option<f32> {
+        self.progress
+            .filter(|(_, total)| *total > 0)
+            .map(|(done, total)| done as f32 / total as f32)
+    }
+
 }
 
-/// Do the work. Runs on the worker thread; nothing here touches the interface.
-fn run(request: Request) -> Outcome {
+/// Do the work. Runs on the worker thread; nothing here touches the interface except by saying how
+/// far it has got through `tell`.
+fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
     match request {
         Request::Open { path, side } => {
             let result = Doc::open(&path);
@@ -144,6 +168,8 @@ fn run(request: Request) -> Outcome {
             let tpk = doc.decode_textures().map(Arc::new);
             Outcome::Decoded { for_path: doc.path.clone(), tpk }
         }
-        Request::Export { doc, spec } => Outcome::Exported(crate::export::run(&doc, &spec)),
+        Request::Export { doc, spec } => {
+            Outcome::Exported(crate::export::run(&doc, &spec, tell))
+        }
     }
 }

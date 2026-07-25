@@ -69,7 +69,8 @@ fn main() -> eframe::Result {
                 };
             }
             if let Some(offset) = select {
-                app.select(offset);
+                // Applied when the parse lands, not now: there is no document to select in yet.
+                app.pending_selection = Some(offset);
             }
             if let Some(other) = compare {
                 app.open_other(std::path::Path::new(&other));
