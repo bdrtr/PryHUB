@@ -47,6 +47,9 @@ pub enum Request {
     /// A job because that bundle is 8 MB and holds 12,167 parts: the palette is worth a swatch row,
     /// not a stutter.
     Palette { beside: PathBuf },
+    /// The open car's `CarTypeInfo` record out of `GLOBALB.BUN`. Same bundle as [`Self::Palette`]
+    /// and the same 8 MB read, so it is a job for the same reason.
+    CarSpec { beside: PathBuf },
 }
 
 /// What came back.
@@ -62,6 +65,9 @@ pub enum Outcome {
     /// The game's paint palette. Empty when no bundle was found, which is an answer: the swatch
     /// row then says the file is not in an install rather than showing nothing.
     Palette(Vec<gizmo_nfs::Colour>),
+    /// The open car's record. `None` means the bundle was not found *or* holds no record under
+    /// that name — the CARP screen says which by also knowing whether an install was reachable.
+    CarSpec(Option<Box<gizmo_nfs::CarTypeInfo>>),
     /// A job panicked. The parser is panic-free by contract, but this layer is not the place to
     /// find out the hard way: the worker survives and says so.
     Failed(String),
@@ -79,6 +85,7 @@ pub enum Kind {
     Decode,
     Export,
     Palette,
+    CarSpec,
 }
 
 impl Kind {
@@ -89,6 +96,7 @@ impl Kind {
             Self::Decode => "decode",
             Self::Export => "export",
             Self::Palette => "palette",
+            Self::CarSpec => "car spec",
         }
     }
 }
@@ -107,6 +115,7 @@ impl Outcome {
             Request::Decode(_) => Kind::Decode,
             Request::Export { .. } => Kind::Export,
             Request::Palette { .. } => Kind::Palette,
+            Request::CarSpec { .. } => Kind::CarSpec,
 
         }
     }
@@ -213,6 +222,7 @@ fn describe(request: &Request) -> String {
         Request::Decode(doc) => doc.path.display().to_string(),
         Request::Export { doc, spec } => format!("{} as {}", doc.path.display(), spec.kind.name()),
         Request::Palette { beside } => format!("palette beside {}", beside.display()),
+        Request::CarSpec { beside } => format!("car spec beside {}", beside.display()),
     }
 }
 
@@ -232,16 +242,17 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
             Outcome::Exported(crate::export::run(&doc, &spec, tell))
         }
         Request::Palette { beside } => Outcome::Palette(palette(&beside)),
+        Request::CarSpec { beside } => Outcome::CarSpec(car_spec(&beside).map(Box::new)),
     }
 }
 
-/// `GLOBAL/GLOBALB.BUN` for a file inside a game install, and the palette in it.
+/// `GLOBAL/GLOBALB.BUN` for a file inside a game install, decompressed.
 ///
 /// Found from the open file rather than configured: a car's directory is two levels under the root,
-/// which is the same walk `ug2` does. Anything that does not resolve returns an empty palette — a
+/// which is the same walk `ug2` does. Anything that does not resolve returns `None` — a
 /// `GEOMETRY.BIN` copied out of an install is a perfectly ordinary thing to open.
-fn palette(beside: &std::path::Path) -> Vec<gizmo_nfs::Colour> {
-    let Some(dir) = beside.parent() else { return Vec::new() };
+fn globalb_bytes(beside: &std::path::Path) -> Option<(std::path::PathBuf, Vec<u8>)> {
+    let dir = beside.parent()?;
     let candidates = [
         dir.parent().and_then(|p| p.parent()).map(|r| r.join("GLOBAL").join("GLOBALB.BUN")),
         std::env::var_os("NFSU2_ROOT")
@@ -260,10 +271,34 @@ fn palette(beside: &std::path::Path) -> Vec<gizmo_nfs::Colour> {
                 Err(_) => continue,
             },
         };
-        if let Ok(cp) = gizmo_nfs::CarParts::parse(&bytes) {
-            log::debug!(target: "jobs", "palette: {} colours from {}", cp.palette().len(), path.display());
-            return cp.palette();
-        }
+        return Some((path, bytes));
+    }
+    None
+}
+
+/// The palette in the install's `GLOBALB.BUN`, or an empty one when there is no install.
+fn palette(beside: &std::path::Path) -> Vec<gizmo_nfs::Colour> {
+    let Some((path, bytes)) = globalb_bytes(beside) else { return Vec::new() };
+    if let Ok(cp) = gizmo_nfs::CarParts::parse(&bytes) {
+        log::debug!(target: "jobs", "palette: {} colours from {}", cp.palette().len(), path.display());
+        return cp.palette();
     }
     Vec::new()
+}
+
+/// The open car's `CarTypeInfo` record, matched by the name of the directory it sits in.
+///
+/// `CARS/240SX/GEOMETRY.BIN` is the record called `240SX`. That is the only link there is: the
+/// record carries no path, and the directory name is what `ug2 globalb <car>` matches on too.
+fn car_spec(beside: &std::path::Path) -> Option<gizmo_nfs::CarTypeInfo> {
+    let car = beside.parent()?.file_name()?.to_str()?.to_ascii_uppercase();
+    let (path, bytes) = globalb_bytes(beside)?;
+    let found = gizmo_nfs::globalb::find_car(&bytes, &car);
+    log::debug!(
+        target: "jobs",
+        "car spec: {car} {} in {}",
+        if found.is_some() { "found" } else { "not found" },
+        path.display()
+    );
+    found
 }

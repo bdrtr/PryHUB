@@ -92,6 +92,7 @@ impl PryHub {
                         &mut self.screen,
                         &[
                             (Screen::Workspace, t.nav_workspace),
+                            (Screen::Carp, t.nav_carp),
                             (Screen::Validation, t.nav_validation),
                             (Screen::Discovery, t.nav_discovery),
                             (Screen::Diff, t.nav_diff),
@@ -233,6 +234,7 @@ fn job_word(kind: crate::jobs::Kind, t: &crate::i18n::Strings) -> &'static str {
         crate::jobs::Kind::Decode => t.job_decode,
         crate::jobs::Kind::Export => t.job_export,
         crate::jobs::Kind::Palette => t.job_palette,
+        crate::jobs::Kind::CarSpec => t.job_car_spec,
     }
 }
 

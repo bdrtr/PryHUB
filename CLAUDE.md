@@ -134,6 +134,31 @@ expands all 57–76 images to RGBA8 at once. Thumbnails are downscaled on the CP
 selected image is uploaded full-size (nearest-filtered, so a preview shows texels rather than a
 smear). Entries the parser could not decode are **counted out loud** next to the total.
 
+The **CARP screen** (`--screen carp`, second in the nav as the design places it) is the design's
+car-parameter table — nine `[::SECTION]`s and 39 parameters over four upgrade columns. It is drawn in
+full and then tells the truth cell by cell, because **NFSU2 ships no `CARP.BIN`**: `find -iname
+'*carp*'` over an install returns nothing, CARP being the older NFS engine's format. What this game
+does carry is the `CarTypeInfo` record in `GLOBALB.BUN`, which answers exactly two of the 39 —
+`car_name` and `mass`, in the `STOCK` column. Every other cell is an em dash in the design's disabled
+treatment, the Save/Revert buttons are drawn disabled, and the panel note says why. The sections are
+listed rather than dropped: "the format has a gearbox section and we cannot read it" is a different
+statement from "there is no gearbox", and only the first is true. A test asserts 9 sections and 39
+parameters, and that exactly two have a source — it already caught a torque curve written with seven
+rpm steps where the design generates eight.
+
+**Most of the rest has since been found, and is not wired up yet.** `GLOBALB.BUN`'s `0x00034600` is a
+per-car physics record: `8 + 46 × 2192 == 100,840`, the chunk's size exactly, one record per
+`CarTypeInfo` car and in the same order, each carrying its name at `+0` and again at `+32`. Read
+against a real install it gives `+0x300/4/8` = idle / red line / limiter (240SX: 800 · 6500 · 7000);
+`+0x310` = a **9-point torque curve** that rises and falls in all 46 cars (240SX peaks 0.216 at point
+5); and four 64-byte gearbox blocks at `+0x2C0`, `+0x460`, `+0x4A0`, `+0x4E0` — **the design's STOCK
+and three upgrade columns** — each with `+0x18` gear count, `+0x08` final drive and an eight-slot
+ratio array at `+0x20` (reverse negative, neutral zero, then the forward gears). The 240SX reads
+`3.321 / 1.902 / 1.308 / 1.0 / 0.9` with a 4.083 final drive, drops to 3.900 by level 3 and **gains a
+sixth gear** there; the G35 is a stock six-speed at `3.79 / 2.32 / 1.62 / 1.27 / 1.0 / 0.794`. So the
+next piece of work is a `globalb` reader for it and the `Source` variants that follow — until then
+the screen and its note say "found, not read yet" rather than pretending either way.
+
 The discovery screen (`--screen discovery`) is the other half of the inspector: pick a chunk, and
 it proposes a reading — filler skipped, the best-scoring stride, the lanes typed — then lets you
 drag the header, click a candidate stride, or cycle a column's type and watch the table change.
@@ -163,11 +188,12 @@ belongs on the rule's own card, which is where it now stays.
 
 ### Checking the port against the design
 
-The design is in this repo: `STRUKT NFSU2 Asset Tool/PRYBAR.dc.html` is the working prototype and
-`STRUKT NFSU2 Asset Tool/_ds/modernist-…/styles.css` its token sheet. (An earlier drop of the same
-system, branded `STRUKT`, sat in `game/`; the tokens are identical, so anything measured off one
-holds for the other.) It renders in any browser, so a screen can be
-compared side by side with the real thing rather than from memory:
+The design is **not in this repo** — it is a drop you supply, and `.gitignore` keeps it out. Put it
+at the repo root as `STRUKT NFSU2 Asset Tool/`, where `PRYBAR.dc.html` is the working prototype and
+`_ds/modernist-…/styles.css` its token sheet. Everything measured below was measured off that drop;
+without it the numbers in this section are still the contract, there is just nothing to diff against.
+It renders in any browser, so a screen can be compared side by side with the real thing rather than
+from memory:
 
 ```bash
 (cd "STRUKT NFSU2 Asset Tool" && python3 -m http.server 8731 &)
@@ -402,10 +428,10 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
 1. **`reader`** — `ByteReader`, a bounds-checked byte cursor. The panic-free foundation; every read returns `NfsResult`.
 2. **`fourcc`** — printable rendering of 32-bit chunk IDs.
 3. **`chunk`** — the universal NFSU2 chunk tree. Almost every asset is a stream of 8-byte-headed sections (`BinSectionHeader { id, size }`, both LE; `size` = bytes *after* the header). Classification by `id`: **high bit set → container** (recurse), **high bit clear → leaf** (payload), **`id == 0` → padding** (skip). Two consumption styles share one core: zero-alloc `walk()` visitor, and a materialized `ChunkNode` tree (`parse`/`find`/`find_all`) whose leaves borrow from the root buffer.
-4. **`compression`** — `detect()` picks the codec **by magic bytes, never by extension** (a `.LZC` may be either). RefPack/QFS (magic `10 FB`) and JDLZ (magic `"JDLZ"`). JDLZ also **compresses**: repack needs a writer, and a decompressor is not one. It does not try to reproduce EA's byte stream — two LZ encoders that pick different matches both produce valid files — so it is judged on reading back (proptest over arbitrary bytes, plus a real 1.6 MB bundle) and on ratio, which matters because a texture is written back *in place*: 29.8% where EA's own encoder gets 30.1%, thanks to lazy matching.
+4. **`compression`** — `detect()` picks the codec **by magic bytes, never by extension** (a `.LZC` may be any of them). RefPack/QFS (magic `10 FB`), JDLZ (magic `"JDLZ"`) and HUFF (magic `"HUFF"`, order-0 Huffman with a "clue" escape — 52,390 of an install's 54,873 texture blobs, and all of them type `0xfb30`; the 32-bit-size, skip-words and delta-filter branches are transcribed rather than locked, and the module says so). All three decompress; only JDLZ **compresses**: repack needs a writer, and a decompressor is not one. It does not try to reproduce EA's byte stream — two LZ encoders that pick different matches both produce valid files — so it is judged on reading back (proptest over arbitrary bytes, plus a real 1.6 MB bundle) and on ratio, which matters because a texture is written back *in place*: 29.8% where EA's own encoder gets 30.1%, thanks to lazy matching.
 5. **`viv`** — BIGF/VIV archive extraction.
 6. **`geometry`** — `parse_geometry()`: `GEOMETRY.BIN` → `Vec<NfsMeshPart>`. Solids without a mesh (mount/dummy points) are skipped.
-7. **`texture`** — `Tpk::parse()`: `TEXTURES.BIN` (TPK) → per-texture RGBA8 images. Each texture is independent: its 24-byte descriptor (`0x33310003`) gives hash + **whole-file** offset + compressed/decompressed size; the blob is decompressed by magic (JDLZ) and an embedded `OldTextureInfo` header near its tail gives width/height/format, which `dxt` then decodes (DXT1/3/5) or unpacks (RGBA). HUFF-compressed textures are listed in `entries` but absent from `textures` — **counted, never silently dropped**. See its module docs for the byte-level table. `texture::write` puts one back: `blob_of` hands out the decompressed blob, `replace_blob` recompresses it and writes it **in place**, updating only the descriptor's compressed size. In place because a TPK cannot simply be reassembled — its descriptors point at blobs by absolute file offset, and measured over 30 real packs the blobs are neither in descriptor order (1 of 30) nor contiguous (1 of 30). 66% of a real install's blobs fit their own slot when recompressed; the rest need relocation, which is the next piece of work.
+7. **`texture`** — `Tpk::parse()`: `TEXTURES.BIN` (TPK) → per-texture RGBA8 images. Each texture is independent: its 24-byte descriptor (`0x33310003`) gives hash + **whole-file** offset + compressed/decompressed size; the blob is decompressed by magic (JDLZ **or HUFF** — a pack mixes both) and an embedded `OldTextureInfo` header near its tail gives width/height/format, which `dxt` then decodes (DXT1/3/5) or unpacks (uncompressed BGRA). A texture that does not decode stays in `entries` and is absent from `textures` — **counted, never silently dropped**. Codec is no longer what stops one; **pixel format is**: all 2,123 textures in the 30 `CARS/*/TEXTURES.BIN` decode, but install-wide only 3,002 of 54,885 do, the other 51,871 being palettised (`0x08` 25,960, `0x80` 24,071, `0x81` 1,840) — which is the whole of every `VINYLS.BIN`, so opening one gives an empty pack rather than a short one. See its module docs for the byte-level table. `texture::write` puts one back: `blob_of` hands out the decompressed blob, `replace_blob` recompresses it and writes it **in place**, updating only the descriptor's compressed size. In place because a TPK cannot simply be reassembled — its descriptors point at blobs by absolute file offset, and measured over 30 real packs the blobs are neither in descriptor order (1 of 30) nor contiguous (1 of 30). 1,402 of 2,123 blobs (66%) fit their own slot when recompressed — but split by the codec they arrived in that is 1,392/1,538 JDLZ against **10/585 HUFF**, because JDLZ is the only encoder and a HUFF blob goes back into a slot HUFF sized. So 575 of the 721 misses want a HUFF *encoder* and only 146 are a layout problem; relocation is the general answer, not the next one.
 8. **`placement`** — what a solid's local matrix *means*: a placement to apply, or a pose already baked into the vertices (`should_place`). Format semantics, so every consumer (the app, the CLI exporter, the game's engine layer) decides it the same way.
 9. **`parts`** — **pure policy**, and deterministic: `select_car` returns the chosen parts in **file order**. It used to return them in `HashMap` iteration order, which Rust randomises per process — two exports of one car came out byte-different and the game drew the same parts in a different order every launch.: which material group a name is (`group_of`), what its `KIT##`/`KITW##`/`STYLE##` token says, and which parts make up a configuration (`select_car`). Lives here so the `ug2` CLI, the app and the game (a separate repo) all select identically; the game re-exports it as `nfsu2::parts`.
 10. **`inspect`** — a chunk's bytes read back as labelled fields, each with the offset it came from (`model`). What an inspector pane draws; it reads through `geometry::format` so a viewer cannot drift from the parser about what a file says.
@@ -469,4 +495,4 @@ Pure-data structs, no `glam`/`wgpu`. Geometry is **indexed** and transforms are 
 
 - Code comments and Cargo.toml notes are frequently in **Turkish** — match the surrounding language when editing a file.
 - **Part names are truncated** to a fixed-length field in `GEOMETRY.BIN`. Long names lose their tail: `..._HEADLIGHT_LEFT_LOD_A` arrives as `..._HEADLIGHT_LEFT_` (LOD letter gone, so two LODs share a name — disambiguate by triangle count) and `..._SIDE_MIRROR` as `..._MIRRO`/`..._MIRR`. Match shortened stems (`MIRR`), never assume the full word survives. A truncated name can be *recovered* rather than guessed: `gizmo_nfs::hash` hashes a candidate and the file's own hash says whether it is right. `NfsTexture::name_is_whole()` asks whether the stored name survived the cut, and `NfsTexture::is_mask()` answers "is this another texture's `_MASK` companion" **through** the truncation — one install hides 56 such masks across 29 cars, all fully opaque, and binding one as a diffuse map is a black panel. The game's skin matching (`car::skin`) filters on that proof rather than on how transparent an image happens to be. Cars also carry `STYLE00..STYLE14` purchasable part variants and `KIT01+` body kits alongside the default `BASE`/`KIT00`; render only the default set or variants overlap.
-- Status: the toolkit's phases 1–4 are done (read · visualise · export · discover); repack (writing files back) is deliberately last, because TPK stores **absolute** offsets — changing one texture means writing a *compressor*, recomputing every later offset and keeping the alignment. The TPK texture format is decoded (per-texture DXT1/3/5 + RGBA); what is left there is **HUFF-compressed** textures, which are listed but not decoded. See `crates/gizmo-nfs/README.md` for the per-format status table.
+- Status: the toolkit's phases 1–4 are done (read · visualise · export · discover); repack (writing files back) is deliberately last, because TPK stores **absolute** offsets — changing one texture means writing a *compressor*, recomputing every later offset and keeping the alignment. The TPK texture format is decoded for every car (per-texture DXT1/3/5 + uncompressed BGRA, over JDLZ **and** HUFF blobs); what is left there is the **palettised** formats `0x08`/`0x80`/`0x81` — 51,871 of the install's 54,885 declared textures, which is every `VINYLS.BIN` and the reason opening one shows nothing. See `crates/gizmo-nfs/README.md` for the per-format status table.

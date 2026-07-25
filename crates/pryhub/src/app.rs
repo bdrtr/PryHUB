@@ -21,6 +21,8 @@ pub enum Screen {
     Discovery,
     Diff,
     Dictionary,
+    /// The car's CARP parameters. Second in the nav, as the design places it.
+    Carp,
 }
 
 /// Which tab the centre area shows.
@@ -140,6 +142,11 @@ pub struct PryHub {
     pub wire: bool,
     /// The game's paint palette, read from `GLOBALB.BUN` on first need. `None` until asked for.
     pub palette: Option<Vec<gizmo_nfs::Colour>>,
+    /// The open car's `CarTypeInfo`. Outer `None` = not asked yet, inner `None` = asked and the
+    /// install (or the record) was not there. The CARP screen needs both to tell the user which.
+    pub car_spec: Option<Option<Box<gizmo_nfs::CarTypeInfo>>>,
+    /// Which CARP section is selected, and which upgrade level is highlighted.
+    pub carp: crate::screens::carp::State,
     /// The colour the body is painted, or `None` for the material group's own.
     pub paint: Option<gizmo_nfs::Colour>,
     /// Parts the assembly tab has switched **off**, by display key. Off rather than on, so a file
@@ -207,6 +214,8 @@ impl PryHub {
             camera: crate::panels::viewport3d::Camera::default(),
             wire: false,
             palette: None,
+            car_spec: None,
+            carp: crate::screens::carp::State::default(),
             paint: None,
             unmounted: std::collections::HashSet::new(),
             names: crate::names::Names::load(),
@@ -237,6 +246,7 @@ impl PryHub {
                 "discovery" => Screen::Discovery,
                 "diff" => Screen::Diff,
                 "dictionary" => Screen::Dictionary,
+                "carp" => Screen::Carp,
                 // The dialog is not a screen, but it is a *view* — and it is the one thing in the
                 // interface a screenshot could otherwise never reach.
                 "export" => {
@@ -298,6 +308,7 @@ impl PryHub {
                     }
                 }
                 Outcome::Palette(colours) => self.palette = Some(colours),
+                Outcome::CarSpec(spec) => self.car_spec = Some(spec),
                 Outcome::Exported(result) => self.report_export(result),
                 // `poll` keeps progress to itself; this arm exists so the compiler says something
                 // if that ever changes.
@@ -364,6 +375,18 @@ impl PryHub {
             // Marked as asked by answering it empty now; the job overwrites that when it lands.
             self.palette = Some(Vec::new());
             self.jobs.send(crate::jobs::Request::Palette { beside: doc.path.clone() });
+        }
+    }
+
+    /// Ask for the open car's `CarTypeInfo`, unless it is here or already coming.
+    pub fn want_car_spec(&mut self) {
+        if self.car_spec.is_some() {
+            return;
+        }
+        if let Some(doc) = &self.doc {
+            // Marked as asked by answering it "not found" now; the job overwrites that when it lands.
+            self.car_spec = Some(None);
+            self.jobs.send(crate::jobs::Request::CarSpec { beside: doc.path.clone() });
         }
     }
 
@@ -516,6 +539,7 @@ impl eframe::App for PryHub {
                 }
             }
             Screen::Dictionary => screens::dictionary::show(self, ui),
+            Screen::Carp => screens::carp::show(self, ui),
         }
         // Last, and over whatever the screen drew: the dialog is modal, and it opens the workspace
         // under itself so it is always over the thing it is about to export.

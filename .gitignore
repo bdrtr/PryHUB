@@ -17,3 +17,9 @@ Cargo.lock.orig
 
 # Aracın kendi çıktısı: `Dışa Aktar` çalıştığı dizine yazar, o da genelde repo kökü oluyor.
 /pryhub-export/
+
+# Tasarım drop'u: repoya girmez, dışarıdan sağlanır (bkz. CLAUDE.md, "Checking the port against
+# the design"). Takip edilmediği hâlde yok sayılmayınca her commit'te untracked gürültü oluyordu ve
+# bir `git add -A` 820 KB'ı kazara içeri alıyordu.
+/STRUKT NFSU2 Asset Tool/
+/STRUKT NFSU2 Asset Tool.zip
