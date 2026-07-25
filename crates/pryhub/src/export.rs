@@ -140,7 +140,9 @@ pub fn run(
     // interface was already showing, so the folder's summary and the contact sheet agree.
     let (decoded, unread) = match &spec.textures {
         Some(tpk) => (Some(Arc::clone(tpk)), spec.textures_unread),
-        None => match doc.decode_textures() {
+        // The decode gets the same `tell` the writing does, so the bar runs twice rather than
+        // sitting still through the longer of the two phases.
+        None => match doc.decode_textures(tell) {
             Some((tpk, unread)) => (Some(Arc::new(tpk)), unread),
             None => (None, 0),
         },

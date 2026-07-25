@@ -28,11 +28,11 @@ pub enum Screen {
 /// Which tab the centre area shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Tab {
-    /// Designed, not yet built.
+    /// The model, through eframe's own wgpu device into an offscreen target.
     ThreeD,
     #[default]
     Hex,
-    /// Designed, not yet built.
+    /// The contact sheet over the open file's pack.
     Texture,
     /// The build: which parts are mounted, and the car they make.
     Assembly,
@@ -114,6 +114,10 @@ pub struct PryHub {
     pub doc: Option<std::sync::Arc<Doc>>,
     /// The open file's decoded textures, and whether they have been asked for.
     pub textures: Textures,
+    /// The open pack's texture names, read without its pixels. `None` until the dictionary asks.
+    pub texture_names: Option<std::sync::Arc<Vec<(gizmo_nfs::AssetHash, String)>>>,
+    /// Whether that job has been sent, so a screen drawn every frame does not queue sixty of them.
+    names_asked: bool,
     /// What happened *this session* — export results, background failures. The document's own
     /// notes are what parsing found; these are what the user did, and they outlive nothing.
     pub log: Vec<Note>,
@@ -212,6 +216,8 @@ impl PryHub {
             log_filter: LogFilter::default(),
             doc: None,
             textures: Textures::default(),
+            texture_names: None,
+            names_asked: false,
             log: Vec::new(),
             jobs: crate::jobs::Jobs::start(ctx.clone()),
             selection: None,
@@ -322,6 +328,11 @@ impl PryHub {
                         self.textures = Textures::Ready { tpk, unread };
                     }
                 }
+                Outcome::TextureNames { for_path, names } => {
+                    if self.doc.as_ref().is_some_and(|d| d.path == for_path) {
+                        self.texture_names = Some(names);
+                    }
+                }
                 Outcome::Palette(colours) => self.palette = Some(colours),
                 Outcome::CarSpec(spec) => self.car_spec = Some(spec),
                 Outcome::Exported(result) => self.report_export(result),
@@ -358,6 +369,8 @@ impl PryHub {
         self.doc = Some(std::sync::Arc::new(doc));
         self.model = None;
         self.textures = Textures::Unasked;
+        self.texture_names = None;
+        self.names_asked = false;
         self.texture_selection = None;
         self.texture_cache.clear();
         // Everything below describes the file that was open, in terms that mean something different
@@ -414,6 +427,21 @@ impl PryHub {
             if let Some(doc) = &self.doc {
                 self.textures = Textures::Decoding;
                 self.jobs.send(crate::jobs::Request::Decode(std::sync::Arc::clone(doc)));
+            }
+        }
+    }
+
+    /// Ask for the open file's texture *names*, unless they are already coming.
+    ///
+    /// The dictionary's counterpart to [`Self::want_textures`], and a different job on purpose: it
+    /// wants what the textures are called, which costs a decompression each, and not what they look
+    /// like, which costs the budget's worth of RGBA8 on top. Asking the decode job for it made
+    /// opening the dictionary allocate 256 MB to read some strings.
+    pub fn want_texture_names(&mut self) {
+        if self.texture_names.is_none() && !self.names_asked {
+            if let Some(doc) = &self.doc {
+                self.names_asked = true;
+                self.jobs.send(crate::jobs::Request::TextureNames(std::sync::Arc::clone(doc)));
             }
         }
     }

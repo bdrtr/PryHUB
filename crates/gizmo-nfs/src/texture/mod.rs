@@ -164,6 +164,23 @@ impl Tpk {
         decode::decode_texture(bytes, entry)
     }
 
+    /// One descriptor's `DebugName`, without decoding its pixels.
+    ///
+    /// A texture's readable name lives inside its *compressed* blob, so there is no reading it out
+    /// of the directory — but it costs the decompression only, where [`Tpk::decode_one`] then walks
+    /// every pixel and hands back `width * height * 4` bytes. For a caller that wants what a pack
+    /// is *called* rather than what it looks like — a hash dictionary, a listing, a search — that
+    /// is the whole difference between a transient buffer per texture and 1.87 GB of RGBA8 for a
+    /// `VINYLS.BIN`.
+    ///
+    /// # Errors
+    /// The same ones [`Tpk::decode_one`] raises before it reaches the pixels: an unreadable blob, or
+    /// an embedded header that fails its own hash self-check. A name that comes back here is a name
+    /// that texture would have decoded under.
+    pub fn name_of(bytes: &[u8], entry: &TpkEntry) -> NfsResult<String> {
+        decode::texture_name_only(bytes, entry)
+    }
+
     /// Assemble a pack from a directory and textures decoded by the caller.
     #[must_use]
     pub fn from_decoded(

@@ -57,10 +57,13 @@ const PALETTE_BYTES: usize = 256 * 4;
 /// The largest texture dimension we will decode (guards allocation from a corrupt header).
 const MAX_DIM: usize = 4096;
 
-/// Decompress and decode a single texture into RGBA8. Errors (a pixel format this crate does not
-/// decode, an unreadable blob, a malformed header, out-of-range dimensions) mean "skip this
-/// texture", not a corrupt file.
-pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture> {
+/// One texture's blob, decompressed, and the offset of its embedded `OldTextureInfo` header.
+///
+/// Everything up to and including the header's own self-check, which is all a caller needs to read
+/// the `DebugName` and no more. Split out because a name costs the decompression and nothing else:
+/// the pixels are a second pass over the same buffer, and a caller after the names of a 1,786-image
+/// pack should not have to allocate 1.87 GB of RGBA8 to get them.
+fn decompress_to_header(file: &[u8], e: &TpkEntry) -> NfsResult<(Vec<u8>, usize)> {
     let abs = e.abs_offset as usize;
     let end = abs.checked_add(e.size as usize).ok_or(NfsError::CorruptArchive {
         detail: "TPK texture offset+size overflow",
@@ -76,7 +79,7 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
         return Err(NfsError::BufferSizeMismatch { detail: "TPK blob decompressed short" });
     }
 
-    // Locate the embedded OldTextureInfo header and read the fields we need.
+    // Locate the embedded OldTextureInfo header.
     let p = out_size
         .checked_sub(e.header_from_end as usize)
         .and_then(|h| h.checked_add(0x64 + 0x24))
@@ -90,6 +93,26 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
     if name_hash != e.hash.0 {
         return Err(NfsError::CorruptArchive { detail: "TPK header hash mismatch" });
     }
+    Ok((pool, p))
+}
+
+/// The `DebugName` the compiler left beside one texture, without decoding its pixels.
+///
+/// The same name [`decode_texture`] reports, reached the same way and failing the same self-check,
+/// so a pack read for its names and a pack read for its images agree about what is in it.
+pub(super) fn texture_name_only(file: &[u8], e: &TpkEntry) -> NfsResult<String> {
+    let (pool, p) = decompress_to_header(file, e)?;
+    Ok(texture_name(&pool, p))
+}
+
+/// Decompress and decode a single texture into RGBA8. Errors (a pixel format this crate does not
+/// decode, an unreadable blob, a malformed header, out-of-range dimensions) mean "skip this
+/// texture", not a corrupt file.
+pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture> {
+    let (pool, p) = decompress_to_header(file, e)?;
+    let hdr = pool
+        .get(p..p + 39)
+        .ok_or(NfsError::CorruptArchive { detail: "TPK header out of range" })?;
     // The `DebugName[24]` sits just before the NameHash (struct 0x0C, i.e. `P − 0x18`); it
     // carries the texture's readable name (e.g. `240SX_KIT00_HEADLIGHT`), which the renderer
     // matches to part names.

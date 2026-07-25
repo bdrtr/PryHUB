@@ -227,13 +227,46 @@ impl Doc {
     /// The second number is how many of the pack's textures were **not read**, which is a different
     /// answer from the ones that could not be decoded — see [`DECODE_BUDGET`].
     #[must_use]
-    pub fn decode_textures(&self) -> Option<(gizmo_nfs::Tpk, usize)> {
-        let own = decode_pack(&self.bytes).filter(|(t, _)| !t.entries.is_empty());
+    pub fn decode_textures(&self, tell: &dyn Fn(usize, usize)) -> Option<(gizmo_nfs::Tpk, usize)> {
+        let own = decode_pack(&self.bytes, tell).filter(|(t, _)| !t.entries.is_empty());
         own.or_else(|| {
             let beside = self.path.parent()?.join("TEXTURES.BIN");
             let bytes = std::fs::read(beside).ok()?;
-            decode_pack(&bytes)
+            decode_pack(&bytes, tell)
         })
+    }
+
+    /// Every texture's name, without decoding a pixel of it.
+    ///
+    /// What the dictionary wants: a pack's hashes are in the directory, but the *names* are inside
+    /// the compressed blobs, so they cost a decompression each and nothing more. Going through
+    /// `decode_textures` for them cost the pixels too — 256 MB of RGBA8 under the budget, held for
+    /// as long as the file was open, to read 1,786 strings and throw the images away.
+    #[must_use]
+    pub fn texture_names(&self, tell: &dyn Fn(usize, usize)) -> Vec<(gizmo_nfs::AssetHash, String)> {
+        let named = |bytes: &[u8]| -> Vec<(gizmo_nfs::AssetHash, String)> {
+            let Ok(entries) = gizmo_nfs::Tpk::directory(bytes) else { return Vec::new() };
+            let total = entries.len();
+            entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    tell(i, total);
+                    // A blob at a time, and each one dropped before the next: the peak is one
+                    // decompressed texture, not the pack.
+                    gizmo_nfs::Tpk::name_of(bytes, e).ok().map(|n| (e.hash, n))
+                })
+                .collect()
+        };
+        let own = named(&self.bytes);
+        if !own.is_empty() {
+            return own;
+        }
+        self.path
+            .parent()
+            .map(|d| d.join("TEXTURES.BIN"))
+            .and_then(|p| std::fs::read(p).ok())
+            .map_or_else(Vec::new, |b| named(&b))
     }
 
     /// The `0x80134010` solid a chunk belongs to, if any. A vertex buffer's stride can only be
@@ -336,48 +369,69 @@ pub const DECODE_BUDGET: usize = 256 * 1024 * 1024;
 /// and everything counted in `spent` is below the stopping index, so what was decoded always covers
 /// at least as far as the budget allows. A handful of decodes past the cut are thrown away, which is
 /// the price of not serialising the workers to find out where it is.
-fn decode_pack(bytes: &[u8]) -> Option<(gizmo_nfs::Tpk, usize)> {
+fn decode_pack(bytes: &[u8], tell: &dyn Fn(usize, usize)) -> Option<(gizmo_nfs::Tpk, usize)> {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     let entries = gizmo_nfs::Tpk::directory(bytes).ok()?;
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-    let next = AtomicUsize::new(0);
-    let spent = AtomicUsize::new(0);
-    let decoded = std::sync::Mutex::new(Vec::new());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            let (next, spent, decoded, entries) = (&next, &spent, &decoded, &entries);
-            scope.spawn(move || {
-                // Decode into a local batch and merge once: a lock per texture would serialise the
-                // very thing being parallelised.
-                let mut mine = Vec::new();
-                loop {
-                    let i = next.fetch_add(1, Relaxed);
-                    let Some(entry) = entries.get(i) else { break };
-                    // Stop claiming once the budget is spent. Where it *falls* is decided below,
-                    // from the entries rather than from whichever worker noticed first.
-                    if spent.load(Relaxed) >= DECODE_BUDGET {
-                        break;
+    let total = entries.len();
+    let mut decoded: Vec<(usize, gizmo_nfs::AssetHash, gizmo_nfs::NfsTexture)> = Vec::new();
+    let mut spent = 0usize;
+    let mut at = 0usize;
+
+    // Decoded a batch at a time, and the batch boundary is where progress is reported. `tell` sends
+    // on the job channel and so is not `Sync` — it cannot be handed to the scoped threads at all —
+    // and a two-second job with no bar is indistinguishable from a hang. The batch is wide enough
+    // that the barrier costs nothing next to a texture, and narrow enough that the bar moves.
+    const BATCH: usize = 64;
+    while at < total && spent < DECODE_BUDGET {
+        let end = (at + BATCH).min(total);
+        let batch = &entries[at..end];
+        let next = AtomicUsize::new(0);
+        let got = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let (next, got) = (&next, &got);
+                scope.spawn(move || {
+                    // Decode into a local batch and merge once: a lock per texture would serialise
+                    // the very thing being parallelised.
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Relaxed);
+                        let Some(entry) = batch.get(i) else { break };
+                        if let Ok(tex) = gizmo_nfs::Tpk::decode_one(bytes, entry) {
+                            mine.push((at + i, entry.hash, tex));
+                        }
                     }
-                    if let Ok(tex) = gizmo_nfs::Tpk::decode_one(bytes, entry) {
-                        spent.fetch_add(tex.rgba.len(), Relaxed);
-                        mine.push((i, entry.hash, tex));
+                    if let Ok(mut all) = got.lock() {
+                        all.append(&mut mine);
                     }
-                }
-                if let Ok(mut all) = decoded.lock() {
-                    all.append(&mut mine);
-                }
-            });
-        }
-    });
+                });
+            }
+        });
+        let mut got = got.into_inner().unwrap_or_default();
+        spent += got.iter().map(|(_, _, t)| t.rgba.len()).sum::<usize>();
+        decoded.append(&mut got);
+        at = end;
+        // Against the whole pack, not against what the budget will allow: the bar stopping at 14%
+        // and the job ending is the truth about a pack this only read the front of, and the sheet
+        // says so in words underneath.
+        tell(at, total);
+    }
 
     // Where the budget actually falls, decided by the file rather than by the threads: walk what
     // came back in index order and stop at the first texture that would take the total past the
-    // line. `refused` only ever said "stop claiming"; it is deliberately not read here.
-    let mut decoded = decoded.into_inner().unwrap_or_default();
+    // line. A batch may overshoot; the cut below is what makes the ceiling exact.
+    //
+    // It starts at `at` — how far the loop actually got — and *not* at `entries.len()`, which is the
+    // same number only when the pack ran to the end. Started there, a budget that lands exactly on a
+    // batch boundary (256 images of 1 MB is exactly 256 MB, so `running > DECODE_BUDGET` never
+    // fires) would leave the cut at the whole pack: `unread` would come out 0, and the sheet would
+    // report every entry the budget skipped as one the parser could not decode. Which is the one
+    // thing the two counts exist to keep apart.
     decoded.sort_unstable_by_key(|(i, _, _)| *i);
     let mut running = 0usize;
-    let mut cut = entries.len();
+    let mut cut = at;
     for (i, _, tex) in &decoded {
         running += tex.rgba.len();
         if running > DECODE_BUDGET {

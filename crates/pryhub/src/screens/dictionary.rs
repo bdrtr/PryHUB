@@ -163,13 +163,22 @@ fn collect(app: &mut PryHub) -> Vec<Row> {
     };
 
     // Textures first, because they are the only place the file leaves a name. They may still be
-    // decoding — the table simply grows when they arrive.
-    app.want_textures();
-    if let Some(tpk) = app.textures.ready() {
-        for tex in tpk.textures.values() {
-            let name = (!tex.name.is_empty()).then(|| tex.name.clone());
-            add(tex.hash.0, name, |s| s.texture = true);
+    // being read — the table simply grows when they arrive.
+    //
+    // Names, not pixels. This screen shows a hash and what the file calls it, and never draws an
+    // image, so it asks for the one job that reads the `DebugName` out of each blob and stops. It
+    // used to call `want_textures()`, which decodes every image in the pack — for a `VINYLS.BIN`
+    // that is the whole 256 MB budget's worth of RGBA8, allocated and held to read 1,786 strings.
+    app.want_texture_names();
+    if let Some(names) = app.texture_names.clone() {
+        for (hash, name) in names.iter() {
+            let name = (!name.is_empty()).then(|| name.clone());
+            add(hash.0, name, |s| s.texture = true);
         }
+    }
+    // The pack the texture tab may already have decoded is still worth listing: it carries every
+    // declared entry, including the ones whose header would not give a name.
+    if let Some(tpk) = app.textures.ready() {
         for entry in &tpk.entries {
             add(entry.hash.0, None, |s| s.texture = true);
         }

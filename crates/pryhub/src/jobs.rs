@@ -42,6 +42,8 @@ pub enum Request {
     Open { path: PathBuf, side: Side },
     /// Decode a document's textures — its own `TEXTURES.BIN`, or the one beside it.
     Decode(Arc<Doc>),
+    /// Read a pack's texture *names* without decoding any pixels, for the hash dictionary.
+    TextureNames(Arc<Doc>),
     Export { doc: Arc<Doc>, spec: ExportSpec },
     /// Read the game's paint palette out of `GLOBAL/GLOBALB.BUN`, found from the open file.
     ///
@@ -60,6 +62,9 @@ pub enum Outcome {
     /// `None` means the file has no textures, which is an answer rather than a failure. `unread` is
     /// how many the byte budget never attempted — not the same as the ones that would not decode.
     Decoded { for_path: PathBuf, tpk: Option<Arc<gizmo_nfs::Tpk>>, unread: usize },
+    /// A pack's texture names, read without decoding any pixels. Carries the path it was computed
+    /// for, for the same reason [`Self::Decoded`] does.
+    TextureNames { for_path: PathBuf, names: Arc<Vec<(gizmo_nfs::AssetHash, String)>> },
     Exported(Result<Written, String>),
     /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
     /// a fact about the *worker*, not about the document.
@@ -85,6 +90,7 @@ pub enum Outcome {
 pub enum Kind {
     Open,
     Decode,
+    TextureNames,
     Export,
     Palette,
     CarSpec,
@@ -96,6 +102,7 @@ impl Kind {
         match self {
             Self::Open => "open",
             Self::Decode => "decode",
+            Self::TextureNames => "texture names",
             Self::Export => "export",
             Self::Palette => "palette",
             Self::CarSpec => "car spec",
@@ -115,6 +122,7 @@ impl Outcome {
         match request {
             Request::Open { .. } => Kind::Open,
             Request::Decode(_) => Kind::Decode,
+            Request::TextureNames(_) => Kind::TextureNames,
             Request::Export { .. } => Kind::Export,
             Request::Palette { .. } => Kind::Palette,
             Request::CarSpec { .. } => Kind::CarSpec,
@@ -221,7 +229,7 @@ impl Jobs {
 fn describe(request: &Request) -> String {
     match request {
         Request::Open { path, side } => format!("{} ({side:?})", path.display()),
-        Request::Decode(doc) => doc.path.display().to_string(),
+        Request::Decode(doc) | Request::TextureNames(doc) => doc.path.display().to_string(),
         Request::Export { doc, spec } => format!("{} as {}", doc.path.display(), spec.kind.name()),
         Request::Palette { beside } => format!("palette beside {}", beside.display()),
         Request::CarSpec { beside } => format!("car spec beside {}", beside.display()),
@@ -237,11 +245,15 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
             Outcome::Opened { result: Box::new(result), side, path }
         }
         Request::Decode(doc) => {
-            let decoded = doc.decode_textures();
+            let decoded = doc.decode_textures(tell);
             let unread = decoded.as_ref().map_or(0, |(_, n)| *n);
             let tpk = decoded.map(|(tpk, _)| Arc::new(tpk));
             Outcome::Decoded { for_path: doc.path.clone(), tpk, unread }
         }
+        Request::TextureNames(doc) => Outcome::TextureNames {
+            for_path: doc.path.clone(),
+            names: Arc::new(doc.texture_names(tell)),
+        },
         Request::Export { doc, spec } => {
             Outcome::Exported(crate::export::run(&doc, &spec, tell))
         }
