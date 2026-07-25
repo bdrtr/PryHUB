@@ -63,7 +63,10 @@ pub use error::{NfsError, NfsResult};
 pub use geometry::{parse_geometry, parse_geometry_reporting, SkipReason, Skipped};
 pub use globalb::carparts::{CarPart, CarParts, Colour};
 pub use profile::Profile;
-pub use globalb::{parse_cartypeinfos, CarTypeInfo, WheelSpec};
+// `CarHandling` and its two parts come with `CarTypeInfo` — they are a field of it — so a consumer
+// that can name the record from the root should be able to name what it contains without reaching
+// into the module. Added rather than moved: `globalb::CarHandling` still resolves.
+pub use globalb::{parse_cartypeinfos, CarHandling, CarTypeInfo, Engine, Gearbox, WheelSpec};
 pub use parts::{group_of, select_car, select_stock_car, CarConfig, Grp};
 pub use texture::{Tpk, TpkEntry};
 pub use types::{
