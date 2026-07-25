@@ -7,7 +7,7 @@
 //! stay small and independently testable.
 //!
 //! These are **public**: anything that shows a file's structure — the `ug2 probe` command, the
-//! STRUKT inspector — needs the same offsets the parser reads. Copying them into a viewer is how
+//! PryHUB inspector — needs the same offsets the parser reads. Copying them into a viewer is how
 //! the viewer starts disagreeing with the parser about what a file says, which is the one thing
 //! an inspector must never do.
 

@@ -6,7 +6,7 @@
 //! only the differences by default, since "what is different about these two cars" should not
 //! arrive as seven thousand lines of *same*.
 
-use crate::app::{Screen, Strukt};
+use crate::app::{Screen, PryHub};
 use crate::doc::Doc;
 use crate::panels;
 use crate::theme::{self, token};
@@ -44,7 +44,7 @@ impl State {
 }
 
 /// Draw the screen; returns a chunk offset when a row was clicked (an offset in the *left* file).
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let t = app.lang.strings();
     let mut select = None;
     egui::CentralPanel::default()
@@ -94,7 +94,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
 }
 
 /// The two file names, and how to load the second one.
-fn picker(app: &mut Strukt, ui: &mut egui::Ui, left_name: &str) {
+fn picker(app: &mut PryHub, ui: &mut egui::Ui, left_name: &str) {
     let t = app.lang.strings();
     let mono = theme::font::mono(11.0);
     ui.horizontal(|ui| {
@@ -227,6 +227,6 @@ fn colour(status: Status) -> egui::Color32 {
 
 /// A file dropped while this screen is showing loads the *other* side rather than replacing the
 /// open file — on a compare screen, that is what dropping a file obviously means.
-pub fn accepts_drop(app: &Strukt) -> bool {
+pub fn accepts_drop(app: &PryHub) -> bool {
     app.screen == Screen::Diff && app.doc.is_some()
 }

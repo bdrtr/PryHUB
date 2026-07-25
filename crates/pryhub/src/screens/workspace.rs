@@ -3,12 +3,12 @@
 //! Panel registration order is significant in egui — the bottom log is registered before the side
 //! panels so it spans the full width beneath them, matching the design's layout.
 
-use crate::app::{Strukt, Tab};
+use crate::app::{PryHub, Tab};
 use crate::panels;
 use crate::theme::{self, token};
 use egui::RichText;
 
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     // Actions the panels report; applied after drawing so no panel holds a mutable borrow of the
     // app while it draws.
     let mut select: Option<usize> = None;
@@ -79,7 +79,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
 }
 
 /// The centre area's tab bar: 3D · HEX · TEXTURE, with the design's accent underline.
-fn tabs(app: &mut Strukt, ui: &mut egui::Ui) {
+fn tabs(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.horizontal(|ui| {
         for (tab, label) in

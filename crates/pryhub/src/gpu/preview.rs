@@ -70,11 +70,11 @@ impl Preview {
     pub fn new(state: &RenderState) -> Option<Self> {
         let device = &state.device;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("strukt.preview"),
+            label: Some("pryhub.preview"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("strukt.preview.bgl"),
+            label: Some("pryhub.preview.bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -87,23 +87,23 @@ impl Preview {
             }],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("strukt.preview.uniforms"),
+            label: Some("pryhub.preview.uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("strukt.preview.bg"),
+            label: Some("pryhub.preview.bg"),
             layout: &layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("strukt.preview.layout"),
+            label: Some("pryhub.preview.layout"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("strukt.preview.pipeline"),
+            label: Some("pryhub.preview.pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -202,12 +202,12 @@ impl Preview {
         let device = &state.device;
         let mesh = Mesh {
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("strukt.preview.vertices"),
+                label: Some("pryhub.preview.vertices"),
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("strukt.preview.indices"),
+                label: Some("pryhub.preview.indices"),
                 contents: bytemuck::cast_slice(&indices),
                 usage: wgpu::BufferUsages::INDEX,
             }),
@@ -238,10 +238,10 @@ impl Preview {
         let view = self.colour.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("strukt.preview") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pryhub.preview") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("strukt.preview.pass"),
+                label: Some("pryhub.preview.pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -299,7 +299,7 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 fn targets(device: &wgpu::Device, size: [u32; 2]) -> (wgpu::Texture, wgpu::TextureView) {
     let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
     let colour = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("strukt.preview.colour"),
+        label: Some("pryhub.preview.colour"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
@@ -310,7 +310,7 @@ fn targets(device: &wgpu::Device, size: [u32; 2]) -> (wgpu::Texture, wgpu::Textu
     });
     let depth = device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("strukt.preview.depth"),
+            label: Some("pryhub.preview.depth"),
             size: extent,
             mip_level_count: 1,
             sample_count: 1,

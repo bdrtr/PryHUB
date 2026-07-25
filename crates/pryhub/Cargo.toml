@@ -1,17 +1,18 @@
 [package]
-name = "strukt"
+name = "pryhub"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "STRUKT — a Need for Speed: Underground 2 asset inspector: browse the chunk tree, read the bytes, and be told what looks wrong."
+description = "PryHUB — a Need for Speed: Underground 2 asset inspector: browse the chunk tree, read the bytes, and be told what looks wrong."
 
 [dependencies]
-# The parser. STRUKT deliberately depends on nothing else of the project: not the game
-# crate, not the Gizmo engine — the engine owns its own window and loop, so embedding egui
-# inside it would be backwards, and the tool must build without the engine checkout.
-# `png`: the export writes images through the library's encoder, so STRUKT and `ug2` cannot
+# The parser, from this same workspace. PryHUB deliberately depends on nothing else: not the
+# game that also reads these files (it lives in its own repo and takes `gizmo-nfs` as a
+# dependency, the same way), and not the Gizmo engine — the engine owns its own window and
+# loop, so embedding egui inside it would be backwards, and this tool must build without it.
+# `png`: the export writes images through the library's encoder, so PryHUB and `ug2` cannot
 # disagree about what a texture file should contain.
 gizmo-nfs = { path = "../gizmo-nfs", features = ["png"] }
 # egui 0.34.3 is what the workspace already locks; eframe 0.34.3 asks for exactly that

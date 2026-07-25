@@ -4,13 +4,13 @@
 //! the point: an inspector that re-declared the offsets could disagree with the reader about what
 //! a file says, and then the tool would be lying with a straight face.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::RichText;
 use gizmo_nfs::inspect::Value;
 
 /// Draw the inspector for the current selection.
-pub fn show(app: &Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     let (Some(model), Some(node)) = (app.selected_model(), app.selected_node()) else {
         ui.add_space(theme::token::SPACE_3);
@@ -77,7 +77,7 @@ fn render(value: &Value) -> String {
 }
 
 /// The design's 4×4 matrix block.
-fn matrix_grid(app: &Strukt, ui: &mut egui::Ui, m: &gizmo_nfs::Mat4) {
+fn matrix_grid(app: &PryHub, ui: &mut egui::Ui, m: &gizmo_nfs::Mat4) {
     ui.add_space(theme::token::SPACE_2);
     ui.label(
         RichText::new(app.lang.strings().matrix).font(theme::font::heading(9.5)).color(theme::muted(55)),
@@ -102,7 +102,7 @@ fn matrix_grid(app: &Strukt, ui: &mut egui::Ui, m: &gizmo_nfs::Mat4) {
 }
 
 /// The panel caption.
-pub fn caption(app: &Strukt, ui: &mut egui::Ui) {
+pub fn caption(app: &PryHub, ui: &mut egui::Ui) {
     ui.label(
         RichText::new(app.lang.strings().p_inspector)
             .font(theme::font::heading(10.0))

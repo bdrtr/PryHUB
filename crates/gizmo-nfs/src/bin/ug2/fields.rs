@@ -1,6 +1,6 @@
 //! `ug2 fields` — what a chunk says, read back as labelled fields.
 //!
-//! The same model STRUKT's inspector draws ([`gizmo_nfs::inspect`]), printed. Having it in the CLI
+//! The same model PryHUB's inspector draws ([`gizmo_nfs::inspect`]), printed. Having it in the CLI
 //! is not a convenience: it is how the reading gets checked without a window, and it keeps the
 //! decoders honest by giving them a second consumer.
 

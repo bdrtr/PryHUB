@@ -10,7 +10,7 @@
 //! how many bytes are left over (the number that says a stride is wrong), and how much of each
 //! record no column has claimed.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::panels;
 use crate::theme::{self, token};
 use egui::RichText;
@@ -25,7 +25,7 @@ pub struct State {
 }
 
 /// Draw the screen; returns a chunk offset when the tree was clicked.
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let mut select = None;
     egui::Panel::left("discovery_tree")
         .resizable(true)
@@ -44,7 +44,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
     select
 }
 
-fn body(app: &mut Strukt, ui: &mut egui::Ui) {
+fn body(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.label(RichText::new(t.nav_discovery).font(theme::font::heading(21.0)));
     ui.label(RichText::new(t.w_card_discovery).size(11.0).color(theme::muted(55)));
@@ -70,7 +70,7 @@ fn body(app: &mut Strukt, ui: &mut egui::Ui) {
 }
 
 /// The selected chunk: where its header is, what to call it, and its payload bytes.
-fn payload(app: &Strukt) -> Option<(usize, String, Vec<u8>)> {
+fn payload(app: &PryHub) -> Option<(usize, String, Vec<u8>)> {
     let doc = app.doc.as_ref()?;
     let node = app.selection.and_then(|o| doc.node_at(o))?;
     let label = format!(
@@ -83,7 +83,7 @@ fn payload(app: &Strukt) -> Option<(usize, String, Vec<u8>)> {
 }
 
 /// Header offset, stride, the strides that divide exactly, and what the arithmetic says.
-fn controls(app: &mut Strukt, ui: &mut egui::Ui, label: &str, bytes: &[u8]) {
+fn controls(app: &mut PryHub, ui: &mut egui::Ui, label: &str, bytes: &[u8]) {
     let t = app.lang.strings();
     ui.label(RichText::new(label).font(theme::font::mono(11.0)).color(theme::muted(55)));
     ui.add_space(theme::token::SPACE_1);
@@ -146,7 +146,7 @@ fn controls(app: &mut Strukt, ui: &mut egui::Ui, label: &str, bytes: &[u8]) {
 }
 
 /// The decoded table: a header row of column-type buttons over the records.
-fn table(app: &mut Strukt, ui: &mut egui::Ui, bytes: &[u8]) {
+fn table(app: &mut PryHub, ui: &mut egui::Ui, bytes: &[u8]) {
     let t = app.lang.strings();
     let shape = discover::shape(bytes.len(), &app.discover.schema);
     let mono = theme::font::mono(11.0);

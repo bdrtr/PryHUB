@@ -59,7 +59,7 @@ pub struct Row {
     pub has_children: bool,
 }
 
-/// An open file and everything STRUKT knows about it.
+/// An open file and everything PryHUB knows about it.
 pub struct Doc {
     pub path: PathBuf,
     /// The file as read from disk (decompressed if it carried a codec). Every borrowed slice in
@@ -348,7 +348,7 @@ mod tests {
     /// `Doc::open` reads from disk, so a test needs a file. The name carries the test's own name
     /// because the suite runs in parallel and two tests sharing a path would delete each other's.
     fn doc_of(name: &str, bytes: Vec<u8>) -> Doc {
-        let path = std::env::temp_dir().join(format!("strukt-{name}.bin"));
+        let path = std::env::temp_dir().join(format!("pryhub-{name}.bin"));
         std::fs::write(&path, &bytes).unwrap();
         let doc = Doc::open(&path).unwrap();
         std::fs::remove_file(&path).ok();

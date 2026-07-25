@@ -8,7 +8,7 @@
 //! wash, and its 8-byte header on top of that. Clicking a byte selects the chunk that owns it,
 //! which is the design's "hex → tree" direction of the same synchronisation.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::{Color32, RichText};
 
@@ -51,7 +51,7 @@ impl Highlights {
 }
 
 /// Draw the hex view; returns a byte offset the user clicked, if any.
-pub fn show(app: &Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let Some(doc) = &app.doc else {
         empty(app, ui);
         return None;
@@ -186,7 +186,7 @@ fn light_type(class: Class) -> bool {
 }
 
 /// What the centre shows before a file is open.
-fn empty(app: &Strukt, ui: &mut egui::Ui) {
+fn empty(app: &PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.vertical_centered(|ui| {
         ui.add_space(60.0);

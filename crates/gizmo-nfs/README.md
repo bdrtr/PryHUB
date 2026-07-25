@@ -23,7 +23,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | Asset-name hash (`bStringHash`) | `hash` | ✅ done — locked against 2,123 real (name, hash) pairs; recovers truncated names by confirming a candidate |
 | Chunk-tree comparison | `diff` | ✅ done — paired by position among same-id siblings; changed / resized / one-sided, with the first differing byte |
 | Schema discovery (unknown chunks) | `discover` | ✅ done — user-typed stride/columns, exact-divisor candidates ranked by lane consistency, `0x11` filler skipped; re-derives the real vertex layout in a golden test |
-| glTF (`.glb`) + OBJ/MTL + PNG output | `export` | ✅ done — pure text/bytes, no filesystem; shared by `ug2 export` and STRUKT |
+| glTF (`.glb`) + OBJ/MTL + PNG output | `export` | ✅ done — pure text/bytes, no filesystem; shared by `ug2 export` and PryHUB |
 | `GLOBALB.LZC` global data | `global` | 🔜 later |
 | World / city (`STREAM*.BUN`, `L4RA.BUN`) | `world` | 🔴 research-frontier |
 

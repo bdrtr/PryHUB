@@ -91,7 +91,7 @@ enum Command {
         #[command(flatten)]
         config: ConfigArgs,
     },
-    /// Read a chunk back as labelled fields — the same model STRUKT's inspector shows.
+    /// Read a chunk back as labelled fields — the same model PryHUB's inspector shows.
     Fields {
         /// A car directory or its `GEOMETRY.BIN`.
         car: PathBuf,

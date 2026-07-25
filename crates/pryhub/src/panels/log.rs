@@ -3,13 +3,13 @@
 //! Clicking a row selects the chunk it names — the design's third path into the same selection,
 //! after the tree and the hex view.
 
-use crate::app::{LogFilter, Strukt};
+use crate::app::{LogFilter, PryHub};
 use crate::doc::Level;
 use crate::theme::{self, token};
 use egui::RichText;
 
 /// Draw the log; returns the chunk offset to select, if a row was clicked.
-pub fn show(app: &Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let Some(doc) = &app.doc else { return None };
     let mut clicked = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -34,7 +34,7 @@ pub fn show(app: &Strukt, ui: &mut egui::Ui) -> Option<usize> {
 }
 
 /// The caption row: title plus the four filter buttons.
-pub fn caption(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn caption(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.horizontal(|ui| {
         ui.label(RichText::new(t.p_log).font(theme::font::heading(10.0)).color(theme::muted(60)));

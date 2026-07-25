@@ -1,10 +1,10 @@
 //! The welcome screen: open something, or read what the tool is for.
 
-use crate::app::{Screen, Strukt};
+use crate::app::{Screen, PryHub};
 use crate::theme::{self, token};
 use egui::RichText;
 
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     let mut open: Option<std::path::PathBuf> = None;
 
@@ -12,7 +12,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
         .frame(egui::Frame::new().fill(token::BG).inner_margin(egui::Margin::same(24)))
         .show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.label(RichText::new("STRUKT").font(theme::font::heading(42.0)));
+                ui.label(RichText::new("PryHUB").font(theme::font::heading(42.0)));
                 ui.label(
                     RichText::new(format!("{} · v0.1 · gizmo-nfs", t.brand_sub))
                         .size(11.0)
@@ -53,7 +53,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
                         ui.add_space(theme::token::SPACE_2);
                         ui.horizontal(|ui| {
                             let field = egui::TextEdit::singleline(&mut app.path_input)
-                                .hint_text(Strukt::suggested_dir())
+                                .hint_text(PryHub::suggested_dir())
                                 .font(theme::font::mono(12.0))
                                 .desired_width(ui.available_width() - 90.0);
                             let resp = ui.add(field);

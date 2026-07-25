@@ -7,13 +7,13 @@
 //! Each row carries what the design asks for: a caret for containers, a status dot, the chunk's
 //! label, badges, and the id in hex.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::{Color32, RichText, Sense};
 use gizmo_nfs::validate::ChunkStatus;
 
 /// Draw the tree; returns the offset the user clicked, if any.
-pub fn show(app: &Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let Some(doc) = &app.doc else { return None };
     let mut clicked = None;
     let row_h = app.density.row_height();
@@ -153,7 +153,7 @@ fn dot_colour(status: ChunkStatus, container: bool) -> Color32 {
 }
 
 /// The panel's caption row: title plus the open file's name.
-pub fn caption(app: &Strukt, ui: &mut egui::Ui) {
+pub fn caption(app: &PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     ui.horizontal(|ui| {
         ui.label(RichText::new(t.p_tree).font(theme::font::heading(10.0)).color(theme::muted(60)));

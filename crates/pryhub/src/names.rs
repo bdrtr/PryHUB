@@ -52,13 +52,13 @@ impl Names {
         names
     }
 
-    /// Where the file lives: `$XDG_CONFIG_HOME/strukt/names.tsv`, else `~/.config/…`.
+    /// Where the file lives: `$XDG_CONFIG_HOME/pryhub/names.tsv`, else `~/.config/…`.
     #[must_use]
     pub fn path() -> Option<PathBuf> {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(base.join("strukt").join("names.tsv"))
+        Some(base.join("pryhub").join("names.tsv"))
     }
 
     /// The name for a hash, if the dictionary has one.
@@ -102,7 +102,7 @@ impl Names {
             std::fs::create_dir_all(dir)?;
         }
         let mut text = String::from(
-            "# STRUKT hash dictionary — one <hash>\\t<name> per line.\n\
+            "# PryHUB hash dictionary — one <hash>\\t<name> per line.\n\
              # Verified names hash back to their number (gizmo_nfs::hash::string_hash).\n",
         );
         for (hash, name) in &self.entries {
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn a_saved_dictionary_reads_back_the_same() {
-        let dir = std::env::temp_dir().join(format!("strukt-names-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pryhub-names-{}", std::process::id()));
         let path = dir.join("names.tsv");
         let mut names = Names::default();
         names.set(0xB3DC_27AB, "240SX_BADGING");
@@ -146,7 +146,7 @@ mod tests {
     /// a `0x` prefix and rubbish all have to be survivable.
     #[test]
     fn a_hand_edited_dictionary_is_read_forgivingly() {
-        let dir = std::env::temp_dir().join(format!("strukt-names-hand-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pryhub-names-hand-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("names.tsv");
         std::fs::write(

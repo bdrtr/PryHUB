@@ -6,7 +6,7 @@
 //! reproduces the file's number is proof rather than a note. It is also the only way a truncated
 //! name's tail comes back: type candidates until one hashes.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::RichText;
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ struct Row {
 }
 
 /// Draw the screen.
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(token::BG).inner_margin(egui::Margin::same(14)))
@@ -104,7 +104,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
 }
 
 /// Every hash the open file points at: textures, material runs, shaders, and the solids themselves.
-fn collect(app: &mut Strukt) -> Vec<Row> {
+fn collect(app: &mut PryHub) -> Vec<Row> {
     let mut seen: BTreeMap<u32, Row> = BTreeMap::new();
     let mut add = |hash: u32, name: Option<String>, tag: fn(&mut Sources)| {
         if hash == 0 {
@@ -148,7 +148,7 @@ fn collect(app: &mut Strukt) -> Vec<Row> {
 }
 
 /// The table: one editable name per hash, with what the file said beside it.
-fn table(app: &mut Strukt, ui: &mut egui::Ui, rows: &[Row]) {
+fn table(app: &mut PryHub, ui: &mut egui::Ui, rows: &[Row]) {
     let t = app.lang.strings();
     let filter = app.dict.filter.trim().to_uppercase();
     let visible: Vec<&Row> = rows

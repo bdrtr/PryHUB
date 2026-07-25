@@ -5,7 +5,7 @@
 //! the file's own — Z-up, one unit to the metre — so the viewport agrees with the status bar and
 //! with what `ug2 export` writes.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::gpu::math;
 use crate::gpu::preview::MeshKey;
 use crate::theme::{self, token};
@@ -61,7 +61,7 @@ impl Camera {
 }
 
 /// Draw the tab.
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     let Some(state) = app.render_state.clone() else {
         centered(ui, "no wgpu backend");
@@ -140,7 +140,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
 
 /// The corner readouts the design puts over the viewport: what is shown, how big it is, and how
 /// to move the camera.
-fn overlay(app: &Strukt, ui: &egui::Ui, rect: egui::Rect) {
+fn overlay(app: &PryHub, ui: &egui::Ui, rect: egui::Rect) {
     let t = app.lang.strings();
     let p = ui.painter();
     let Some(preview) = &app.preview else { return };

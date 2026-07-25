@@ -1,3 +1,28 @@
 [workspace]
 resolver = "2"
-members = []
+members = [
+    "crates/gizmo-nfs",
+    "crates/pryhub",
+]
+
+# Ortak paket metadatası — üye crate'ler bunları `*.workspace = true` ile devralır.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Bedir"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bdrtr/PryHUB"
+
+[workspace.dependencies]
+proptest = "1"
+# `ug2` CLI (gizmo-nfs, `tools` feature): argüman ayrıştırma ve PNG doku dışa aktarımı.
+clap = { version = "4", features = ["derive"] }
+png = "0.17"
+
+# PryHUB hata ayıklama derlemesinde de 7.6 MB'lık dosyalar açıyor: parser optimize, arayüz
+# ayıklanabilir kalsın. (Ayıklanmamış parser'da açılış saniyeler sürüyor ve araç bozuk hissettiriyor.)
+[profile.dev.package.gizmo-nfs]
+opt-level = 2
+
+[profile.release]
+opt-level = 3

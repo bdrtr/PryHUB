@@ -58,7 +58,7 @@ impl LogFilter {
 }
 
 /// The whole application.
-pub struct Strukt {
+pub struct PryHub {
     pub screen: Screen,
     pub tab: Tab,
     pub lang: Lang,
@@ -118,7 +118,7 @@ struct Shot {
     asked: bool,
 }
 
-impl Strukt {
+impl PryHub {
     /// Build the app, optionally opening a file and/or saving a screenshot.
     #[must_use]
     pub fn new(open: Option<String>, shot: Option<String>, screen: Option<String>) -> Self {
@@ -240,7 +240,7 @@ impl Strukt {
     }
 }
 
-impl eframe::App for Strukt {
+impl eframe::App for PryHub {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.restyle {
             theme::apply(ui.ctx(), self.density);
@@ -290,7 +290,7 @@ impl eframe::App for Strukt {
     }
 }
 
-impl Strukt {
+impl PryHub {
     /// Brand · screen nav · open/export · language · density.
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let t = self.lang.strings();
@@ -304,7 +304,7 @@ impl Strukt {
                 ui.horizontal_centered(|ui| {
                     let brand = ui.add(
                         egui::Label::new(
-                            RichText::new("STRUKT").font(theme::font::heading(19.0)).color(token::TEXT),
+                            RichText::new("PryHUB").font(theme::font::heading(19.0)).color(token::TEXT),
                         )
                         .sense(egui::Sense::click()),
                     );
@@ -427,7 +427,7 @@ impl Strukt {
 
 }
 
-impl Strukt {
+impl PryHub {
     /// Drive a pending `--shot`: warm up, ask for the image, save it, quit.
     fn screenshot(&mut self, ctx: &egui::Context) {
         let Some(shot) = &mut self.shot else { return };
@@ -452,8 +452,8 @@ impl Strukt {
             let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             let (w, h) = (image.width() as u32, image.height() as u32);
             match write_png(&shot.path, &rgba, w, h) {
-                Ok(()) => eprintln!("strukt: {} ({w}x{h})", shot.path.display()),
-                Err(e) => eprintln!("strukt: {}: {e}", shot.path.display()),
+                Ok(()) => eprintln!("pryhub: {} ({w}x{h})", shot.path.display()),
+                Err(e) => eprintln!("pryhub: {}: {e}", shot.path.display()),
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn selecting_asks_the_hex_view_to_follow() {
-        let mut app = Strukt::new(None, None, None);
+        let mut app = PryHub::new(None, None, None);
         app.select(0x1B8);
         assert_eq!(app.selection, Some(0x1B8));
         assert_eq!(app.scroll_hex_to, Some(0x1B8), "a tree click must pull the hex view along");
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn a_failed_open_reports_rather_than_clearing_the_current_file() {
-        let mut app = Strukt::new(None, None, None);
+        let mut app = PryHub::new(None, None, None);
         app.open(std::path::Path::new("/nonexistent/GEOMETRY.BIN"));
         assert!(app.error.is_some());
         assert!(app.doc.is_none());

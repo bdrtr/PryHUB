@@ -4,7 +4,7 @@
 //! touches the filesystem, so the caller decides where a file goes (and a GUI may put it on a
 //! clipboard instead). What belongs here is the *format knowledge* an export needs: which material
 //! a run resolves to, which frame the vertices are in, what a texture is called when the file
-//! gives it no name. Keeping that in the library is what stops `ug2` and STRUKT from drifting into
+//! gives it no name. Keeping that in the library is what stops `ug2` and PryHUB from drifting into
 //! two different answers for the same car.
 
 /// Binary glTF. Behind the `png` feature because a `.glb` embeds its images, and an exporter that

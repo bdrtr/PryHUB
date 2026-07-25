@@ -13,7 +13,7 @@
 //! `DebugName` the compiler left in the pool, which is why the label falls back to the hash
 //! rather than to something invented.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::{ColorImage, RichText, TextureHandle};
 use gizmo_nfs::{AssetHash, NfsTexture};
@@ -22,7 +22,7 @@ use gizmo_nfs::{AssetHash, NfsTexture};
 const THUMB: usize = 96;
 
 /// Draw the tab.
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let t = app.lang.strings();
     let Some(doc) = &mut app.doc else {
         note(ui, t.no_file);

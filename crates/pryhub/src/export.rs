@@ -1,15 +1,15 @@
 //! `Dışa Aktar` — writing what is on screen to disk.
 //!
-//! STRUKT carries no format knowledge of its own: the OBJ/MTL text and the PNG bytes come from
+//! PryHUB carries no format knowledge of its own: the OBJ/MTL text and the PNG bytes come from
 //! [`gizmo_nfs::export`], the same code `ug2 export` runs, so the two tools cannot end up
 //! disagreeing about what a car is. What lives here is only *where* the files go and *what is on
 //! screen* — and the second question is answered exactly as the 3D tab answers it, so an export
 //! writes the thing the viewport was showing.
 //!
-//! There is no file dialog (see `Cargo.toml`): the files land under `strukt-export/` in the
+//! There is no file dialog (see `Cargo.toml`): the files land under `pryhub-export/` in the
 //! working directory and the log says the full path, the same way `ug2` prints what it wrote.
 
-use crate::app::{Strukt, Tab};
+use crate::app::{PryHub, Tab};
 use crate::doc::Doc;
 use crate::i18n::Strings;
 use gizmo_nfs::export::{self, MaterialPlan};
@@ -29,7 +29,7 @@ pub struct Written {
 /// # Errors
 /// Returns a human-readable message when there is nothing to write (no file open, no texture
 /// selected, a car whose `GEOMETRY.BIN` holds no parts) or when a write fails.
-pub fn run(app: &mut Strukt) -> Result<Written, String> {
+pub fn run(app: &mut PryHub) -> Result<Written, String> {
     // Decoding is lazy, and the texture tab may never have been opened; ask first, then read the
     // result immutably so the parts and the textures can be looked at together.
     if let Some(doc) = &mut app.doc {
@@ -53,7 +53,7 @@ pub fn run(app: &mut Strukt) -> Result<Written, String> {
 ///
 /// # Errors
 /// When the texture is no longer in the pack, cannot be encoded, or cannot be written.
-pub fn one_texture(app: &Strukt, hash: gizmo_nfs::AssetHash) -> Result<Written, String> {
+pub fn one_texture(app: &PryHub, hash: gizmo_nfs::AssetHash) -> Result<Written, String> {
     let doc = app.doc.as_ref().ok_or("no file")?;
     let tpk = doc.decoded_textures().ok_or("no textures")?;
     let tex = tpk.texture(hash).ok_or("no such texture")?;
@@ -163,12 +163,12 @@ fn shown_parts(doc: &Doc, selection: Option<usize>) -> Vec<&NfsMeshPart> {
     }
 }
 
-/// `strukt-export/<car>_<file>/` under the working directory. The car folder is in the name
+/// `pryhub-export/<car>_<file>/` under the working directory. The car folder is in the name
 /// because every car's geometry file is called `GEOMETRY.BIN`, and two exports must not land on
 /// top of each other.
 fn out_dir(doc: &Doc) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("working directory: {e}"))?;
-    Ok(cwd.join("strukt-export").join(stem(doc)))
+    Ok(cwd.join("pryhub-export").join(stem(doc)))
 }
 
 fn stem(doc: &Doc) -> String {

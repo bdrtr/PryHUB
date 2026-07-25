@@ -5,13 +5,13 @@
 //! findings on purpose — a rule with nothing to report because it read nothing is not a pass, and
 //! the difference is the whole reason to trust the other four.
 
-use crate::app::Strukt;
+use crate::app::PryHub;
 use crate::theme::{self, token};
 use egui::RichText;
 use gizmo_nfs::validate::{RuleResult, Severity, RULES};
 
 /// Draw the screen; returns a chunk offset if a finding was clicked.
-pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
+pub fn show(app: &mut PryHub, ui: &mut egui::Ui) -> Option<usize> {
     let t = app.lang.strings();
     let mut select = None;
     egui::CentralPanel::default()
@@ -57,7 +57,7 @@ pub fn show(app: &mut Strukt, ui: &mut egui::Ui) -> Option<usize> {
 
 /// One rule's card: title, the expression it applies, what it read, and its findings.
 fn card(
-    app: &Strukt,
+    app: &PryHub,
     ui: &mut egui::Ui,
     rule: &gizmo_nfs::validate::Rule,
     result: &RuleResult,
