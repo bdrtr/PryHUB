@@ -175,11 +175,16 @@ const BLOB_ALIGN: usize = 128;
 /// them, and the tolerant walk reads the first block's `JDLZ` magic as a chunk id (`0x5a4c444a`).
 /// Its blobs run from the end of the directory to the end of the file.
 ///
-/// That is **a texture compiler's output rather than EA's** — the file is a mod, made by this
-/// repository's own author, which is how its provenance is known rather than inferred. So the shape
-/// is real and worth supporting eventually; it is simply a second layout, and this one is locked on
-/// 77 files while that one has one. Turning it away by name beats rewriting it on a guess, and the
-/// error says which shape it found.
+/// The first guess about that was that it is simply what a texture compiler does, the file being a
+/// mod made by this repository's own author. **Four more packs made deliberately with the same
+/// tooling disproved it**: 240SX, GOLF, RX7 and SUPRA re-saved through NFS-CarToolkit all have the
+/// chunk, and relocate through this function unchanged, every texture pixel-identical. So a
+/// compiler's ordinary output is an ordinary pack — what marks it is only that its blobs are
+/// *tidier* than EA's, in descriptor order and contiguous and all JDLZ where EA mixes in HUFF.
+///
+/// Which leaves `PEUGOT` as a rarer variant of unknown making rather than a whole second format, and
+/// one sample is not something to rewrite a file on. It is turned away by name, and the error says
+/// which shape it found.
 ///
 /// # Errors
 /// - A hash in `edits` is not in the pack.

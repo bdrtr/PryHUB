@@ -304,6 +304,83 @@ fn a_relocated_pack_reads_back() {
     }
 }
 
+/// Packs a *texture compiler* wrote, rather than EA — the files a modder actually has.
+///
+/// Gated on `NFSU2_TOOLPACKS`, a directory of `<car>/TEXTURES.BIN` produced by re-saving cars
+/// through NFS-CarToolkit, for the same reason `NFSU2_PROFILES` is gated: they are somebody's
+/// files, not fixtures that can ship.
+///
+/// It exists because the assumption behind it turned out to be wrong in a useful way. One tool-made
+/// pack in the install (`PEUGOT`) has no `0x33320002` chunk at all, and the guess was that this is
+/// what a texture compiler does. Four more, made on purpose, all **have** the chunk — so the
+/// compiler's ordinary output is an ordinary pack, and what makes it recognisable is only that its
+/// blobs are tidier than EA's: in descriptor order, contiguous, and all JDLZ where EA mixes in HUFF.
+/// [`relocate`](gizmo_nfs::texture::relocate) therefore already takes them, which is the thing this
+/// asserts so that it keeps being true.
+#[test]
+fn tool_compiled_packs_relocate_too() {
+    let Some(dir) = std::env::var_os("NFSU2_TOOLPACKS").map(PathBuf::from) else {
+        eprintln!("NFSU2_TOOLPACKS unset — skipping tool-compiled pack test");
+        return;
+    };
+    let mut seen = 0usize;
+    for car in std::fs::read_dir(&dir).expect("read the tool-pack directory").flatten() {
+        let pack = car.path().join("TEXTURES.BIN");
+        let Ok(bytes) = std::fs::read(&pack) else { continue };
+        seen += 1;
+        let name = car.file_name().to_string_lossy().to_string();
+
+        // The shape that makes it recognisable as a compiler's work rather than EA's.
+        let entries = gizmo_nfs::texture::Tpk::directory(&bytes).expect("directory");
+        assert!(!entries.is_empty(), "{name}: no descriptors");
+        let mut spans: Vec<(usize, usize)> =
+            entries.iter().map(|e| (e.abs_offset as usize, e.size as usize)).collect();
+        assert!(spans.windows(2).all(|w| w[0].0 <= w[1].0), "{name}: not in descriptor order");
+        spans.sort();
+        assert!(spans.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{name}: not contiguous");
+        let last = spans.last().map_or(0, |(o, s)| o + s);
+        assert_eq!(last, bytes.len(), "{name}: does not end at the last blob");
+
+        // And the thing that matters: relocation takes it, and nothing inside changes.
+        let before = gizmo_nfs::texture::Tpk::parse(&bytes).expect("parse");
+        let moved = gizmo_nfs::texture::relocate(&bytes, &[]).expect("relocate a tool-made pack");
+        let after = gizmo_nfs::texture::Tpk::parse(&moved).expect("the relocated pack parses");
+        assert_eq!(after.textures.len(), before.textures.len(), "{name}: lost a texture");
+        for (hash, old) in &before.textures {
+            let new = after.texture(*hash).expect("every texture survives");
+            assert_eq!(new.rgba, old.rgba, "{name}/{} changed under relocation", old.name);
+        }
+    }
+    assert!(seen > 0, "NFSU2_TOOLPACKS was set but held no <car>/TEXTURES.BIN");
+}
+
+/// The one tool-made shape that is *not* an ordinary pack, and is refused rather than guessed at.
+///
+/// `PEUGOT/TEXTURES.BIN` has no `0x33320002`: its directory is followed by raw compressed blocks,
+/// and the tolerant walk reads the first block's `JDLZ` magic as a chunk id. Four other packs from
+/// the same author's tooling do not look like this, so it is a rarer variant rather than "what a
+/// compiler does" — and one sample is not enough to rewrite a file on.
+#[test]
+fn the_chunkless_pack_is_refused_by_name() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping chunkless pack test");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("CARS/PEUGOT/TEXTURES.BIN")) else {
+        eprintln!("no PEUGOT pack in this install — skipping");
+        return;
+    };
+    // It still *reads*: the directory is a normal one and every texture decodes.
+    let tpk = gizmo_nfs::texture::Tpk::parse(&bytes).expect("a chunkless pack still parses");
+    assert!(!tpk.textures.is_empty(), "its textures decode");
+    // It is only writing it back that is refused, and with a reason rather than a panic.
+    let err = gizmo_nfs::texture::relocate(&bytes, &[]).expect_err("relocation must refuse it");
+    assert!(
+        matches!(err, gizmo_nfs::NfsError::NotImplemented { .. }),
+        "refused, but as {err:?} rather than as an unimplemented shape"
+    );
+}
+
 /// The discovery proposal, on a buffer whose layout is already known.
 ///
 /// A car's `0x00134B01` vertex buffer is stride 36 (position, normal, colour, uv) behind a run of
