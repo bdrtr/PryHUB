@@ -7,29 +7,22 @@
 /// Which language the interface is in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Lang {
-    /// Türkçe — the project's own working language, and the design's default.
-    #[default]
+    /// Türkçe — the project's own working language, and the language its source comments are in.
     Tr,
-    /// English.
+    /// English. The default: someone who owns the game and finds this tool should not have their
+    /// first window in a language they did not pick. The switch is in Settings.
+    #[default]
     En,
 }
 
 impl Lang {
-    /// The other language, for a toggle button.
+    /// The language's own name, for the settings menu. Never translated: a language is listed in
+    /// itself, or the person who needs it cannot find it.
     #[must_use]
-    pub fn other(self) -> Self {
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Tr => Self::En,
-            Self::En => Self::Tr,
-        }
-    }
-
-    /// The two-letter badge the language switch shows.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Tr => "TR",
-            Self::En => "EN",
+            Self::Tr => "Türkçe",
+            Self::En => "English",
         }
     }
 
@@ -52,6 +45,16 @@ pub struct Strings {
     pub brand_sub: &'static str,
     pub m_open: &'static str,
     pub m_export: &'static str,
+    /// The settings menu.
+    pub m_settings: &'static str,
+    pub set_language: &'static str,
+    pub set_size: &'static str,
+    pub set_small: &'static str,
+    pub set_medium: &'static str,
+    pub set_large: &'static str,
+    pub set_about: &'static str,
+    pub set_help: &'static str,
+    pub set_repo: &'static str,
     pub nav_workspace: &'static str,
     pub nav_validation: &'static str,
     pub nav_discovery: &'static str,
@@ -85,6 +88,17 @@ pub struct Strings {
     pub ex_materials: &'static str,
     /// Written out rather than a `▲`: the bundled font has no triangle, and a missing glyph is a box.
     pub ex_triangles: &'static str,
+    /// The log's own vocabulary. A note carries what happened; these are the words for it.
+    pub n_decompressed: &'static str,
+    pub n_decompress_failed: &'static str,
+    pub n_tree_failed: &'static str,
+    pub n_no_part: &'static str,
+    pub n_geometry_failed: &'static str,
+    /// Why a solid yielded no part, in the interface's words.
+    pub skip_not_a_mesh: &'static str,
+    pub skip_empty: &'static str,
+    pub skip_packed: &'static str,
+    pub skip_unknown: &'static str,
     /// The discovery screen: the schema controls, and the table's own vocabulary.
     pub d_header: &'static str,
     pub d_stride: &'static str,
@@ -163,6 +177,15 @@ static TR: Strings = Strings {
     brand_sub: "nfsu2 varlık aracı",
     m_open: "Aç",
     m_export: "Dışa Aktar",
+    m_settings: "Ayarlar",
+    set_language: "DİL",
+    set_size: "BOYUT",
+    set_small: "Küçük",
+    set_medium: "Orta",
+    set_large: "Büyük",
+    set_about: "HAKKINDA",
+    set_help: "Yardım (README)",
+    set_repo: "GitHub deposu",
     nav_workspace: "Çalışma",
     nav_validation: "Doğrulama",
     nav_discovery: "Keşif",
@@ -189,6 +212,15 @@ static TR: Strings = Strings {
     ex_parts: "parça",
     ex_materials: "materyal",
     ex_triangles: "üçgen",
+    n_decompressed: "açıldı",
+    n_decompress_failed: "açılamadı — ham baytlar okunuyor",
+    n_tree_failed: "chunk ağacı okunamadı",
+    n_no_part: "parça yok",
+    n_geometry_failed: "geometri okunamadı",
+    skip_not_a_mesh: "mesh chunk'ı yok (bağlantı noktası)",
+    skip_empty: "sayaçlar sıfır",
+    skip_packed: "paketli vertex düzeni",
+    skip_unknown: "bilinmeyen",
     d_header: "başlık",
     d_stride: "stride",
     d_records: "kayıt",
@@ -261,6 +293,15 @@ static EN: Strings = Strings {
     brand_sub: "nfsu2 asset toolkit",
     m_open: "Open",
     m_export: "Export",
+    m_settings: "Settings",
+    set_language: "LANGUAGE",
+    set_size: "SIZE",
+    set_small: "Small",
+    set_medium: "Medium",
+    set_large: "Large",
+    set_about: "ABOUT",
+    set_help: "Help (README)",
+    set_repo: "GitHub repository",
     nav_workspace: "Workspace",
     nav_validation: "Validation",
     nav_discovery: "Discovery",
@@ -287,6 +328,15 @@ static EN: Strings = Strings {
     ex_parts: "parts",
     ex_materials: "materials",
     ex_triangles: "triangles",
+    n_decompressed: "decompressed",
+    n_decompress_failed: "could not decompress — reading the raw bytes",
+    n_tree_failed: "could not read the chunk tree",
+    n_no_part: "no part",
+    n_geometry_failed: "could not read the geometry",
+    skip_not_a_mesh: "no mesh chunk (a mount point)",
+    skip_empty: "counters are zero",
+    skip_packed: "packed vertex layout",
+    skip_unknown: "unknown",
     d_header: "header",
     d_stride: "stride",
     d_records: "records",
@@ -368,9 +418,16 @@ mod tests {
         assert_ne!(Lang::Tr.strings().nav_validation, Lang::En.strings().nav_validation);
     }
 
+    /// A language is listed in itself, so someone who reads only one of the two can find it.
     #[test]
-    fn the_toggle_returns_to_where_it_started() {
-        assert_eq!(Lang::Tr.other(), Lang::En);
-        assert_eq!(Lang::Tr.other().other(), Lang::Tr);
+    fn each_language_is_named_in_its_own_language() {
+        assert_eq!(Lang::Tr.name(), "Türkçe");
+        assert_eq!(Lang::En.name(), "English");
+    }
+
+    /// The default the settings panel exists to establish.
+    #[test]
+    fn the_default_language_is_english() {
+        assert_eq!(Lang::default(), Lang::En);
     }
 }

@@ -10,6 +10,7 @@ use egui::RichText;
 
 /// Draw the log; returns the chunk offset to select, if a row was clicked.
 pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
+    let t = app.lang.strings();
     let Some(doc) = &app.doc else { return None };
     let mut clicked = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -24,7 +25,7 @@ pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
                     ui.label(
                         RichText::new(&note.chunk_id).font(theme::font::mono(10.5)).color(theme::muted(45)),
                     );
-                    ui.label(RichText::new(&note.message).size(11.5).color(token::TEXT));
+                    ui.label(RichText::new(note.kind.text(t)).size(11.5).color(token::TEXT));
                 })
                 .response
                 .interact(egui::Sense::click());

@@ -5,7 +5,7 @@
 //! travels as a chunk *offset* — unique per node, and the same key the tree, the hex view and the
 //! inspector all look up — so keeping the three in sync is a comparison, not a message.
 
-use crate::doc::{Doc, Level, Note};
+use crate::doc::{Doc, Level, Note, NoteKind};
 use crate::i18n::Lang;
 use crate::theme::{self, Density};
 use crate::screens;
@@ -152,6 +152,7 @@ impl PryHub {
     #[must_use]
     pub fn new(
         ctx: &egui::Context,
+        chosen: crate::settings::Settings,
         open: Option<String>,
         shot: Option<String>,
         screen: Option<String>,
@@ -159,8 +160,8 @@ impl PryHub {
         let mut app = Self {
             screen: Screen::Welcome,
             tab: Tab::default(),
-            lang: Lang::default(),
-            density: Density::default(),
+            lang: chosen.lang,
+            density: chosen.density,
             log_filter: LogFilter::default(),
             doc: None,
             textures: Textures::default(),
@@ -251,7 +252,7 @@ impl PryHub {
                     level: Level::Error,
                     chunk: None,
                     chunk_id: String::new(),
-                    message,
+                    kind: NoteKind::Diagnostic(message),
                 }),
             }
         }
@@ -439,7 +440,6 @@ impl PryHub {
     /// place the written paths are stated. A failure is a log line too, not a modal: the file is
     /// still open and the user has lost nothing.
     pub fn report_export(&mut self, result: Result<crate::export::Written, String>) {
-        let t = self.lang.strings();
         let note = match result {
             Ok(w) => {
                 let where_to = w
@@ -452,14 +452,14 @@ impl PryHub {
                     level: Level::Info,
                     chunk: None,
                     chunk_id: String::new(),
-                    message: format!("{} — {} → {where_to}", t.exported, w.summary),
+                    kind: NoteKind::Exported { summary: w.summary, into: where_to },
                 }
             }
             Err(e) => Note {
                 level: Level::Error,
                 chunk: None,
                 chunk_id: String::new(),
-                message: format!("{}: {e}", t.export_failed),
+                kind: NoteKind::ExportFailed { error: e },
             },
         };
         self.log.push(note);
@@ -479,7 +479,7 @@ mod tests {
 
     /// An app with a live worker, for tests that need one.
     fn app() -> PryHub {
-        PryHub::new(&egui::Context::default(), None, None, None)
+        PryHub::new(&egui::Context::default(), crate::settings::Settings::default(), None, None, None)
     }
 
     /// Drive the frame loop's job collection until `done`, or give up. The worker is a thread, so a

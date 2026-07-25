@@ -110,6 +110,27 @@ that does not keeps a hollow ring and is stored as a note. Names live in
 `$XDG_CONFIG_HOME/pryhub/names.tsv` (`hash<TAB>name`, hand-editable, written on each edit) and the
 texture tab prefers them over the file's truncated ones.
 
+### Settings
+
+Top right, in a menu rather than as bare `TR` / `S` buttons in the corner — those were legible to
+whoever wrote them and to nobody else, and a setting that cannot be found is not a setting. It holds
+what is true of the *program* rather than of a file: language (listed in its own language), size
+(Small / Medium / Large — the `theme::Density` scale), and the two links worth having (README as
+help, and the repository).
+
+Defaults on a fresh install: **English** and **Medium**. English because someone who owns the game
+and finds this tool should not meet a window in a language they did not choose (the source's comments
+stay Turkish); Medium because the design's own compact setting is right once the tool is familiar and
+cramped for a first look. Choices persist in `$XDG_CONFIG_HOME/pryhub/settings.tsv` — `key<TAB>value`,
+hand-editable, beside the hash dictionary — because a panel whose choices are forgotten when the
+window closes is a switch, not a setting.
+
+Making English the default exposed something: the log's lines were built as Turkish sentences at parse
+time. A `Note` now carries a `NoteKind` — what happened, plus its numbers — and the panel renders it
+in whichever language is on, so switching language switches the log too. The parser's own findings
+stay in its words (English): a dependency-free library about byte-level facts speaks one language, and
+the log shows both.
+
 ### Two logs, and why they are not one
 
 * **The log panel** (`doc::Note`) is what the *file* said: a chunk that would not parse, a solid that

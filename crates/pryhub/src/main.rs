@@ -18,6 +18,7 @@ mod logging;
 mod names;
 mod panels;
 mod screens;
+mod settings;
 mod shot;
 mod theme;
 
@@ -35,8 +36,9 @@ fn main() -> eframe::Result {
         "pryhub",
         options,
         Box::new(|cc| {
+            let chosen = settings::Settings::load();
             theme::install_fonts(&cc.egui_ctx);
-            theme::apply(&cc.egui_ctx, theme::Density::default());
+            theme::apply(&cc.egui_ctx, chosen.density);
             // A path on the command line opens straight into the workspace, so the tool can be
             // wired into a shell loop the way `ug2` is.
             // `pryhub <file> [--shot out.png]` — the flag draws a few frames, writes the window
@@ -63,7 +65,7 @@ fn main() -> eframe::Result {
                 .and_then(|i| args.get(i + 1))
                 .cloned();
             let file = args.first().filter(|a| !a.starts_with("--")).cloned();
-            let mut app = app::PryHub::new(&cc.egui_ctx, file, shot, screen);
+            let mut app = app::PryHub::new(&cc.egui_ctx, chosen, file, shot, screen);
             if let Some(tab) = tab {
                 app.tab = match tab.as_str() {
                     "3d" => app::Tab::ThreeD,

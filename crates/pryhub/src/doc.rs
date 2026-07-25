@@ -31,6 +31,11 @@ impl Level {
 }
 
 /// One line in the log panel: what happened, and which chunk it happened to.
+///
+/// The line is not a sentence but a [`NoteKind`] plus its numbers, rendered when it is drawn. A
+/// document is parsed on a worker thread that has no business knowing which language the window is
+/// in — and a log written in the language that happened to be selected an hour ago would not switch
+/// when the user does.
 pub struct Note {
     pub level: Level,
     /// The chunk this is about, by its header offset — the same key selection uses, so clicking a
@@ -38,7 +43,55 @@ pub struct Note {
     pub chunk: Option<usize>,
     /// The chunk id, pre-rendered for the log's middle column.
     pub chunk_id: String,
-    pub message: String,
+    pub kind: NoteKind,
+}
+
+/// What a log line is about. The data, not the words.
+pub enum NoteKind {
+    /// A compressed file was opened: raw size, decompressed size.
+    Decompressed { from: usize, to: usize },
+    /// It would not decompress, so the raw bytes are being read instead.
+    DecompressFailed { error: String },
+    ChunkTreeFailed { error: String },
+    /// A solid that produced no part, and why. The reason is the parser's `SkipReason` rather than a
+    /// sentence, for the same reason as everything else here.
+    SolidDropped { name: String, reason: gizmo_nfs::SkipReason },
+    GeometryFailed { error: String },
+    /// The one-line summary of what opened.
+    Opened { chunks: usize, parts: usize },
+    /// A validation finding, already in the parser's own words.
+    Finding { subject: String, message: String },
+    /// An export that landed: what it wrote and where.
+    Exported { summary: String, into: String },
+    ExportFailed { error: String },
+    /// Anything the program itself has to say — a panicking job, say. Not localised: it is a
+    /// diagnostic that happens to be worth showing.
+    Diagnostic(String),
+}
+
+impl NoteKind {
+    /// The line, in the language the window is in.
+    #[must_use]
+    pub fn text(&self, t: &crate::i18n::Strings) -> String {
+        match self {
+            Self::Decompressed { from, to } => {
+                format!("{from} B → {to} B {}", t.n_decompressed)
+            }
+            Self::DecompressFailed { error } => format!("{}: {error}", t.n_decompress_failed),
+            Self::ChunkTreeFailed { error } => format!("{}: {error}", t.n_tree_failed),
+            Self::SolidDropped { name, reason } => {
+                format!("{name} → {}: {}", t.n_no_part, describe(*reason, t))
+            }
+            Self::GeometryFailed { error } => format!("{}: {error}", t.n_geometry_failed),
+            Self::Opened { chunks, parts } => {
+                format!("{chunks} {} · {parts} {}", t.st_chunks, t.ex_parts)
+            }
+            Self::Finding { subject, message } => format!("{subject}: {message}"),
+            Self::Exported { summary, into } => format!("{} — {summary} → {into}", t.exported),
+            Self::ExportFailed { error } => format!("{}: {error}", t.export_failed),
+            Self::Diagnostic(text) => text.clone(),
+        }
+    }
 }
 
 /// A flattened tree row: a node plus how deep it sits, so the tree panel can draw indentation
@@ -131,7 +184,7 @@ impl Doc {
             level: Level::Info,
             chunk: None,
             chunk_id: String::new(),
-            message: format!("{} chunk · {} parça", rows.len(), parts.len()),
+            kind: NoteKind::Opened { chunks: rows.len(), parts: parts.len() },
         });
 
         Ok(Self { path: path.to_path_buf(), bytes, codec, roots, rows, parts, report, notes })
@@ -272,7 +325,7 @@ fn decompressed(
                 level: Level::Info,
                 chunk: None,
                 chunk_id: format!("{codec:?}"),
-                message: format!("{} bayt → {} bayt açıldı", raw.len(), b.len()),
+                kind: NoteKind::Decompressed { from: raw.len(), to: b.len() },
             });
             b
         }
@@ -281,7 +334,7 @@ fn decompressed(
                 level: Level::Error,
                 chunk: None,
                 chunk_id: format!("{codec:?}"),
-                message: format!("açılamadı: {e} — ham baytlar okunuyor"),
+                kind: NoteKind::DecompressFailed { error: e.to_string() },
             });
             raw
         }
@@ -299,7 +352,7 @@ fn chunk_tree(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<ChunkNode> {
                 level: Level::Error,
                 chunk: None,
                 chunk_id: String::new(),
-                message: format!("chunk ağacı okunamadı: {e}"),
+                kind: NoteKind::ChunkTreeFailed { error: e.to_string() },
             });
             Vec::new()
         }
@@ -318,11 +371,10 @@ fn geometry(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<NfsMeshPart> {
                     level: Level::Warn,
                     chunk: Some(s.offset),
                     chunk_id: format!("{:#010x}", gizmo_nfs::geometry::format::SOLID),
-                    message: format!(
-                        "{} → parça yok: {}",
-                        if s.name.is_empty() { "(isimsiz)".to_string() } else { s.name.clone() },
-                        describe(s.reason)
-                    ),
+                    kind: NoteKind::SolidDropped {
+                        name: if s.name.is_empty() { "(unnamed)".into() } else { s.name.clone() },
+                        reason: s.reason,
+                    },
                 });
             }
             parts
@@ -332,7 +384,7 @@ fn geometry(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<NfsMeshPart> {
                 level: Level::Warn,
                 chunk: None,
                 chunk_id: String::new(),
-                message: format!("geometri okunamadı: {e}"),
+                kind: NoteKind::GeometryFailed { error: e.to_string() },
             });
             Vec::new()
         }
@@ -350,21 +402,22 @@ fn note_findings(report: &gizmo_nfs::validate::Report, notes: &mut Vec<Note>) {
             },
             chunk: Some(f.chunk_offset),
             chunk_id: format!("{:#010x}", f.chunk_id),
-            message: format!("{}: {}", f.subject, f.message),
+            kind: NoteKind::Finding { subject: f.subject.to_string(), message: f.message.clone() },
         });
     }
 }
 
 /// Why a solid produced no part, in the interface's own words.
-fn describe(reason: gizmo_nfs::SkipReason) -> String {
+fn describe(reason: gizmo_nfs::SkipReason, t: &crate::i18n::Strings) -> String {
     match reason {
-        gizmo_nfs::SkipReason::NotAMesh => "mesh chunk'ı yok (bağlantı noktası)".into(),
-        gizmo_nfs::SkipReason::EmptyMesh => "sayaçlar sıfır".into(),
+        gizmo_nfs::SkipReason::NotAMesh => t.skip_not_a_mesh.to_string(),
+        gizmo_nfs::SkipReason::EmptyMesh => t.skip_empty.to_string(),
         gizmo_nfs::SkipReason::PackedVertexLayout { vert_count, vbuf_len } => format!(
-            "paketli vertex düzeni: {vert_count} × {} > {vbuf_len} B",
+            "{}: {vert_count} × {} > {vbuf_len} B",
+            t.skip_packed,
             gizmo_nfs::geometry::VERTEX_STRIDE
         ),
-        _ => "bilinmeyen".into(),
+        _ => t.skip_unknown.to_string(),
     }
 }
 

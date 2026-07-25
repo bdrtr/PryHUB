@@ -5,6 +5,7 @@
 //! whatever the middle is doing, and they live apart from the state they read.
 
 use crate::app::{PryHub, Screen, Tab};
+use crate::theme::Density;
 use crate::theme::{self, token};
 use egui::{Align, Layout, RichText};
 
@@ -53,13 +54,7 @@ impl PryHub {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(self.density.label()).on_hover_text("yoğunluk / density").clicked() {
-                            self.density = self.density.next();
-                            self.restyle = true;
-                        }
-                        if ui.button(self.lang.label()).clicked() {
-                            self.lang = self.lang.other();
-                        }
+                        self.settings_menu(ui);
                         ui.separator();
                         if ui.button(t.m_open).clicked() {
                             self.screen = Screen::Welcome;
@@ -158,6 +153,72 @@ fn nav_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let text = RichText::new(label).font(theme::font::heading(11.5)).color(color);
     ui.add(egui::Button::new(text).fill(egui::Color32::TRANSPARENT).frame(false))
 }
+
+impl PryHub {
+    /// The settings menu: the two things the design had bare switches for, plus where to read about
+    /// the tool.
+    ///
+    /// A menu rather than two unlabelled buttons in the corner. `TR` and `S` were legible to whoever
+    /// wrote them and to nobody else — and a setting that cannot be found is not a setting. What
+    /// belongs here is what is true of the whole program rather than of a file: its language, its
+    /// size, and how to reach its source.
+    fn settings_menu(&mut self, ui: &mut egui::Ui) {
+        let t = self.lang.strings();
+        let before = crate::settings::Settings { lang: self.lang, density: self.density };
+        ui.menu_button(RichText::new(t.m_settings).font(theme::font::body(11.5)), |ui| {
+            ui.set_min_width(190.0);
+
+            ui.label(RichText::new(t.set_language).size(10.5).color(theme::muted(55)));
+            for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Tr] {
+                if ui.selectable_label(self.lang == lang, lang.name()).clicked() {
+                    self.lang = lang;
+                }
+            }
+
+            ui.add_space(theme::token::SPACE_2);
+            ui.label(RichText::new(t.set_size).size(10.5).color(theme::muted(55)));
+            for density in Density::all() {
+                // Named rather than lettered: "M" is only obvious once you know it is not "menu".
+                let name = match density {
+                    Density::Compact => t.set_small,
+                    Density::Balanced => t.set_medium,
+                    Density::Roomy => t.set_large,
+                };
+                if ui.selectable_label(self.density == density, name).clicked() {
+                    self.density = density;
+                    self.restyle = true;
+                }
+            }
+
+            ui.add_space(theme::token::SPACE_2);
+            ui.label(RichText::new(t.set_about).size(10.5).color(theme::muted(55)));
+            // `open_url` goes through egui's own output command, so the platform's browser opens it
+            // and this crate needs nothing to do it.
+            if ui.selectable_label(false, t.set_help).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(HELP_URL));
+            }
+            if ui.selectable_label(false, t.set_repo).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(REPO_URL));
+            }
+            ui.add_space(theme::token::SPACE_1);
+            ui.label(
+                RichText::new(format!("PryHUB {}", env!("CARGO_PKG_VERSION")))
+                    .font(theme::font::mono(10.0))
+                    .color(theme::muted(45)),
+            );
+        });
+        // Written when it changes, so the next window opens the way this one was left.
+        let after = crate::settings::Settings { lang: self.lang, density: self.density };
+        if after != before {
+            after.save();
+        }
+    }
+}
+
+/// Where the menu's two links go. The README is the help, because it is the document that is kept up
+/// to date by being the one people read first.
+const REPO_URL: &str = "https://github.com/bdrtr/PryHUB";
+const HELP_URL: &str = "https://github.com/bdrtr/PryHUB#readme";
 
 /// How long a moving mark takes to arrive. Long enough to be followed by the eye, short enough that
 /// it never delays a click — the point is to show *what moved*, not to perform.

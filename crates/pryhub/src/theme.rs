@@ -76,10 +76,13 @@ pub fn muted(percent: u8) -> Color32 {
 /// a cleaner switch than in CSS: one spacing struct drives every panel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Density {
-    /// The design's default — a data tool is read, not browsed.
-    #[default]
+    /// "Small": the design's own setting — a data tool is read, not browsed. Right once the tool is
+    /// familiar, cramped for a first look, which is why it is not the default.
     Compact,
+    /// "Medium": the default.
+    #[default]
     Balanced,
+    /// "Large".
     Roomy,
 }
 
@@ -114,25 +117,12 @@ impl Density {
         }
     }
 
-    /// The next setting, for a cycling button.
+    /// Every setting, for a settings panel that offers them all at once rather than cycling.
     #[must_use]
-    pub fn next(self) -> Self {
-        match self {
-            Self::Compact => Self::Balanced,
-            Self::Balanced => Self::Roomy,
-            Self::Roomy => Self::Compact,
-        }
+    pub fn all() -> [Self; 3] {
+        [Self::Compact, Self::Balanced, Self::Roomy]
     }
 
-    /// The single-letter badge the design's density switch shows.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Compact => "S",
-            Self::Balanced => "M",
-            Self::Roomy => "L",
-        }
-    }
 }
 
 /// Named text roles, so a panel asks for "the tree's monospace" rather than a number.
@@ -291,16 +281,17 @@ pub fn apply(ctx: &egui::Context, density: Density) {
 mod tests {
     use super::*;
 
+    /// The settings panel offers all three at once, smallest first, so the list reads as a scale.
     #[test]
-    fn density_cycles_through_every_setting() {
-        let mut d = Density::Compact;
-        let mut seen = vec![d];
-        for _ in 0..2 {
-            d = d.next();
-            seen.push(d);
-        }
-        assert_eq!(seen, [Density::Compact, Density::Balanced, Density::Roomy]);
-        assert_eq!(d.next(), Density::Compact, "the cycle closes");
+    fn every_setting_is_offered_smallest_first() {
+        assert_eq!(Density::all(), [Density::Compact, Density::Balanced, Density::Roomy]);
+    }
+
+    /// Medium is the default: the design's own compact setting is right once the tool is familiar
+    /// and cramped for a first look.
+    #[test]
+    fn the_default_size_is_medium() {
+        assert_eq!(Density::default(), Density::Balanced);
     }
 
     #[test]
