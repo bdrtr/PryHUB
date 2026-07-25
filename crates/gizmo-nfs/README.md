@@ -16,6 +16,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | Chunk tree (`BinSectionHeader`, high-bit = container) | `chunk` | ✅ done |
 | RefPack / QFS decompression | `compression::refpack` | ✅ done |
 | JDLZ decompression | `compression::jdlz` | ✅ done — validated byte-exact against a real golden pair |
+| JDLZ **compression** | `compression::jdlz` | ✅ done — a real 1.6 MB bundle packs to 30.5% and reads back byte-exact (EA's own encoder: 30.1%) |
 | BIGF / VIV archive reader | `viv` | ✅ done |
 | Output data contract | `types` | ✅ defined |
 | `GEOMETRY.BIN` car models | `geometry` | ✅ done — stride-36 vertices (pos/normal/uv) + u16 indices, validated on real cars |

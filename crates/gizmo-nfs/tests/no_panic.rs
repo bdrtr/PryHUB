@@ -91,4 +91,12 @@ proptest! {
             prop_assert!(gizmo_nfs::chunk::ChunkNode::parse(&out).is_ok() || !out.is_empty());
         }
     }
+
+    // The compressor is the one function here that is asked to be *correct*, not merely
+    // non-panicking: whatever it writes must read back as what it was given.
+    #[test]
+    fn jdlz_compress_round_trips_anything(data in proptest::collection::vec(any::<u8>(), 0..8192)) {
+        let packed = compression::jdlz::compress(&data).expect("compress");
+        prop_assert_eq!(compression::jdlz::decompress(&packed).expect("decompress"), data);
+    }
 }

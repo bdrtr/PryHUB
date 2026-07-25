@@ -291,3 +291,43 @@ fn every_file_rebuilds_byte_for_byte() {
     assert!(files > 50, "only {files} files rebuilt — the test read nothing");
     eprintln!("rebuilt {files} files, {} MB, byte-exact", bytes_seen / (1024 * 1024));
 }
+
+/// The JDLZ compressor against the file the decompressor was locked with.
+///
+/// Byte-identity with EA's own stream is not the goal and would not be evidence of anything: two LZ
+/// encoders that pick different matches both produce valid files. What is asked here is that a real
+/// 1.6 MB bundle survives the round trip, and that the result is actually compressed — a "packer"
+/// that emitted only literals would pass a round-trip test and be worthless. EA's own ratio on this
+/// file is 30.1%, which is the number to be judged against.
+#[test]
+fn jdlz_compresses_a_real_bundle_and_reads_it_back() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping golden JDLZ compression test");
+        return;
+    };
+    let bun = std::fs::read(root.join("GLOBAL/InGameCommon.bun")).expect("read InGameCommon.bun");
+    let ea = std::fs::read(root.join("GLOBAL/InGameCommon.lzc")).expect("read InGameCommon.lzc");
+
+    let packed = gizmo_nfs::compression::jdlz::compress(&bun).expect("compress");
+    let back = gizmo_nfs::compression::jdlz::decompress(&packed).expect("decompress our own stream");
+    assert_eq!(back.len(), bun.len(), "round-tripped length");
+    assert!(back == bun, "a real bundle must survive the round trip byte for byte");
+
+    let ours = packed.len() as f64 / bun.len() as f64;
+    let theirs = ea.len() as f64 / bun.len() as f64;
+    eprintln!(
+        "jdlz: {} B → {} B ({:.1}%), EA's own {} B ({:.1}%)",
+        bun.len(),
+        packed.len(),
+        ours * 100.0,
+        ea.len(),
+        theirs * 100.0
+    );
+    // Well within reach of EA's encoder — not matching it, but in the same class rather than
+    // accidentally storing the file.
+    assert!(ours < theirs * 1.5, "ours {ours:.3} is more than 50% worse than EA's {theirs:.3}");
+
+    // And the decompressor must accept a stream that mixes both token forms at scale — which this
+    // one does, or the ratio above would be nowhere near.
+    assert!(packed.len() > 16, "the stream has a body");
+}
