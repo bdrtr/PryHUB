@@ -36,6 +36,7 @@ mod parts;
 mod paths;
 mod probe;
 mod profile;
+mod replace;
 mod textures;
 
 use clap::{Parser, Subcommand};
@@ -122,6 +123,27 @@ enum Command {
         #[arg(long, value_name = "SUBSTR")]
         filter: Option<String>,
     },
+    /// Put a PNG back into a texture pack — the one command here that writes an asset file.
+    ///
+    /// The replacement keeps the texture's own dimensions and its own pixel format: they are
+    /// recorded in the blob's embedded header, which the pack's descriptor locates as a distance
+    /// from the end, so a differently-sized image would move it without saying so.
+    Replace {
+        /// The pack to edit (`TEXTURES.BIN` / `VINYLS.BIN`), or a car directory to find one in.
+        pack: PathBuf,
+        /// Which texture: its `DebugName`, or its hash as `0x…`.
+        #[arg(long, value_name = "NAME|0xHASH")]
+        texture: String,
+        /// The image to put in.
+        #[arg(long, value_name = "FILE")]
+        png: PathBuf,
+        /// Where to write the edited pack. Never the input unless `--force`.
+        #[arg(short, long, value_name = "FILE")]
+        out: PathBuf,
+        /// Allow `-o` to be the file being read.
+        #[arg(long)]
+        force: bool,
+    },
     /// Read a player profile: which performance products a car has fitted, and their totals.
     Profile {
         /// The profile file, or the directory holding it.
@@ -206,6 +228,9 @@ fn main() -> ExitCode {
             globalb::run(&path, filter.as_deref(), parts, handling)
         }
         Command::Profile { path } => profile::run(&path),
+        Command::Replace { pack, texture, png, out, force } => {
+            replace::run(&pack, &texture, &png, &out, force)
+        }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
