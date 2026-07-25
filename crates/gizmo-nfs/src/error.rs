@@ -67,10 +67,11 @@ pub enum NfsError {
         /// The number of bytes that were requested.
         requested: usize,
     },
-    /// A code path that is deliberately not implemented yet — in practice, a TPK pixel format this
-    /// crate does not decode (the palettised tags `0x08`/`0x80`/`0x81`, which are 51,871 of one
-    /// install's 54,885 declared textures). `feature` names the thing that was refused, and is the
-    /// only signal a caller gets about which.
+    /// A code path that is deliberately not implemented yet — in practice, a TPK pixel format or
+    /// palette size this crate has not been shown. It used to name the palettised tags
+    /// `0x08`/`0x80`/`0x81`, which were 51,871 of one install's 54,885 declared textures; those
+    /// decode now, and over that whole install this variant is no longer raised at all. `feature`
+    /// names the thing that was refused, and is the only signal a caller gets about which.
     NotImplemented {
         /// Name of the unimplemented feature.
         feature: &'static str,

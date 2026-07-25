@@ -43,6 +43,10 @@ pub struct ExportSpec {
     /// The interface's language, so the summary line reads in it.
     pub strings: &'static Strings,
     pub textures: Option<Arc<gizmo_nfs::Tpk>>,
+    /// How many of the pack's textures were never decoded because of the budget, when `textures` is
+    /// one the interface already had. Carried so the summary can say "not read" of them instead of
+    /// "could not be decoded", which are different statements and only one of them blames the file.
+    pub textures_unread: usize,
 }
 
 /// The dialog's answers: how much of the file, and in what.
@@ -131,20 +135,25 @@ pub fn run(
     tell: &dyn Fn(usize, usize),
 ) -> Result<Written, String> {
     let out = out_dir(doc)?;
-    // Decoding here rather than on the UI thread is the point of this being a job.
-    let decoded = match &spec.textures {
-        Some(tpk) => Some(Arc::clone(tpk)),
-        None => doc.decode_textures().map(Arc::new),
+    // Decoding here rather than on the UI thread is the point of this being a job. A pack decoded
+    // here carries its own "not read" count; one handed over by the interface carries the count the
+    // interface was already showing, so the folder's summary and the contact sheet agree.
+    let (decoded, unread) = match &spec.textures {
+        Some(tpk) => (Some(Arc::clone(tpk)), spec.textures_unread),
+        None => match doc.decode_textures() {
+            Some((tpk, unread)) => (Some(Arc::new(tpk)), unread),
+            None => (None, 0),
+        },
     };
     let tpk = decoded.as_deref();
     let has_images = tpk.is_some_and(|t| !t.textures.is_empty());
     match spec.kind {
         Kind::OneTexture(hash) => one_texture(tpk, &out, hash),
-        Kind::Textures => textures(tpk, &out, spec.strings, tell),
+        Kind::Textures => textures(tpk, &out, spec.strings, unread, tell),
         // A TPK has only its textures to give, whichever tab happens to be open — refusing to
         // export one because the hex tab was in front would be pedantry, not fidelity.
         Kind::Model if doc.parts.is_empty() && has_images => {
-            textures(tpk, &out, spec.strings, tell)
+            textures(tpk, &out, spec.strings, unread, tell)
         }
         Kind::Model => model(doc, tpk, spec, &out, tell),
     }
@@ -173,6 +182,7 @@ fn textures(
     tpk: Option<&gizmo_nfs::Tpk>,
     out: &Path,
     t: &Strings,
+    unread: usize,
     tell: &dyn Fn(usize, usize),
 ) -> Result<Written, String> {
     let tpk = tpk.ok_or("no textures")?;
@@ -190,12 +200,18 @@ fn textures(
         write(&path, &bytes)?;
         files.push(path);
     }
-    // Say what was left behind: entries the parser could not decode are not written, and a folder
-    // with fewer files than the pack has textures should not have to be noticed by counting.
-    let undecoded = tpk.entries.len().saturating_sub(tpk.textures.len());
+    // Say what was left behind: a folder with fewer files than the pack has textures should not
+    // have to be noticed by counting. The two shortfalls are named apart for the same reason the
+    // contact sheet names them apart — one is a texture the parser could not read, the other is one
+    // this program declined to decode, and calling the second undecodable blames the file for a
+    // limit set here.
+    let undecoded = tpk.entries.len().saturating_sub(tpk.textures.len()).saturating_sub(unread);
     let mut summary = format!("{} PNG", files.len());
     if undecoded > 0 {
         summary.push_str(&format!(" ({undecoded} {})", t.textures_undecoded));
+    }
+    if unread > 0 {
+        summary.push_str(&format!(" ({unread} {})", t.textures_unread));
     }
     files.sort();
     Ok(Written { summary, files })

@@ -165,6 +165,63 @@ fn tpk_parser_decodes_textures() {
     assert!(names.iter().any(|n| n.starts_with("240SX_KIT00_BRAKELIGHT")), "brakelight texture named");
 }
 
+/// The palettised formats, on the pack that is nothing but them: a car's `VINYLS.BIN`.
+///
+/// It is decoded one texture at a time through [`Tpk::directory`] + [`Tpk::decode_one`] rather than
+/// through `Tpk::parse`, and that is the point rather than a detail. This pack is 1,786 images of
+/// 512², so holding them all is **1.87 GB of RGBA**; the eager call measured 1.8 GB peak and 2.16 s,
+/// against 8.7 MB and 30 ms for the same car's `TEXTURES.BIN`. A test that allocated that would be
+/// asserting the crate works by being the reason a 13 GB machine swaps.
+///
+/// The channel order is what this really locks. Every other check here — the count, the size, the
+/// format — passes just as happily with red and blue transposed, and a palette of greyscale ramps
+/// (which most of `0x08` is) cannot tell the difference at all. So it asserts against an image that
+/// can: the `AEM_CLARION` wordmark is Clarion's own red, and comes out with thousands of red pixels
+/// and not one blue. Swap the two channels in `unpack_palettised` and exactly that inverts.
+#[test]
+fn vinyls_pack_decodes_as_palettised() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping golden vinyls test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("CARS/240SX/VINYLS.BIN")).expect("read VINYLS.BIN");
+    let entries = gizmo_nfs::texture::Tpk::directory(&bytes).expect("descriptor table");
+    assert_eq!(entries.len(), 1786, "the 240SX's vinyls pack declares 1,786 textures");
+
+    let (mut decoded, mut clarion) = (0usize, None);
+    for e in &entries {
+        let tex = gizmo_nfs::texture::Tpk::decode_one(&bytes, e).expect("every vinyl decodes");
+        decoded += 1;
+        // One layout throughout: every image in this pack is a 512² palettised one.
+        assert_eq!(tex.source_format, gizmo_nfs::TexFormat::P8, "{} is not P8", tex.name);
+        assert_eq!((tex.width, tex.height), (512, 512), "{} is not 512²", tex.name);
+        assert_eq!(tex.rgba.len(), 512 * 512 * 4, "{} is not tight RGBA8", tex.name);
+        if tex.name == "240SX_AEM_CLARION" {
+            clarion = Some(tex);
+        }
+        // Dropped here: see above. One at a time is 1 MB, all at once is 1.87 GB.
+    }
+    assert_eq!(decoded, 1786, "all 1,786 decode — the pack used to yield none");
+
+    // The channel-order lock. A pixel counts as red only if it beats *both* other channels by a
+    // margin, so a grey or a muddy pixel votes for neither side.
+    let clarion = clarion.expect("240SX_AEM_CLARION present");
+    let (mut red, mut blue) = (0usize, 0usize);
+    for px in clarion.rgba.chunks_exact(4) {
+        let (r, g, b, a) = (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32);
+        if a < 128 {
+            continue;
+        }
+        if r > b + 60 && r > g + 60 {
+            red += 1;
+        }
+        if b > r + 60 && b > g + 60 {
+            blue += 1;
+        }
+    }
+    assert_eq!((red, blue), (7598, 0), "the Clarion wordmark is red, and B,G,R,A is why");
+}
+
 /// The discovery proposal, on a buffer whose layout is already known.
 ///
 /// A car's `0x00134B01` vertex buffer is stride 36 (position, normal, colour, uv) behind a run of

@@ -1,9 +1,10 @@
 //! Work that must not happen on the frame the user is looking at.
 //!
 //! Opening a car is 7.6 MB of chunk walking, five validation rules and a geometry parse; decoding a
-//! pack is 73 images expanded to RGBA8; an export writes a `.glb`, an OBJ and every texture it
-//! references. On the UI thread each of those is a freeze, and an immediate-mode interface has
-//! nowhere to hide one — the frame simply does not get drawn.
+//! pack is every image in it expanded to RGBA8 — 73 and 30 ms for a car, and up to the 256 MB
+//! `doc::DECODE_BUDGET` and a couple of seconds for a `VINYLS.BIN`; an export writes a `.glb`, an
+//! OBJ and every texture it references. On the UI thread each of those is a freeze, and an
+//! immediate-mode interface has nowhere to hide one — the frame simply does not get drawn.
 //!
 //! # Why threads and not `async`
 //!
@@ -56,8 +57,9 @@ pub enum Request {
 pub enum Outcome {
     /// Boxed because a `Doc` is large and this enum is moved through a channel.
     Opened { result: Box<Result<Doc, String>>, side: Side, path: PathBuf },
-    /// `None` means the file has no textures, which is an answer rather than a failure.
-    Decoded { for_path: PathBuf, tpk: Option<Arc<gizmo_nfs::Tpk>> },
+    /// `None` means the file has no textures, which is an answer rather than a failure. `unread` is
+    /// how many the byte budget never attempted — not the same as the ones that would not decode.
+    Decoded { for_path: PathBuf, tpk: Option<Arc<gizmo_nfs::Tpk>>, unread: usize },
     Exported(Result<Written, String>),
     /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
     /// a fact about the *worker*, not about the document.
@@ -235,8 +237,10 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
             Outcome::Opened { result: Box::new(result), side, path }
         }
         Request::Decode(doc) => {
-            let tpk = doc.decode_textures().map(Arc::new);
-            Outcome::Decoded { for_path: doc.path.clone(), tpk }
+            let decoded = doc.decode_textures();
+            let unread = decoded.as_ref().map_or(0, |(_, n)| *n);
+            let tpk = decoded.map(|(tpk, _)| Arc::new(tpk));
+            Outcome::Decoded { for_path: doc.path.clone(), tpk, unread }
         }
         Request::Export { doc, spec } => {
             Outcome::Exported(crate::export::run(&doc, &spec, tell))

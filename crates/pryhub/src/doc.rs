@@ -220,12 +220,15 @@ impl Doc {
     /// Decode this document's textures: the open file when it is itself a TPK, else the
     /// `TEXTURES.BIN` beside it — a car's geometry and its textures are two files.
     ///
-    /// Pure, `&self`, and slow: 73 images expanded to RGBA8. It is called from the worker thread
+    /// Pure, `&self`, and slow: a pack expanded to RGBA8. It is called from the worker thread
     /// ([`crate::jobs`]) rather than lazily from a panel, which is why a `Doc` needs no interior
     /// mutability and can be shared by an `Arc` instead of borrowed mutably.
+    ///
+    /// The second number is how many of the pack's textures were **not read**, which is a different
+    /// answer from the ones that could not be decoded — see [`DECODE_BUDGET`].
     #[must_use]
-    pub fn decode_textures(&self) -> Option<gizmo_nfs::Tpk> {
-        let own = decode_pack(&self.bytes).filter(|t| !t.entries.is_empty());
+    pub fn decode_textures(&self) -> Option<(gizmo_nfs::Tpk, usize)> {
+        let own = decode_pack(&self.bytes).filter(|(t, _)| !t.entries.is_empty());
         own.or_else(|| {
             let beside = self.path.parent()?.join("TEXTURES.BIN");
             let bytes = std::fs::read(beside).ok()?;
@@ -293,40 +296,102 @@ fn tally(rules: impl Iterator<Item = (Option<Severity>, usize)>) -> (usize, usiz
     (warn, ok)
 }
 
-/// Decode a whole pack, spreading the textures over threads.
+/// The most decoded pixel data one pack is allowed to occupy, in bytes.
+///
+/// A pack used to be a car's, and a car's is 8.7 MB — so this held nothing back and did not exist.
+/// Then the palettised formats started decoding, and `CARS/*/VINYLS.BIN` stopped being an empty
+/// pack: 1,786 images, every one of them 512², which is **1.87 GB** of RGBA8 held resident behind an
+/// `Arc` for as long as the file is open. Measured, that decode is 1.8 GB peak and 2.16 s against
+/// the same car's 8.7 MB and 30 ms.
+///
+/// 256 MB is about thirty times the largest pack this tool was built to show and a seventh of the
+/// largest it can now be handed. Nothing about a car changes — 8.7 MB is nowhere near the line — and
+/// a vinyls pack gives as many of its images as fit instead of the none it gave last week or the
+/// 1.87 GB it would give unchecked. At 512² that is 256 of the 1,786.
+///
+/// It is a **ceiling, not a policy**: the tool should decode what the sheet is actually showing, and
+/// cannot yet, because a `TpkEntry` carries no name or dimensions — those live inside the compressed
+/// blob — and the sheet sorts by name, so a lazily-filled grid would reshuffle as tiles landed.
+pub const DECODE_BUDGET: usize = 256 * 1024 * 1024;
+
+/// Decode a whole pack, spreading the textures over threads, up to [`DECODE_BUDGET`].
 ///
 /// Every texture is an independent blob, and decoding one is a decompress plus a DXT pass — 20 ms
 /// for a car on one thread, and the parser deliberately spawns none of its own. So the decision is
 /// taken here, where it belongs: `directory` once, then the entries split between workers, then
-/// `from_decoded`. Capped at eight because a car's images are 8 MB and there is nothing to gain from
-/// more threads than the memory bus.
-fn decode_pack(bytes: &[u8]) -> Option<gizmo_nfs::Tpk> {
+/// `from_decoded`. Capped at eight because there is nothing to gain from more threads than the
+/// memory bus.
+///
+/// Returns the pack and **how many entries were never kept**.
+///
+/// What comes back is the longest **prefix of file order whose decoded pixels fit the budget**, and
+/// that is a property of the file alone — two runs on one file agree, on any number of threads.
+/// Getting there takes two steps, because the threads cannot give it directly: `spent` counts
+/// decodes that have *finished*, and up to `workers` claims are in flight past it, so the index at
+/// which a worker first sees the budget spent depends on how the threads interleaved. That index
+/// is only used to stop; it is not the answer. The answer is recomputed afterwards by walking the
+/// decoded entries in index order and cutting where the running total would exceed the budget.
+///
+/// The recomputed cut is always reachable: workers only stop once `spent` has crossed the budget,
+/// and everything counted in `spent` is below the stopping index, so what was decoded always covers
+/// at least as far as the budget allows. A handful of decodes past the cut are thrown away, which is
+/// the price of not serialising the workers to find out where it is.
+fn decode_pack(bytes: &[u8]) -> Option<(gizmo_nfs::Tpk, usize)> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
     let entries = gizmo_nfs::Tpk::directory(bytes).ok()?;
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let decoded = std::sync::Mutex::new(std::collections::HashMap::new());
+    let next = AtomicUsize::new(0);
+    let spent = AtomicUsize::new(0);
+    let decoded = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            let (next, decoded, entries) = (&next, &decoded, &entries);
+            let (next, spent, decoded, entries) = (&next, &spent, &decoded, &entries);
             scope.spawn(move || {
                 // Decode into a local batch and merge once: a lock per texture would serialise the
                 // very thing being parallelised.
                 let mut mine = Vec::new();
                 loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let i = next.fetch_add(1, Relaxed);
                     let Some(entry) = entries.get(i) else { break };
+                    // Stop claiming once the budget is spent. Where it *falls* is decided below,
+                    // from the entries rather than from whichever worker noticed first.
+                    if spent.load(Relaxed) >= DECODE_BUDGET {
+                        break;
+                    }
                     if let Ok(tex) = gizmo_nfs::Tpk::decode_one(bytes, entry) {
-                        mine.push((entry.hash, tex));
+                        spent.fetch_add(tex.rgba.len(), Relaxed);
+                        mine.push((i, entry.hash, tex));
                     }
                 }
                 if let Ok(mut all) = decoded.lock() {
-                    all.extend(mine);
+                    all.append(&mut mine);
                 }
             });
         }
     });
-    let textures = decoded.into_inner().unwrap_or_default();
-    Some(gizmo_nfs::Tpk::from_decoded(entries, textures))
+
+    // Where the budget actually falls, decided by the file rather than by the threads: walk what
+    // came back in index order and stop at the first texture that would take the total past the
+    // line. `refused` only ever said "stop claiming"; it is deliberately not read here.
+    let mut decoded = decoded.into_inner().unwrap_or_default();
+    decoded.sort_unstable_by_key(|(i, _, _)| *i);
+    let mut running = 0usize;
+    let mut cut = entries.len();
+    for (i, _, tex) in &decoded {
+        running += tex.rgba.len();
+        if running > DECODE_BUDGET {
+            cut = *i;
+            break;
+        }
+    }
+    let unread = entries.len() - cut;
+    let textures = decoded
+        .into_iter()
+        .filter(|(i, _, _)| *i < cut)
+        .map(|(_, hash, tex)| (hash, tex))
+        .collect();
+    Some((gizmo_nfs::Tpk::from_decoded(entries, textures), unread))
 }
 
 /// Decompress when the magic says so, and say what happened either way. A codec that fails leaves

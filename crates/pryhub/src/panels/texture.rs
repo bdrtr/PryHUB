@@ -3,7 +3,8 @@
 //! A grid of thumbnails and one large preview. The thumbnails are downscaled on the CPU and only
 //! the selected image is uploaded at full size — a car ships 57–76 textures and several are
 //! 512×512, so uploading them all would cost tens of megabytes of GPU memory to show a contact
-//! sheet.
+//! sheet. A `VINYLS.BIN` ships 1,786, all of them 512×512, which is why the grid is virtualised
+//! and why the pack behind it is held to a budget (see [`crate::doc`]).
 //!
 //! Every image keeps its own aspect ratio, in the grid as well as in the preview. A contact sheet
 //! that squares everything off would show a badge strip as a badge, and the shape of a texture is
@@ -60,7 +61,11 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     // A stable order, so the grid does not reshuffle between frames (the table is a HashMap).
     let mut entries: Vec<(&AssetHash, &NfsTexture)> = tpk.textures.iter().collect();
     entries.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0 .0.cmp(&b.0 .0)));
-    let undecoded = tpk.entries.len().saturating_sub(tpk.textures.len());
+    // What the parser could not read, and what this program chose not to — see `sheet`. The first
+    // is the pack's own shortfall minus the second, or a budgeted pack would report every texture
+    // it never looked at as one it could not decode.
+    let unread = app.textures.unread();
+    let undecoded = tpk.entries.len().saturating_sub(tpk.textures.len()).saturating_sub(unread);
 
     // The preview opens on the first image rather than empty — the sheet is there to be read, and
     // one image already up says what kind of file this is.
@@ -95,7 +100,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(token::BG).inner_margin(PAD))
         .show_inside(ui, |ui| {
-            pick = sheet(app, ui, &entries, selected, undecoded);
+            pick = sheet(app, ui, &entries, selected, undecoded, unread);
         });
 
     if let Some(hash) = pick {
@@ -214,14 +219,20 @@ fn rule(ui: &mut egui::Ui, width: f32, colour: Color32) {
     );
 }
 
-/// The contact sheet: every decoded texture as a thumbnail, and the count of the ones that could
-/// not be read. Returns the texture that was clicked.
+/// The contact sheet: every decoded texture as a thumbnail, and what is missing from it. Returns
+/// the texture that was clicked.
+///
+/// The two absences are counted apart because they are different statements about the file.
+/// `undecoded` is the parser's — a texture whose format or blob it could not read. `unread` is this
+/// program's — a pack too large to hold, stopped at [`crate::doc::DECODE_BUDGET`]. Added together
+/// they would read as one number of broken textures, and the second kind is not broken.
 fn sheet(
     app: &mut PryHub,
     ui: &mut egui::Ui,
     entries: &[(&AssetHash, &NfsTexture)],
     selected: Option<AssetHash>,
     undecoded: usize,
+    unread: usize,
 ) -> Option<AssetHash> {
     let t = app.lang.strings();
     let mut pick = None;
@@ -240,9 +251,25 @@ fn sheet(
                     .color(token::ACCENT_2),
             );
         }
+        if unread > 0 {
+            ui.label(
+                RichText::new(format!("· {unread} {}", t.textures_unread))
+                    .font(theme::font::mono(10.5))
+                    .color(token::ACCENT_2),
+            );
+        }
     });
     ui.add_space(token::SPACE_4);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    // Virtualised, like every other long list in this crate (tree, hex, dictionary, diff,
+    // discovery). It was the one that was not, which cost nothing while a pack was a car's 73
+    // images and became the whole frame when `VINYLS.BIN` started decoding: 1,786 tiles is 1,786
+    // CPU downscales and 1,786 `load_texture` calls on the first frame, because egui clips the
+    // painting but runs the loop.
+    //
+    // `show_viewport` rather than `show_rows` because the column count is a function of the width
+    // *inside* the scroll area — the row count cannot be worked out before entering it, and
+    // reserving a scrollbar's width to guess it would change the grid a car already draws.
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         // `auto-fill` with `1fr`: as many ≥128 px columns as fit, then every column widened to
         // share out what is left over, so the last tile in a row ends flush with the right edge
         // instead of leaving the ragged margin a wrapped run of fixed-width cells does.
@@ -250,15 +277,36 @@ fn sheet(
         let cols = ((avail + GAP) / (THUMB as f32 + GAP)).floor().max(1.0);
         let width = ((avail - GAP * (cols - 1.0)) / cols).max(24.0);
         let cols = cols as usize;
-        ui.spacing_mut().item_spacing = Vec2::splat(GAP);
-        for row in entries.chunks(cols) {
+        // Columns are spaced by `item_spacing`, rows by an explicit `add_space` after each one, so
+        // a row's pitch is exactly `tile + GAP` and the two spacers below are exact multiples of it.
+        // Left to `item_spacing.y`, the pitch would depend on how egui counted the spacer widgets
+        // themselves, and the sheet would scroll to somewhere other than where it drew.
+        ui.spacing_mut().item_spacing = Vec2::new(GAP, 0.0);
+
+        let tile = tile_height(ui, width);
+        let pitch = tile + GAP;
+        let rows = entries.len().div_ceil(cols);
+        let first = ((viewport.min.y / pitch).floor().max(0.0) as usize).min(rows);
+        // One row of slack past the bottom edge, so a partially scrolled row is never a hole.
+        let last = (((viewport.max.y / pitch).ceil() as usize) + 1).min(rows);
+
+        ui.add_space(first as f32 * pitch);
+        for r in first..last {
+            let row = &entries[r * cols..((r + 1) * cols).min(entries.len())];
             ui.horizontal(|ui| {
                 for (hash, tex) in row {
                     let handle = upload(ui.ctx(), &mut app.texture_cache, tex, Some(THUMB));
                     let label = app.names.get(hash.0).map(str::to_string);
                     let label = label.unwrap_or_else(|| label_of(tex));
-                    let resp =
-                        cell(ui, &handle, &label, &meta_of(tex), width, selected == Some(**hash));
+                    let resp = cell(
+                        ui,
+                        &handle,
+                        &label,
+                        &meta_of(tex),
+                        width,
+                        tile,
+                        selected == Some(**hash),
+                    );
                     if resp.clicked() {
                         pick = Some(**hash);
                     }
@@ -271,9 +319,30 @@ fn sheet(
                     ));
                 }
             });
+            ui.add_space(GAP);
         }
+        ui.add_space(rows.saturating_sub(last) as f32 * pitch);
     });
     pick
+}
+
+/// How tall one tile is, without the gap under it.
+///
+/// It is computed from the fonts' row heights rather than from a laid out galley, because the scroll
+/// extent has to be known for rows that are never drawn — and both captions are single lines by
+/// construction, since [`elided`] elides rather than wraps.
+///
+/// [`cell`] is then *given* this number instead of deriving its own from its galleys. egui rounds
+/// the two to different grids — a font's row height and a laid out galley's height are each rounded,
+/// but not identically — so a tile that measured itself could differ from the row pitch by a
+/// fraction of a point. That is invisible in one tile and cumulative down a list: the drawn rows
+/// would creep away from the offset the spacers put them at, and the sheet would scroll to somewhere
+/// other than where it painted.
+fn tile_height(ui: &egui::Ui, width: f32) -> f32 {
+    let (name_h, meta_h) = ui.fonts_mut(|f| {
+        (f.row_height(&theme::font::mono(10.5)), f.row_height(&theme::font::mono(9.5)))
+    });
+    width + CAP_Y * 2.0 + name_h + meta_h
 }
 
 /// One tile of the contact sheet: a square image slot flush to the tile's border, and the two-line
@@ -288,14 +357,17 @@ fn cell(
     name: &str,
     meta: &str,
     width: f32,
+    height: f32,
     on: bool,
 ) -> egui::Response {
     let ink = if on { token::ACCENT_800 } else { token::TEXT };
     let inner = (width - CAP_X * 2.0).max(1.0);
     let name_line = elided(ui, name, theme::font::mono(10.5), ink, inner);
     let meta_line = elided(ui, meta, theme::font::mono(9.5), theme::muted(50), inner);
-    let (name_h, meta_h) = (name_line.size().y, meta_line.size().y);
-    let height = width + CAP_Y * 2.0 + name_h + meta_h;
+    // Only for placing the second caption under the first. The tile's own height is the caller's
+    // ([`tile_height`]) so that the row pitch the scroller reserved and the box drawn in it are the
+    // same number — see that function for why measuring here instead drifts.
+    let name_h = name_line.size().y;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
 
     let slot = Rect::from_min_size(rect.left_top(), Vec2::splat(width));

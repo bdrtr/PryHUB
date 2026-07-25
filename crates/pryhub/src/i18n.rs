@@ -169,6 +169,10 @@ pub struct Strings {
     pub pick_texture: &'static str,
     pub textures_count: Counted,
     pub textures_undecoded: &'static str,
+    /// Distinct from [`Strings::textures_undecoded`], and the distinction is the whole point: these
+    /// were never attempted, because the pack is larger than one document is allowed to hold. Saying
+    /// "could not be decoded" of them would blame the file for a limit this program set.
+    pub textures_unread: &'static str,
     /// The row labels under a single texture's preview. "hash" is the same word in both languages
     /// — it is what the file stores, not a description of it.
     pub tx_hash: &'static str,
@@ -403,6 +407,7 @@ direksiyon bu oyunun dosyalarında yok: arandı ve bulunmadığı gösterildi.",
     pick_texture: "Izgaradan bir doku seç",
     textures_count: same("doku"),
     textures_undecoded: "çözülemedi",
+    textures_unread: "okunmadı (paket sınırı)",
     tx_hash: "hash",
     tx_size: "boyut",
     tx_format: "biçim",
@@ -604,6 +609,7 @@ brakes and steering are not in this game's files: they were searched for and sho
     pick_texture: "Pick a texture from the grid",
     textures_count: counted("texture", "textures"),
     textures_undecoded: "could not be decoded",
+    textures_unread: "not read (pack limit)",
     tx_hash: "hash",
     tx_size: "size",
     tx_format: "format",

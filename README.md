@@ -56,9 +56,14 @@ grab).
 
 See [`crates/gizmo-nfs/README.md`](crates/gizmo-nfs/README.md) for the per-format status table. In
 short: chunk trees, RefPack/QFS, JDLZ and HUFF, BIGF/VIV, `GEOMETRY.BIN` models, TPK textures
-(DXT1/3/5 and uncompressed 32-bit), `GLOBALB` car records and `CarParts`, the player profile, and
-the asset-name hash. Every texture of every car decodes; the palettised formats do not, which is
-the whole of every `VINYLS.BIN` and so most of the install's images by count.
+(DXT1/3/5, uncompressed 32-bit, and the palettised `0x08`/`0x80`/`0x81`), `GLOBALB` car records and
+`CarParts`, the player profile, and the asset-name hash. **54,873 of an install's 54,885 declared
+textures decode**, which includes every real `VINYLS.BIN` — 1,786 images apiece. The 12 that do not
+are all in the two `VINYLS.BIN` that are not real: `IMPREZA` and `LANCER` ship ~50 KB stubs of six
+descriptors whose embedded header fails its own hash self-check, so those two files yield nothing.
+That is a descriptor the header formula does not fit, not a pixel format nobody has read.
+
+What is not decoded is the world: `STREAM*.BUN` and `L4RA.BUN`, the city itself.
 
 Several of these sub-formats have **no public byte-level spec**. Their offsets and constants are
 locked *empirically* against a legally-owned install using `ug2 dump` / `ug2 probe`, never by

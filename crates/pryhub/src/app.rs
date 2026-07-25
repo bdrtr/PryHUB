@@ -40,8 +40,9 @@ pub enum Tab {
 
 /// The state of the open file's textures.
 ///
-/// Decoding is 73 images expanded to RGBA8, so it happens on the worker and the interface has to be
-/// able to say "not yet" — which is a state, not a `None`.
+/// Decoding is a whole pack expanded to RGBA8 — 73 images for a car, 1,786 for its vinyls — so it
+/// happens on the worker and the interface has to be able to say "not yet", which is a state and
+/// not a `None`.
 #[derive(Default)]
 pub enum Textures {
     /// Nobody has needed them yet.
@@ -50,7 +51,12 @@ pub enum Textures {
     /// A decode job is in flight.
     Decoding,
     /// Decoded — or decoded to nothing, which is what a file without textures gives.
-    Ready(Option<std::sync::Arc<gizmo_nfs::Tpk>>),
+    ///
+    /// `unread` is how many of the pack's entries the byte budget never attempted. It is carried
+    /// beside the pack rather than derived from it because the pack cannot tell you: a `Tpk` holds
+    /// what was declared and what came back, and "did not decode" and "was not read" subtract to
+    /// the same number while meaning opposite things about the file.
+    Ready { tpk: Option<std::sync::Arc<gizmo_nfs::Tpk>>, unread: usize },
 }
 
 impl Textures {
@@ -58,8 +64,17 @@ impl Textures {
     #[must_use]
     pub fn ready(&self) -> Option<&std::sync::Arc<gizmo_nfs::Tpk>> {
         match self {
-            Textures::Ready(tpk) => tpk.as_ref(),
+            Textures::Ready { tpk, .. } => tpk.as_ref(),
             _ => None,
+        }
+    }
+
+    /// How many of the pack's textures were never attempted, because the budget stopped first.
+    #[must_use]
+    pub fn unread(&self) -> usize {
+        match self {
+            Textures::Ready { unread, .. } => *unread,
+            _ => 0,
         }
     }
 }
@@ -302,9 +317,9 @@ impl PryHub {
                 }
                 // A decode that finished for a file the user has since replaced is dropped: it is
                 // the right answer to the wrong question.
-                Outcome::Decoded { for_path, tpk } => {
+                Outcome::Decoded { for_path, tpk, unread } => {
                     if self.doc.as_ref().is_some_and(|d| d.path == for_path) {
-                        self.textures = Textures::Ready(tpk);
+                        self.textures = Textures::Ready { tpk, unread };
                     }
                 }
                 Outcome::Palette(colours) => self.palette = Some(colours),
@@ -414,6 +429,7 @@ impl PryHub {
             choice: self.export_choice,
             strings: self.lang.strings(),
             textures: self.textures.ready().map(std::sync::Arc::clone),
+            textures_unread: self.textures.unread(),
         };
         self.jobs.send(crate::jobs::Request::Export { doc: std::sync::Arc::clone(doc), spec });
     }

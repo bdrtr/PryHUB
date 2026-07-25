@@ -32,17 +32,43 @@
 //! offset 0. The header sits at `P = out_size − header_from_end + 0x64 + 0x24`, where the
 //! `u32` at `P` is the texture's own hash (a self-check); from `P`: `Width = u16@P+32`,
 //! `Height = u16@P+34`, `ImageCompressionType = u8@P+38`. The image is the *top mip* only,
-//! decoded by [`dxt`] (DXT1/3/5) or unpacked directly (RGBA).
+//! decoded by [`dxt`] (DXT1/3/5), unpacked directly (RGBA), or looked up through a palette.
+//!
+//! The palettised tags need three more fields of that header, all `u32`:
+//!
+//! | off | field | role |
+//! |-----|-------|------|
+//! | P+0x0C | `ImagePlacement`   | this image's offset into a notional concatenation of the pack |
+//! | P+0x10 | `PalettePlacement` | its palette's offset into the same — so **the difference is the palette's offset inside this blob** |
+//! | P+0x14 | `ImageSize`        | the whole mip chain; the palette never starts before it |
+//! | P+0x18 | `PaletteSize`      | always 1024, and checked rather than trusted |
+//!
+//! The palette is 256 entries of four bytes stored **B,G,R,A**, and the pixels are one index byte
+//! each. Do not compute the palette's position from `ImageSize`: measured over an install it sits
+//! 64 bytes past it 51,844 times and exactly at it 27 times, so there is no constant to add.
 //!
 //! A pack mixes codecs, and the blob's own magic says which: [`crate::compression::jdlz`] and
 //! [`crate::compression::huff`] both decompress, so **no texture is skipped for its codec** any
 //! more. A golden test reads all 73 of the 240SX's — 44 JDLZ, 29 HUFF.
 //!
-//! What is skipped is a *pixel format*. Measured over one install: 78 packs, 54,885 declared
-//! textures, 3,002 decoded. The other 51,871 are palettised (`ImageCompressionType` `0x08`: 25,960,
-//! `0x80`: 24,071, `0x81`: 1,840) and this module has no decoder for them — which is the whole of
-//! every `CARS/*/VINYLS.BIN`, so opening one gives an empty pack rather than a short one. Every
-//! texture in a car's `TEXTURES.BIN` does decode: 2,123 of 2,123 across 30 packs.
+//! Pixel format used to be the other limit, and is not any more. Measured over one install: 78
+//! packs, 54,885 declared textures, **54,873 decoded**. The palettised tags (`ImageCompressionType`
+//! `0x08`: 25,960, `0x80`: 24,071, `0x81`: 1,840) were 51,871 of them and read as nothing; they are
+//! one layout — a 1024-byte palette and one index byte per pixel — and [`decode`] now unpacks all
+//! three, so a `CARS/*/VINYLS.BIN` gives its 1,786 images rather than an empty pack. Every texture
+//! in a car's `TEXTURES.BIN` still decodes: 2,123 of 2,123 across 30 packs.
+//!
+//! The 12 that remain are not a format at all: their embedded header does not hold the hash the
+//! descriptor names, so the header formula does not apply to them and they are skipped by the
+//! self-check rather than decoded into noise. They are 6 each in `IMPREZA` and `LANCER`, whose
+//! `VINYLS.BIN` are ~50 KB stubs of six descriptors where every other car's is 14 MB of 1,786 —
+//! i.e. the whole of both files, and nothing at all of any real pack.
+//!
+//! A caller should know what that costs. A car's pack is 73 images and 8.7 MB of RGBA8; a vinyls
+//! pack is 1,786 images, every one 512², and **1.87 GB** — so [`Tpk::parse`], which decodes the lot,
+//! is no longer a reasonable thing to call on an arbitrary file. [`Tpk::directory`] with
+//! [`Tpk::decode_one`] is there for exactly that, and is what PryHUB uses to hold a pack to a
+//! budget.
 //!
 //! Compression is the other asymmetry: only JDLZ has an encoder, so a HUFF blob read here and
 //! written back returns as JDLZ, and almost never fits the slot HUFF made for it — see [`write`].
@@ -84,6 +110,11 @@ impl Tpk {
     /// Parse a (raw, on-disk) `TEXTURES.BIN` buffer, decoding every texture whose codec is
     /// supported. Returns an error only if the descriptor chunk is absent or malformed; an
     /// individual texture that fails to decode is skipped, not fatal.
+    ///
+    /// **It decodes the whole pack, and a pack is no longer necessarily small.** A car's is 73
+    /// images and 8.7 MB; a `VINYLS.BIN` is 1,786 images of 512² and 1.87 GB, which this will
+    /// allocate without asking. Given an arbitrary file, prefer [`Tpk::directory`] and
+    /// [`Tpk::decode_one`], which let the caller stop.
     pub fn parse(bytes: &[u8]) -> NfsResult<Tpk> {
         // Only the directory (near the file start) is needed here — the pixel blobs are read
         // later by absolute offset, never by walking. Tool-compiled TPKs (e.g. nfsu360's
@@ -102,10 +133,15 @@ impl Tpk {
 
     /// The descriptor table alone, without decoding anything.
     ///
-    /// The pair with [`Tpk::decode_one`] and [`Tpk::from_decoded`]: decoding a pack is 8 MB of
-    /// output and 20 ms, and every texture is independent, so a caller with threads to spare can do
-    /// it in parallel. This crate does not spawn any — a library that starts threads behind a
-    /// function call takes a decision that belongs to whoever called it.
+    /// The pair with [`Tpk::decode_one`] and [`Tpk::from_decoded`]: every texture is independent, so
+    /// a caller with threads to spare can decode them in parallel, and one without the memory for a
+    /// whole pack can decode part of it. This crate spawns no threads and imposes no budget — both
+    /// are decisions that belong to whoever called it.
+    ///
+    /// The size of that decision has changed. It was 8 MB and 20 ms, which is a car's pack; since
+    /// the palettised formats decode it can be 1.87 GB and 2.16 s, which is a car's *vinyls* pack.
+    /// This function is the cheap half either way — it reads the descriptor table and touches no
+    /// blob.
     ///
     /// # Errors
     /// When the descriptor chunk is missing or unreadable.
@@ -120,10 +156,10 @@ impl Tpk {
     /// Decode one descriptor's texture.
     ///
     /// # Errors
-    /// A pixel format this crate does not decode (the palettised `0x08`/`0x80`/`0x81`), an
-    /// unreadable blob, a malformed embedded header, or dimensions out of range — all of which mean
-    /// "skip this texture", not "the file is broken". The first is by far the commonest: it is
-    /// every image in every `VINYLS.BIN`.
+    /// A pixel format this crate does not decode, an unreadable blob, a malformed embedded header,
+    /// or dimensions out of range — all of which mean "skip this texture", not "the file is broken".
+    /// Over a whole install this now happens 12 times in 54,885, and none of them is a format: it is
+    /// the embedded header failing its own hash self-check.
     pub fn decode_one(bytes: &[u8], entry: &TpkEntry) -> NfsResult<NfsTexture> {
         decode::decode_texture(bytes, entry)
     }

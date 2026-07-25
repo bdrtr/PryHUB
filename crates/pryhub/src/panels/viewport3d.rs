@@ -109,7 +109,14 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     // The skin. Decoding a pack is a job, so this is `None` for the first frames after a file opens
     // and the car is grey until it lands — then the mesh is rebuilt with it. Asked for here rather
     // than only on the texture tab: the whole point of the build is what the car will look like.
-    app.want_textures();
+    //
+    // Not asked for when there is nothing to skin. A file with no parts has no material runs, so
+    // every texture in it would be decoded to be looked up zero times — which used to cost the 8 MB
+    // of a car's pack and, now that the palettised formats decode, would cost the budget's worth of
+    // a `VINYLS.BIN` for a viewport that has no geometry to put it on.
+    if !doc.parts.is_empty() {
+        app.want_textures();
+    }
     let tpk = app.textures.ready().cloned();
     let paint = app.paint;
 
