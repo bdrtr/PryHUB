@@ -427,8 +427,14 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     values, max 1,579 — that chunk's count). The 36-byte block is *not* decoded, so what links a part
     to its attributes is still unknown and `CarPart::block` hands over the raw index. Attribute keys
     are `hash::string_hash` of their names, which is how six of the fifty-one were confirmed —
-    `TEXTURE`, `NAME`, `RED`, `GREEN`, `BLUE`, `CARBONFIBRE` — and a test asserts each constant is
-    the hash of the word beside it. `palette()` reads colours as three *adjacent* attributes rather
+    **49 of the 51** a real install uses, in `carparts::KNOWN`. A name is a candidate until the file
+    agrees, and the test re-derives the whole table rather than trusting it, so a wrong pair cannot
+    survive the build. The candidate words came from the NFS modding community's own tools; nothing
+    but the words was taken — a name is a fact about the game's data, and the arithmetic, the layout
+    and the code are this crate's. The remaining two keys stay unnamed rather than guessed at, and
+    what the names say settles the question the search kept asking: `TEXTURE_NAME`, `DISPRED`,
+    `HOODHUE`, `TIRESAT`, `SPINNER_TEXTURE`, `NUMREMAPCOLOURS`, `EXCLUDE_UG1` — this container is
+    *visual customisation*, and the performance numbers are not in it. `palette()` reads colours as three *adjacent* attributes rather
     than through a part, because that link is missing and this does not need it: 123 colours, no
     component over 255. `ug2 globalb --parts` shows the lot.
 18. **`types`** — the engine-agnostic output contract (see below).

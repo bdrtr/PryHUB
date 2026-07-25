@@ -48,7 +48,7 @@ fn locate(path: &Path) -> Result<PathBuf> {
 /// `--parts`: the `CarParts` tables. Counts first, because they are what the header claims and what
 /// the reader checked; then a sample of names, the attribute keys by frequency, and the palette.
 fn car_parts(file: &Path, bytes: &[u8], filter: Option<&str>) -> Result<()> {
-    use gizmo_nfs::globalb::carparts::{key, CarParts};
+    use gizmo_nfs::globalb::carparts::{self, CarParts};
     use std::collections::BTreeMap;
 
     let cp = CarParts::parse(bytes).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -72,16 +72,8 @@ fn car_parts(file: &Path, bytes: &[u8], filter: Option<&str>) -> Result<()> {
     for a in &cp.attributes {
         *by_key.entry(a.key.0).or_default() += 1;
     }
-    let named = |k: u32| match k {
-        key::TEXTURE => "TEXTURE",
-        key::NAME => "NAME",
-        key::RED => "RED",
-        key::GREEN => "GREEN",
-        key::BLUE => "BLUE",
-        key::CARBONFIBRE => "CARBONFIBRE",
-        // The other 45 keys are hashes whose word is not in the file; saying so beats inventing one.
-        _ => "?",
-    };
+    // Two of the 51 are still unnamed, and they stay a "?" rather than a guess.
+    let named = |k: u32| carparts::name_of(k).unwrap_or("?");
     let mut keys: Vec<_> = by_key.into_iter().collect();
     keys.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
     outln!("\nattribute keys ({} distinct):", keys.len());

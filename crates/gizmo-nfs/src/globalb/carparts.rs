@@ -83,6 +83,75 @@ pub mod key {
     pub const CARBONFIBRE: u32 = 0x721A_FF7C;
 }
 
+/// Every attribute name this crate has been able to *confirm*, most-used first.
+///
+/// Names are candidates until the file agrees: each one here hashes to the key beside it under
+/// [`crate::hash::string_hash`], and the test below re-derives all of them rather than trusting the
+/// table. Candidate words came from the NFS modding community's own work; a name is a fact about the
+/// game's data, and nothing but the word was taken — the arithmetic, the layout and this code are
+/// this crate's.
+///
+/// 49 of the 51 keys a real install uses are named. The two that are not are left unnamed rather
+/// than guessed at, and `name_of` says `None` for them.
+pub static KNOWN: &[(u32, &str)] = &[
+    (0x10C98090, "TEXTURE_NAME"),
+    (0xFD35FE70, "TEXTURE"),
+    (0x4732DA07, "LANGUAGEHASH"),
+    (0x0019CBC0, "NAME"),
+    (0x0D4B85C7, "HOODUNDER"),
+    (0xEBB03E66, "BRAND_NAME"),
+    (0x02DDC8F0, "GREEN"),
+    (0x00136707, "BLUE"),
+    (0x0000D99A, "RED"),
+    (0x6BA02C05, "LIGHT_MATERIAL_NAME"),
+    (0x368A1A6A, "DISPRED"),
+    (0x00BA7DC0, "DISPGREEN"),
+    (0x07C4C1D7, "DISPBLUE"),
+    (0x931FF82E, "SPINNER_TEXTURE"),
+    (0x311151F8, "HUDINDEX"),
+    (0x001C0D0C, "RED2"),
+    (0x5E96E722, "GREEN2"),
+    (0xEB0101E2, "INNER_RADIUS"),
+    (0x02804819, "BLUE2"),
+    (0x06159D55, "TIREHUE"),
+    (0x7822E22B, "HOODHUE"),
+    (0xCE7D8DB5, "OUTER_RADIUS"),
+    (0x0615C99B, "TIRESAT"),
+    (0xA77BDCFA, "NUM_DECALS"),
+    (0x78230E71, "HOODSAT"),
+    (0x6212682B, "NUMREMAPCOLOURS"),
+    (0x0615AE61, "TIRELUM"),
+    (0x7822F337, "HOODLUM"),
+    (0xBCADE4C3, "HOODEMITTER"),
+    (0xEDBF864E, "WHEELEMITTER"),
+    (0x026E1AC5, "ALPHA"),
+    (0x38A30E75, "ANIMSTYLE"),
+    (0x03B16390, "SHAPE"),
+    (0x6AB42ADF, "WHEELLEFT"),
+    (0x564B8CB6, "NUMCOLOURS"),
+    (0xC1A84E52, "WHEELRIGHT"),
+    (0x039DD714, "REMAP"),
+    (0x02DAAB07, "GLOSS"),
+    (0x50317397, "ALPHA2"),
+    (0x001CAD5A, "SIZE"),
+    (0x0D128B87, "HOODRIGHT"),
+    (0x7C811574, "HOODLEFT"),
+    (0x3DA5ADAC, "VERTSPLIT"),
+    (0xF7934316, "EXCLUDE_UG2"),
+    (0xF7934315, "EXCLUDE_UG1"),
+    (0xF7933C86, "EXCLUDE_SUV"),
+    (0xA0773FA5, "SPINNEROFFSET"),
+    (0xE80A3B62, "EXCLUDEDECAL"),
+    (0x721AFF7C, "CARBONFIBRE"),
+];
+
+/// The name behind a key, when it is one of the [`KNOWN`] ones.
+#[must_use]
+pub fn name_of(key: u32) -> Option<&'static str> {
+    KNOWN.iter().find(|(k, _)| *k == key).map(|(_, n)| *n)
+}
+
+
 /// One part: what it is called, and where its attributes are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -263,6 +332,18 @@ mod tests {
     use crate::hash::string_hash;
 
     /// The constants above are hashes of words, and this is the sentence that says which words.
+    /// The whole table, re-derived. This is what makes it a record of confirmations rather than a
+    /// list someone typed: a wrong pair cannot survive the build.
+    #[test]
+    fn every_known_name_hashes_to_its_key() {
+        for (key, name) in KNOWN {
+            assert_eq!(string_hash(name), *key, "{name}");
+        }
+        assert_eq!(KNOWN.len(), 49);
+        assert_eq!(name_of(key::RED), Some("RED"));
+        assert_eq!(name_of(0xDEAD_BEEF), None);
+    }
+
     #[test]
     fn every_named_key_is_the_hash_of_its_name() {
         assert_eq!(string_hash("TEXTURE"), key::TEXTURE);
