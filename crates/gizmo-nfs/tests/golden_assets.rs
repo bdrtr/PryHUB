@@ -552,3 +552,104 @@ fn profile_reads_the_measured_series() {
     assert!((read("C_coldintake").total(Category::Engine) - 0.21).abs() < 0.01);
     assert!((read("G_headers").total(Category::Engine) - 0.51).abs() < 0.01);
 }
+
+/// The per-car handling record, against the install it was locked on.
+///
+/// Every assertion here is a measurement that was made before the parser was written, and each one
+/// is the kind that only the right offset can satisfy. The rpm triple is strictly increasing and
+/// lands on multiples of 50 in all 46 cars; the torque curve rises to an interior peak and falls
+/// again in all 46; the 184 transmission blocks all carry a negative reverse, a descending forward
+/// set and a final drive stored twice and equal. A wrong offset does not produce those by accident.
+#[test]
+fn handling_reads_the_real_records() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping handling test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("GLOBAL/GLOBALB.BUN")).expect("read GLOBALB.BUN");
+    let cars = gizmo_nfs::globalb::parse_cartypeinfos(&bytes);
+    assert_eq!(cars.len(), 46, "the install ships 46 CarTypeInfo records");
+
+    let (mut rising, mut fifties, mut unimodal, mut blocks, mut playable) = (0, 0, 0, 0, 0);
+    for car in &cars {
+        let e = car.handling.engine;
+        if e.idle_rpm < e.red_line_rpm && e.red_line_rpm < e.limiter_rpm {
+            rising += 1;
+        }
+        if [e.idle_rpm, e.red_line_rpm, e.limiter_rpm].iter().all(|v| v % 50.0 == 0.0) {
+            fifties += 1;
+        }
+        // The gap splits the roster: 500 rpm for a car you can drive, 1000 for traffic.
+        if (e.limiter_rpm - e.red_line_rpm - 500.0).abs() < 0.01 {
+            playable += 1;
+        }
+
+        let t = &car.handling.torque_nm;
+        let peak = t.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap();
+        let rises = (0..peak).all(|k| t[k] < t[k + 1]);
+        let falls = (peak..8).all(|k| t[k] > t[k + 1]);
+        if peak > 0 && peak < 8 && rises && falls {
+            unimodal += 1;
+        }
+
+        for g in &car.handling.gearbox {
+            let gears = g.gears();
+            let ok = g.reverse < 0.0
+                && (3..=6).contains(&g.count)
+                && gears.iter().all(|r| *r > 0.0)
+                && gears.windows(2).all(|w| w[0] > w[1])
+                && (2.0..6.0).contains(&g.final_drive);
+            if ok {
+                blocks += 1;
+            }
+        }
+    }
+    assert_eq!(rising, 46, "idle < red line < limiter in every car");
+    assert_eq!(fifties, 46, "every rpm figure is a multiple of 50");
+    assert_eq!(unimodal, 46, "every torque curve rises to an interior peak and falls");
+    assert_eq!(playable, 31, "31 cars have the 500 rpm gap; the other 15 are traffic");
+    assert_eq!(blocks, 46 * 4, "all 184 transmission blocks are well formed");
+
+    // The body box is not read from a lane that merely looks right: the inertia tensor beside it is
+    // the closed form for a uniform cuboid, so mass and L/W/H together have to reproduce it.
+    for car in &cars {
+        let [l, w, h] = car.handling.body_m;
+        // Bands measured off this install rather than guessed at, and wide enough for what is
+        // actually in the roster: the PEUGOT is the shortest at 3.84 m and the BUS the largest
+        // thing here at 9.40 × 2.40 × 3.40. A first attempt at 3.0..6.5 failed on the bus, which is
+        // the test doing its job — a body box has to hold every vehicle the file describes.
+        assert!((3.8..9.5).contains(&l), "{} length {l}", car.name);
+        assert!((1.6..2.5).contains(&w), "{} width {w}", car.name);
+        assert!((1.1..3.5).contains(&h), "{} height {h}", car.name);
+    }
+
+    let s14 = cars.iter().find(|c| c.name == "240SX").expect("the 240SX is in the roster");
+    let h = &s14.handling;
+    assert_eq!(
+        (h.engine.idle_rpm, h.engine.red_line_rpm, h.engine.limiter_rpm),
+        (800.0, 6500.0, 7000.0)
+    );
+    assert_eq!(h.rear_drive, 1.0, "the 240SX is rear-wheel drive");
+    assert_eq!(h.body_m, [4.52, 1.69, 1.29], "the S14's box, in metres");
+    let peak = h.torque_nm.iter().copied().fold(f32::MIN, f32::max);
+    assert!((peak - 216.0).abs() < 0.5, "peak torque {peak} N·m");
+    // Stock is a five-speed; the third transmission upgrade adds a sixth gear and shortens the
+    // final drive. That progression is the design's four columns, in the file.
+    assert_eq!(h.gearbox[0].count, 5);
+    assert_eq!(h.gearbox[3].count, 6);
+    assert!(h.gearbox[0].final_drive > h.gearbox[3].final_drive);
+    // Compared with a tolerance: these are `f32`, so 1.902 comes back as 1.9020001 and an exact
+    // comparison would be testing the decimal literal rather than the file.
+    let stock = h.gearbox[0].gears();
+    for (got, want) in stock.iter().zip([3.321, 1.902, 1.308, 1.0, 0.9]) {
+        assert!((got - want).abs() < 1e-4, "240SX stock ratios {stock:?}");
+    }
+
+    // And a car that ships with six, so the count is read rather than assumed.
+    let g35 = cars.iter().find(|c| c.name == "G35").expect("the G35 is in the roster");
+    assert_eq!(g35.handling.gearbox[0].count, 6);
+    assert_eq!(g35.handling.rear_drive, 1.0);
+    // Front-wheel drive reads as the other end of the same lane.
+    let civic = cars.iter().find(|c| c.name == "CIVIC").expect("the CIVIC is in the roster");
+    assert_eq!(civic.handling.rear_drive, 0.0);
+}

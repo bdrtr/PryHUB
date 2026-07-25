@@ -138,6 +138,10 @@ enum Command {
         /// Show the `CarParts` tables instead: part names, attribute keys, and the paint palette.
         #[arg(long)]
         parts: bool,
+        /// Show what each record says about how the car drives: rpm limits, the torque curve, and
+        /// the four gearboxes (stock plus the three upgrade levels).
+        #[arg(long)]
+        handling: bool,
     },
     /// Probe a car's raw solids: vertex/triangle counts, buffer sizes, mesh-header words.
     ///
@@ -198,7 +202,9 @@ fn main() -> ExitCode {
         Command::Fields { car, at, filter } => fields::run(&car, at, filter.as_deref()),
         Command::Dump { file, max_depth, hex } => dump::run(&file, max_depth, hex),
         Command::Textures { car, filter } => textures::run(&car, filter.as_deref()),
-        Command::Globalb { path, filter, parts } => globalb::run(&path, filter.as_deref(), parts),
+        Command::Globalb { path, filter, parts, handling } => {
+            globalb::run(&path, filter.as_deref(), parts, handling)
+        }
         Command::Profile { path } => profile::run(&path),
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),

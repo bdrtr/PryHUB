@@ -358,11 +358,11 @@ static TR: Strings = Strings {
     cp_no_changes: "değişiklik yok",
     cp_param: "parametre",
     cp_unit: "birim",
-    cp_not_located: "bu ekran henüz okumuyor",
-    cp_write_note: "NFSU2 bir CARP.BIN göndermiyor: bu ekran ne okuduğunu satır satır söyler. \
-Kütle ve araç adı GLOBALB.BUN'daki CarTypeInfo kaydından gelir. Motor, tork eğrisi ve vites \
-kutusu ise GLOBALB.BUN'daki 0x00034600 kaydında bulundu (46 × 2192 bayt) — ama bu ekran onu \
-henüz okumuyor, o yüzden sayı uydurmak yerine boş bırakılıyor.",
+    cp_not_located: "bu oyunun dosyalarında yok",
+    cp_write_note: "NFSU2 bir CARP.BIN göndermiyor; veri GLOBALB.BUN'daki 0x00034600 kaydında \
+(46 × 2192 bayt). Motor, tork eğrisi ve vites kutusu oradan okunuyor — vites kutusu dört \
+yükseltme sütununun tamamıyla, çünkü dosyada dört kez saklanan tek şey o. Aero, fren ve \
+direksiyon bu oyunun dosyalarında yok: arandı ve bulunmadığı gösterildi.",
     cp_no_install: "Kurulum bulunamadı — GLOBALB.BUN okunamadı",
     cp_no_record: "GLOBALB.BUN'da bu ada sahip araç kaydı yok",
     cp_from_globalb: "GLOBALB",
@@ -559,11 +559,11 @@ static EN: Strings = Strings {
     cp_no_changes: "no changes",
     cp_param: "param",
     cp_unit: "unit",
-    cp_not_located: "this screen does not read it yet",
-    cp_write_note: "NFSU2 ships no CARP.BIN, so this screen says line by line what it could read. \
-Mass and the car's name come from the CarTypeInfo record in GLOBALB.BUN. Engine limits, the torque \
-curve and the gearbox have since been found in GLOBALB.BUN's 0x00034600 record (46 × 2192 bytes) — \
-this screen does not read it yet, so those cells are left empty rather than filled with guesses.",
+    cp_not_located: "not in this game's files",
+    cp_write_note: "NFSU2 ships no CARP.BIN; the data is in GLOBALB.BUN's 0x00034600 record \
+(46 × 2192 bytes). Engine limits, the torque curve and the gearbox are read from it — the gearbox \
+across all four upgrade columns, since it is the only thing the record stores four times. Aero, \
+brakes and steering are not in this game's files: they were searched for and shown to be absent.",
     cp_no_install: "No install found — GLOBALB.BUN was not readable",
     cp_no_record: "GLOBALB.BUN holds no car record under this name",
     cp_from_globalb: "GLOBALB",

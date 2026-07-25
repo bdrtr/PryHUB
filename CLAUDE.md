@@ -138,26 +138,42 @@ The **CARP screen** (`--screen carp`, second in the nav as the design places it)
 car-parameter table — nine `[::SECTION]`s and 39 parameters over four upgrade columns. It is drawn in
 full and then tells the truth cell by cell, because **NFSU2 ships no `CARP.BIN`**: `find -iname
 '*carp*'` over an install returns nothing, CARP being the older NFS engine's format. What this game
-does carry is the `CarTypeInfo` record in `GLOBALB.BUN`, which answers exactly two of the 39 —
-`car_name` and `mass`, in the `STOCK` column. Every other cell is an em dash in the design's disabled
-treatment, the Save/Revert buttons are drawn disabled, and the panel note says why. The sections are
-listed rather than dropped: "the format has a gearbox section and we cannot read it" is a different
-statement from "there is no gearbox", and only the first is true. A test asserts 9 sections and 39
-parameters, and that exactly two have a source — it already caught a torque curve written with seven
+does carry is `GLOBALB.BUN`, and the screen reads it. A cell with no answer is an em dash in the
+design's disabled treatment, the Save/Revert buttons are drawn disabled (there is nothing to write
+back to), and the panel note says why. Sections with nothing behind them are listed rather than
+dropped: "the format has an aero section and this game does not store one" is a different statement
+from "there is no aero", and only the first is true. Tests assert the 9 sections, the 40 rows and the
+exact list of rows claiming a source — the count one already caught a torque curve written with seven
 rpm steps where the design generates eight.
 
-**Most of the rest has since been found, and is not wired up yet.** `GLOBALB.BUN`'s `0x00034600` is a
-per-car physics record: `8 + 46 × 2192 == 100,840`, the chunk's size exactly, one record per
-`CarTypeInfo` car and in the same order, each carrying its name at `+0` and again at `+32`. Read
-against a real install it gives `+0x300/4/8` = idle / red line / limiter (240SX: 800 · 6500 · 7000);
-`+0x310` = a **9-point torque curve** that rises and falls in all 46 cars (240SX peaks 0.216 at point
-5); and four 64-byte gearbox blocks at `+0x2C0`, `+0x460`, `+0x4A0`, `+0x4E0` — **the design's STOCK
-and three upgrade columns** — each with `+0x18` gear count, `+0x08` final drive and an eight-slot
-ratio array at `+0x20` (reverse negative, neutral zero, then the forward gears). The 240SX reads
-`3.321 / 1.902 / 1.308 / 1.0 / 0.9` with a 4.083 final drive, drops to 3.900 by level 3 and **gains a
-sixth gear** there; the G35 is a stock six-speed at `3.79 / 2.32 / 1.62 / 1.27 / 1.0 / 0.794`. So the
-next piece of work is a `globalb` reader for it and the `Source` variants that follow — until then
-the screen and its note say "found, not read yet" rather than pretending either way.
+**Most of the rest is now read.** `GLOBALB.BUN`'s `0x00034600` is a per-car physics record:
+`8 + 46 × 2192 == 100,840`, the chunk's size exactly, one record per `CarTypeInfo` car and in the
+same order, each carrying its name at `+0` and again at `+32`. `globalb` reads it into
+`CarHandling` — engine limits at `+0x300` (240SX: 800 / 6500 / 7000), a **9-point torque curve** at
+`+0x310` in N·m that rises to an interior peak and falls again in all 46 cars (240SX peaks at 216),
+four 64-byte gearbox blocks at `+0x2C0`/`+0x460`/`+0x4A0`/`+0x4E0` which are the design's STOCK and
+three upgrade columns, the rear-drive fraction, the body box and tyre widths. The 240SX reads
+`3.321 / 1.902 / 1.308 / 1.0 / 0.9` on a 4.083 final drive and **gains a sixth gear** at level 3;
+the G35 ships a six-speed. `ug2 globalb <car> --handling` prints the lot.
+
+That takes the screen from 2 filled rows to **24 of 40**, and the gearbox is the only section whose
+four upgrade columns fill — it is the only thing the record stores four times. Everything else it
+stores once, shown under `STOCK` and left blank under the upgrades, because repeating a number across
+four columns would read as "this upgrade changes nothing", which the file does not say.
+
+Three sections stay empty and that is a **measurement, not a gap**: `[::AERO]`, `[::BRAKES]` and
+`[::STEERING]` are not in this game's files. The one brake-shaped triple is exactly zero for all 15
+traffic vehicles; the only steering angles are a global ±43 identical in all 46 records, so a row fed
+from either would print the same number for a bus and a Skyline. `torque_scale` has no lane because
+the curve is absolute rather than normalised; `shift_time`'s only candidate is one constant shared by
+45 of 46 cars.
+
+The **one deliberate departure**: the design's torque section is eight rows labelled by rpm, from its
+own `rpmSteps`. The file holds nine magnitudes and **no rpm axis** — every 4-aligned lane of all 46
+records was swept for a nine-wide increasing run and there is none. So the rows are the file's nine
+points, unlabelled. Putting eight invented rpms on nine real numbers is the one thing this screen
+exists not to do, which is also why its empty cells say "not in this game's files" rather than
+"not located" — for one commit they said the wrong one of those, while the record was being found.
 
 The discovery screen (`--screen discovery`) is the other half of the inspector: pick a chunk, and
 it proposes a reading — filler skipped, the best-scoring stride, the lanes typed — then lets you

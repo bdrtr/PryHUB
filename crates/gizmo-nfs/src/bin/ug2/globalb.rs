@@ -4,7 +4,7 @@ use crate::paths::{self, Result};
 use gizmo_nfs::globalb::parse_cartypeinfos;
 use std::path::{Path, PathBuf};
 
-pub fn run(path: &Path, filter: Option<&str>, parts: bool) -> Result<()> {
+pub fn run(path: &Path, filter: Option<&str>, parts: bool, handling: bool) -> Result<()> {
     let file = locate(path)?;
     let bytes = paths::read(&file)?;
     if parts {
@@ -12,6 +12,9 @@ pub fn run(path: &Path, filter: Option<&str>, parts: bool) -> Result<()> {
     }
     let cars = parse_cartypeinfos(&bytes);
     outln!("{} CarTypeInfo records in {}\n", cars.len(), file.display());
+    if handling {
+        return show_handling(&cars, filter);
+    }
     outln!("{:<14} {:>9} {:>7} {:>7} {:>8}   front-left mount", "car", "wheelbase", "track", "radius", "mass");
     for c in cars.iter().filter(|c| filter.is_none_or(|f| c.name.contains(f))) {
         let (fl, rr) = (c.wheels[0], c.wheels[2]);
@@ -87,6 +90,51 @@ fn car_parts(file: &Path, bytes: &[u8], filter: Option<&str>) -> Result<()> {
         let cells: Vec<String> =
             row.iter().map(|c| format!("#{:02X}{:02X}{:02X}", c.red, c.green, c.blue)).collect();
         outln!("  {}", cells.join("  "));
+    }
+    Ok(())
+}
+
+/// What the record says about how each car drives.
+///
+/// The gearbox is printed once per upgrade level because it is the one thing the record stores four
+/// times; everything else it stores once. The torque curve is nine magnitudes with **no rpm axis in
+/// the file**, so it is printed as the points it is rather than against invented engine speeds.
+fn show_handling(cars: &[gizmo_nfs::CarTypeInfo], filter: Option<&str>) -> Result<()> {
+    for c in cars.iter().filter(|c| filter.is_none_or(|f| c.name.contains(f))) {
+        let h = &c.handling;
+        let drive = match h.rear_drive {
+            r if r <= 0.01 => "FWD",
+            r if r >= 0.99 => "RWD",
+            _ => "AWD",
+        };
+        let [l, w, ht] = h.body_m;
+        outln!(
+            "== {} ==  {drive}  {:.0} kg  {l:.2}×{w:.2}×{ht:.2} m  tyres {:.0} mm",
+            c.name,
+            c.mass_kg,
+            h.tyre_width_m[0] * 1000.0
+        );
+        outln!(
+            "   rpm    idle {:.0}  red line {:.0}  limiter {:.0}",
+            h.engine.idle_rpm,
+            h.engine.red_line_rpm,
+            h.engine.limiter_rpm
+        );
+        let peak = h.torque_nm.iter().copied().fold(f32::MIN, f32::max);
+        let curve: Vec<String> = h.torque_nm.iter().map(|t| format!("{t:.0}")).collect();
+        outln!("   torque {} Nm  (peak {peak:.0}, 9 points, no rpm axis in the file)", curve.join(" "));
+        for (level, g) in h.gearbox.iter().enumerate() {
+            let ratios: Vec<String> = g.gears().iter().map(|r| format!("{r:.3}")).collect();
+            let name = ["stock", "L1", "L2", "L3"][level];
+            outln!(
+                "   {name:<5}  {} gears  final {:.3}  rev {:.3}  {}",
+                g.count,
+                g.final_drive,
+                g.reverse,
+                ratios.join(" ")
+            );
+        }
+        outln!("");
     }
     Ok(())
 }

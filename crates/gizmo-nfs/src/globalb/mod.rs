@@ -25,7 +25,20 @@ const OFF_MASS: usize = 0x220;
 const W_FORE_AFT: usize = 0x00; // XValue
 const W_RIDE_HEIGHT: usize = 0x08;
 const W_RADIUS: usize = 0x10; // Diameter (actually the radius, in metres)
+const W_TYRE_WIDTH: usize = 0x14; // metres; 17 distinct values, 0.165–0.315
 const W_LATERAL: usize = 0x1C; // YValue
+
+// Handling fields, all measured against a real install's 46 records — see `CarHandling`.
+const OFF_BODY: usize = 0x224; // length, width, height (m)
+const OFF_RPM: usize = 0x300; // idle, red line, limiter
+const OFF_TORQUE: usize = 0x310; // 9 × f32, kN·m
+/// The four transmission blocks: stock, then the three upgrade levels.
+const GEARBOX_AT: [usize; 4] = [0x2C0, 0x460, 0x4A0, 0x4E0];
+// Field offsets within one transmission block.
+const G_FINAL_DRIVE: usize = 0x08;
+const G_REAR_DRIVE: usize = 0x10; // 0 = FWD, 1 = RWD; only the stock block is read
+const G_COUNT: usize = 0x18;
+const G_RATIOS: usize = 0x20; // reverse, neutral, then up to six forward
 
 /// One wheel's mount, in NFSU2 car space (metres).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,8 +54,86 @@ pub struct WheelSpec {
     pub radius: f32,
 }
 
+/// The engine's three rpm limits.
+///
+/// Locked on every one of a real install's 46 records: strictly increasing 46/46, every value an
+/// exact multiple of 50, `idle` only ever 800, 850 or 1000, and `limiter − red_line` exactly 500 for
+/// the 31 playable cars and exactly 1000 for the 15 traffic ones — a split that falls out of the
+/// arithmetic rather than being imposed on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Engine {
+    /// Idle speed.
+    pub idle_rpm: f32,
+    /// Where the tachometer turns red.
+    pub red_line_rpm: f32,
+    /// Where fuel is cut. Always above [`Self::red_line_rpm`].
+    pub limiter_rpm: f32,
+}
+
+/// One transmission, at one upgrade level.
+///
+/// The file stores eight ratio slots: reverse (always negative), neutral (always exactly `0.0`),
+/// then [`Self::count`] forward gears, then zeros. All four invariants hold across 184 blocks
+/// (46 cars × 4 levels), as does "the forward gears strictly descend".
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Gearbox {
+    /// Final-drive ratio. Stored twice in the block and equal in all 184.
+    pub final_drive: f32,
+    /// Reverse ratio, negative as the file stores it.
+    pub reverse: f32,
+    /// Forward ratios, highest first. Only the first [`Self::count`] are meaningful.
+    pub forward: [f32; 6],
+    /// How many of [`Self::forward`] the car has: 3–6.
+    pub count: usize,
+}
+
+impl Gearbox {
+    /// The forward ratios the car actually has.
+    #[must_use]
+    pub fn gears(&self) -> &[f32] {
+        &self.forward[..self.count.min(self.forward.len())]
+    }
+}
+
+/// What a car's physics record says about how it drives.
+///
+/// Read from the same `CarTypeInfo` record as the rest — see the module note for what is in there
+/// and, just as importantly, what is not. Aero, brakes, steering, tyre grip and the torque curve's
+/// rpm axis are **not in this file**; they are absent rather than unread, and this struct does not
+/// pretend otherwise by carrying zeroed fields for them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CarHandling {
+    /// The rpm limits.
+    pub engine: Engine,
+    /// Nine points of the torque curve in **N·m**, stored in the file as kN·m the same way mass is
+    /// stored in tonnes. It rises to an interior peak and falls again in all 46 records. **The rpm
+    /// axis is not stored** — only these nine magnitudes — so anything that plots it is choosing an
+    /// axis, not reading one.
+    pub torque_nm: [f32; 9],
+    /// Stock, then the three upgrade levels, in the order the game's tuning screen offers them.
+    pub gearbox: [Gearbox; 4],
+    /// Fraction of drive to the rear axle: `0.0` front-wheel drive, `1.0` rear, between the two
+    /// all-wheel. Partitions the playable cars exactly by their real drivetrains.
+    pub rear_drive: f32,
+    /// Body box in metres — length, width, height.
+    ///
+    /// Proved rather than guessed: the 4×4 inertia tensor beside it is the closed form for a uniform
+    /// cuboid, `diag = m/12 · (W²+H², L²+H², L²+W²)`, to a worst relative error of 7.6e-08 over all
+    /// 46 records. Nothing but the right L, W, H and mass reproduces that.
+    pub body_m: [f32; 3],
+    /// Tyre width per corner in metres, in the same order as [`CarTypeInfo::wheels`].
+    pub tyre_width_m: [f32; 4],
+}
+
 /// The subset of a `CarTypeInfo` record needed to place and size a car: its name, the four
-/// wheel mounts (front-left, front-right, rear-right, rear-left — file order), and mass.
+/// wheel mounts (front-left, front-right, rear-right, rear-left — file order), mass, and what the
+/// record says about how the car drives.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct CarTypeInfo {
@@ -54,11 +145,18 @@ pub struct CarTypeInfo {
     pub wheels: [WheelSpec; 4],
     /// Mass in kilograms.
     pub mass_kg: f32,
+    /// Engine limits, torque curve, gearboxes and the body box.
+    pub handling: CarHandling,
 }
 
 #[inline]
 fn le_f32(b: &[u8], off: usize) -> Option<f32> {
     b.get(off..off + 4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+#[inline]
+fn le_u32(b: &[u8], off: usize) -> Option<u32> {
+    b.get(off..off + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Read a fixed-width, NUL-terminated ASCII field.
@@ -104,6 +202,56 @@ fn read_record(b: &[u8], rec: usize) -> Option<CarTypeInfo> {
         wheels,
         // Stored as mass × 1/1000 (a Mustang reads 1.560 → 1560 kg).
         mass_kg: le_f32(b, rec + OFF_MASS)? * 1000.0,
+        handling: read_handling(b, rec)?,
+    })
+}
+
+/// Read one 64-byte transmission block.
+fn read_gearbox(b: &[u8], base: usize) -> Option<Gearbox> {
+    let count = le_u32(b, base + G_COUNT)? as usize;
+    let mut forward = [0.0f32; 6];
+    for (i, slot) in forward.iter_mut().enumerate() {
+        // Ratio slot 0 is reverse and slot 1 is neutral, so forward gear 1 is slot 2.
+        *slot = le_f32(b, base + G_RATIOS + (2 + i) * 4)?;
+    }
+    Some(Gearbox {
+        final_drive: le_f32(b, base + G_FINAL_DRIVE)?,
+        reverse: le_f32(b, base + G_RATIOS)?,
+        forward,
+        count: count.min(forward.len()),
+    })
+}
+
+/// Read the handling fields of the record beginning at `rec`.
+fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
+    let mut torque_nm = [0.0f32; 9];
+    for (i, t) in torque_nm.iter_mut().enumerate() {
+        // Stored in kN·m, the same "kilo" convention mass uses.
+        *t = le_f32(b, rec + OFF_TORQUE + i * 4)? * 1000.0;
+    }
+    let mut gearbox = [read_gearbox(b, rec + GEARBOX_AT[0])?; 4];
+    for (i, g) in gearbox.iter_mut().enumerate() {
+        *g = read_gearbox(b, rec + GEARBOX_AT[i])?;
+    }
+    let mut tyre_width_m = [0.0f32; 4];
+    for (i, w) in tyre_width_m.iter_mut().enumerate() {
+        *w = le_f32(b, rec + OFF_WHEELS + i * WHEEL_STRIDE + W_TYRE_WIDTH)?;
+    }
+    Some(CarHandling {
+        engine: Engine {
+            idle_rpm: le_f32(b, rec + OFF_RPM)?,
+            red_line_rpm: le_f32(b, rec + OFF_RPM + 4)?,
+            limiter_rpm: le_f32(b, rec + OFF_RPM + 8)?,
+        },
+        torque_nm,
+        gearbox,
+        rear_drive: le_f32(b, rec + GEARBOX_AT[0] + G_REAR_DRIVE)?,
+        body_m: [
+            le_f32(b, rec + OFF_BODY)?,
+            le_f32(b, rec + OFF_BODY + 4)?,
+            le_f32(b, rec + OFF_BODY + 8)?,
+        ],
+        tyre_width_m,
     })
 }
 

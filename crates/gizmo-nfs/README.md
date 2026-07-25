@@ -28,7 +28,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | Chunk-tree comparison | `diff` | ✅ done — paired by position among same-id siblings; changed / resized / one-sided, with the first differing byte |
 | Schema discovery (unknown chunks) | `discover` | ✅ done — user-typed stride/columns, exact-divisor candidates ranked by lane consistency, `0x11` filler skipped; re-derives the real vertex layout in a golden test |
 | glTF (`.glb`) + OBJ/MTL + PNG output | `export` | ✅ done — pure text/bytes, no filesystem; shared by `ug2 export` and PryHUB |
-| `GLOBALB.BUN` car + `CarParts` tables | `globalb` | ✅ done — wheel/car records, 12,167 parts, 4,636 attributes with 49 of 51 keys named, and the game's 123-colour paint palette; every count checked against its chunk rather than trusted |
+| `GLOBALB.BUN` car + `CarParts` tables | `globalb` | ✅ done — `CarTypeInfo` (wheels, mass, body box) plus the per-car **handling** record `0x00034600` (`8 + 46×2192` = the chunk exactly): rpm limits, a 9-point torque curve in N·m, and four gearboxes — stock and three upgrade levels. Also 12,167 `CarParts`, 49 of 51 attribute keys named, and the 123-colour paint palette; every count checked against its chunk rather than trusted |
 | Player profile (fitted upgrades) | `profile` | ✅ done — which performance products a car has fitted and the per-category totals, locked by diffing a save after each purchase |
 | World / city (`STREAM*.BUN`, `L4RA.BUN`) | `world` | 🔴 research-frontier |
 

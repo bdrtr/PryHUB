@@ -1,57 +1,92 @@
 //! The CARP screen — the design's car-parameter table, over what this install actually holds.
 //!
-//! # Why most of it is empty, and why that is the feature
+//! # What the screen is
 //!
-//! The design draws CARP as a full handling editor: nine sections, thirty-five parameters, four
-//! upgrade levels each, editable, with a live torque curve and a Save button. It labels the source
-//! `CARP.BIN` and notes that the format is flat, so "the first write feature lands here".
+//! The design draws CARP as a full handling editor: nine `[::SECTION]`s, four upgrade columns,
+//! editable, with a live torque curve and a Save button. It labels the source `CARP.BIN`.
 //!
-//! **NFSU2 ships no `CARP.BIN`.** `find -iname '*carp*'` over a full install returns nothing; CARP
-//! is the older NFS engine's format. What this game does carry, and what this crate can read, is the
-//! `CarTypeInfo` record in `GLOBAL/GLOBALB.BUN` — 46 of them, with the car's name, its wheel mounts,
-//! wheel radius and its **mass**. That is two of the design's thirty-five parameters.
+//! **NFSU2 ships no `CARP.BIN`** — `find -iname '*carp*'` over a full install returns nothing; CARP
+//! is the older NFS engine's format. The data is there, just not under that name: `GLOBALB.BUN`'s
+//! `0x00034600` is a per-car physics record, `8 + 46 × 2192 == 100,840` — the chunk's size exactly —
+//! one record per `CarTypeInfo` car and in the same order. `gizmo_nfs::globalb` reads it.
 //!
-//! So the screen is built exactly as drawn and then tells the truth cell by cell: what GLOBALB
-//! answers is shown with its source named, and what nothing here answers is drawn in the design's
-//! disabled treatment rather than filled with a plausible number. This is the same choice the export
-//! dialog makes for its DDS row, and the same rule the validation screen counts by — a rule that
-//! read nothing is not a pass. A screen full of invented gear ratios would look far more finished
-//! and would be worth nothing.
+//! # What fills, and what does not
 //!
-//! The upgrade levels are drawn as the design's four columns, and only `STOCK` is filled today.
+//! Twenty-four of the forty rows have a source, and the reasons are per row rather than per screen:
 //!
-//! # What has since been found, and is not read here yet
+//! * `[::ENGINE]` idle / red line / limiter, `[::TORQUE_CURVE]`, `[::GEARBOX]` and `drive_type` come
+//!   straight out of the record.
+//! * `[::GEARBOX]` is the only section whose **four upgrade columns** all fill, because it is the
+//!   only thing the record stores four times. Everything else it stores once, so it is shown under
+//!   `STOCK` and left blank under the upgrades — repeating a number across four columns would read
+//!   as "this upgrade changes nothing", which the file does not say.
+//! * `[::AERO]`, `[::BRAKES]` and `[::STEERING]` are **not in this game's files**. That is measured,
+//!   not unsearched: the one brake-shaped triple is exactly zero for all 15 traffic vehicles, and
+//!   the only steering angles are a global ±43 identical in all 46 records. A row fed from either
+//!   would print the same number for a bus and a Skyline.
+//! * `torque_scale` has no lane because the curve is stored in absolute N·m, so there is nothing to
+//!   scale. `shift_time`'s only candidate is one constant shared by 45 of 46 cars. `grip_*`,
+//!   `slip_angle`, `weight_bias_f` and `cg_height` were swept for and are absent.
 //!
-//! `GLOBALB.BUN`'s `0x00034600` is a per-car physics record — `8 + 46 × 2192 == 100,840`, the
-//! chunk's size exactly, one per `CarTypeInfo` car and in the same order. It carries the engine's
-//! rpm limits at `+0x300`, a 9-point torque curve at `+0x310` that rises *and falls* in all 46 cars,
-//! and four 64-byte gearbox blocks at `+0x2C0`/`+0x460`/`+0x4A0`/`+0x4E0` — which are the design's
-//! STOCK and three upgrade columns. So most of this table is readable and simply is not read yet:
-//! [`Source`] has no variant for it and `gizmo-nfs` has no parser for it.
+//! # The one deliberate departure
 //!
-//! That is why the empty cells say *"this screen does not read it yet"* and not *"not located"*. The
-//! distinction is the whole point of the screen, and it was wrong here for one commit's worth of
-//! time — the note was written before the record was found and had to be corrected rather than left
-//! to age into a lie.
+//! The design's torque section is eight rows labelled by rpm, generated from its own `rpmSteps`. The
+//! file holds **nine** magnitudes and **no rpm axis** — every 4-aligned lane of all 46 records was
+//! swept for a nine-wide increasing run and there is none. So the rows here are the file's own nine
+//! points, unlabelled by rpm. Putting eight invented rpms on nine real numbers is the single thing
+//! this screen exists not to do.
 //!
-//! `profile` settled a neighbouring question from the other end: the game's *displayed* torque and
-//! power are computed at run time and appear in no static asset at any scale. The curve at `+0x310`
-//! is normalised magnitudes with no rpm axis stored beside it, which is consistent with that.
+//! # Two things this screen has already got wrong
+//!
+//! Both are recorded because they are the failure modes it is built against.
+//!
+//! It came out **black** below its two panels the first time it ran: every other full-bleed screen
+//! wraps itself in a `CentralPanel` whose frame fills [`token::BG`] and this one did not, so the
+//! region was never painted. `--shot` caught it perfectly — the PNG held `RGBA(8, 8, 8, 180)` across
+//! the whole unfilled area — and it was read as white off the preview and missed. The lesson is not
+//! that a screenshot cannot see this; it is that one has to be *checked*, and the cheap check is a
+//! pixel.
+//!
+//! And its note said the remaining sections "have not been located in this install" while they were
+//! being located. A screen whose whole purpose is to distinguish *absent* from *unread* had the two
+//! confused in its own caption for a commit.
 
 use crate::app::PryHub;
 use crate::theme::{self, token};
 use crate::widget;
 use egui::{RichText, Ui};
 
-/// Where a cell's value comes from.
+/// Where a cell's value comes from, now that `GLOBALB.BUN`'s per-car physics record is read.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
-    /// The car's name in its `CarTypeInfo` record.
+    /// The car's name.
     CarName,
-    /// Stock mass in kilograms, from the same record.
+    /// Stock mass in kilograms.
     MassKg,
+    /// Front / all / rear, from the rear-drive fraction.
+    DriveType,
+    /// One of the three rpm limits.
+    Rpm(Rpm),
+    /// One of the nine torque points, in N·m.
+    Torque(usize),
+    /// How many forward gears this level has.
+    GearCount,
+    /// The level's final drive.
+    FinalDrive,
+    /// Forward gear `n` (1-based) at this level.
+    Gear(usize),
+    /// Front tyre width in millimetres.
+    TyreWidth,
     /// Nothing in this install answers it. See the module note.
     NotLocated,
+}
+
+/// Which rpm limit a row shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rpm {
+    Idle,
+    RedLine,
+    Limiter,
 }
 
 /// One row of a section: the design's own key, label and unit.
@@ -67,27 +102,38 @@ struct Section {
     params: &'static [Param],
 }
 
-/// A parameter with no source, which is all but two of them.
+/// A parameter with no source.
 const fn gap(label: &'static str, unit: &'static str) -> Param {
     Param { label, unit, source: Source::NotLocated }
 }
 
-/// The design's nine sections, verbatim — including the seven this install cannot fill. They are
-/// listed rather than dropped because "the format has a gearbox section and we cannot read it" is a
-/// different statement from "there is no gearbox", and only the first one is true.
+/// A parameter the record answers.
+const fn got(label: &'static str, unit: &'static str, source: Source) -> Param {
+    Param { label, unit, source }
+}
+
+/// The design's nine sections. Seven of the rows it draws have no answer in this game's files and
+/// stay listed rather than dropped — "the format has an aero section and this game does not store
+/// one" is a different statement from "there is no aero", and only the first is true.
+///
+/// One deliberate departure: the design's torque section is eight rows labelled by rpm
+/// (`trq_1000`..`trq_8000`), generated from its own `rpmSteps`. The file holds **nine** magnitudes
+/// and **no rpm axis at all** — that absence is measured, not unsearched. Labelling nine numbers
+/// with eight invented rpms would be the one thing this screen exists not to do, so the rows are the
+/// file's own points instead.
 static SECTIONS: &[Section] = &[
     Section {
         name: "[::VEHICLE]",
         params: &[
-            Param { label: "car_name", unit: "", source: Source::CarName },
+            got("car_name", "", Source::CarName),
             gap("car_class", ""),
-            gap("drive_type", ""),
+            got("drive_type", "", Source::DriveType),
         ],
     },
     Section {
         name: "[::MASS]",
         params: &[
-            Param { label: "mass", unit: "kg", source: Source::MassKg },
+            got("mass", "kg", Source::MassKg),
             gap("weight_bias_f", "%"),
             gap("cg_height", "m"),
         ],
@@ -95,36 +141,38 @@ static SECTIONS: &[Section] = &[
     Section {
         name: "[::ENGINE]",
         params: &[
-            gap("idle_rpm", "rpm"),
-            gap("max_rpm", "rpm"),
-            gap("red_line", "rpm"),
+            got("idle_rpm", "rpm", Source::Rpm(Rpm::Idle)),
+            got("red_line", "rpm", Source::Rpm(Rpm::RedLine)),
+            got("max_rpm", "rpm", Source::Rpm(Rpm::Limiter)),
+            // The file stores absolute torque, so there is no scale factor to store.
             gap("torque_scale", "×"),
         ],
     },
     Section {
         name: "[::TORQUE_CURVE]",
         params: &[
-            gap("trq_1000", "Nm"),
-            gap("trq_2000", "Nm"),
-            gap("trq_3000", "Nm"),
-            gap("trq_4000", "Nm"),
-            gap("trq_5000", "Nm"),
-            gap("trq_6000", "Nm"),
-            gap("trq_7000", "Nm"),
-            gap("trq_8000", "Nm"),
+            got("trq_pt_1", "Nm", Source::Torque(0)),
+            got("trq_pt_2", "Nm", Source::Torque(1)),
+            got("trq_pt_3", "Nm", Source::Torque(2)),
+            got("trq_pt_4", "Nm", Source::Torque(3)),
+            got("trq_pt_5", "Nm", Source::Torque(4)),
+            got("trq_pt_6", "Nm", Source::Torque(5)),
+            got("trq_pt_7", "Nm", Source::Torque(6)),
+            got("trq_pt_8", "Nm", Source::Torque(7)),
+            got("trq_pt_9", "Nm", Source::Torque(8)),
         ],
     },
     Section {
         name: "[::GEARBOX]",
         params: &[
-            gap("gear_count", ""),
-            gap("final_drive", ":1"),
-            gap("gear_1", ":1"),
-            gap("gear_2", ":1"),
-            gap("gear_3", ":1"),
-            gap("gear_4", ":1"),
-            gap("gear_5", ":1"),
-            gap("gear_6", ":1"),
+            got("gear_count", "", Source::GearCount),
+            got("final_drive", ":1", Source::FinalDrive),
+            got("gear_1", ":1", Source::Gear(1)),
+            got("gear_2", ":1", Source::Gear(2)),
+            got("gear_3", ":1", Source::Gear(3)),
+            got("gear_4", ":1", Source::Gear(4)),
+            got("gear_5", ":1", Source::Gear(5)),
+            got("gear_6", ":1", Source::Gear(6)),
             gap("shift_time", "s"),
         ],
     },
@@ -134,7 +182,7 @@ static SECTIONS: &[Section] = &[
             gap("grip_front", "g"),
             gap("grip_rear", "g"),
             gap("slip_angle", "°"),
-            gap("tire_width", "mm"),
+            got("tire_width", "mm", Source::TyreWidth),
         ],
     },
     Section {
@@ -156,11 +204,11 @@ const LEVELS: [&str; 4] = ["STOCK", "L1", "L2", "L3"];
 pub struct State {
     /// Index into [`SECTIONS`].
     pub section: usize,
-    /// Index into [`LEVELS`]; only `0` can ever carry a value.
+    /// Index into [`LEVELS`].
     pub level: usize,
 }
 
-/// How many of the design's parameters this install can actually answer.
+/// How many of the design's parameters this install can answer.
 #[must_use]
 pub fn located() -> usize {
     SECTIONS
@@ -170,36 +218,85 @@ pub fn located() -> usize {
         .count()
 }
 
-/// Every parameter the design draws.
+/// Every parameter the screen draws.
 #[must_use]
 pub fn total() -> usize {
     SECTIONS.iter().map(|s| s.params.len()).sum()
 }
 
-/// The two facts this screen can get out of a `CarTypeInfo`.
+/// The fields this screen reads out of a `CarTypeInfo`, as a small owned view.
 ///
-/// Taken as a small copy rather than a borrow of the record, so the cell logic is a pure function
-/// over values and can be tested without building a parser struct — `CarTypeInfo` is
-/// `#[non_exhaustive]`, which is the published crate correctly refusing to be faked.
-#[derive(Clone, Copy)]
-struct Facts<'a> {
-    name: &'a str,
+/// `gizmo_nfs::CarTypeInfo` and its `Gearbox` are `#[non_exhaustive]` — the published crate
+/// correctly refusing to be constructed from outside — so the cell logic takes this instead. That
+/// keeps it a pure function over values that a test can drive without faking a parser struct, which
+/// is the same reason the earlier version of this screen took a two-field view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Car {
+    name: String,
     mass_kg: f32,
+    rear_drive: f32,
+    rpm: [f32; 3],
+    torque_nm: [f32; 9],
+    tyre_width_mm: f32,
+    /// One per upgrade level: final drive, gear count, and the forward ratios.
+    gearbox: [(f32, usize, [f32; 6]); 4],
+}
+
+impl Car {
+    /// Take the view from a parsed record.
+    fn of(c: &gizmo_nfs::CarTypeInfo) -> Self {
+        let h = &c.handling;
+        let mut gearbox = [(0.0, 0, [0.0; 6]); 4];
+        for (slot, g) in gearbox.iter_mut().zip(h.gearbox.iter()) {
+            *slot = (g.final_drive, g.count, g.forward);
+        }
+        Self {
+            name: c.name.clone(),
+            mass_kg: c.mass_kg,
+            rear_drive: h.rear_drive,
+            rpm: [h.engine.idle_rpm, h.engine.red_line_rpm, h.engine.limiter_rpm],
+            torque_nm: h.torque_nm,
+            tyre_width_mm: h.tyre_width_m[0] * 1000.0,
+            gearbox,
+        }
+    }
 }
 
 /// The value for one cell, or `None` when nothing here answers it.
 ///
-/// `level` is the design's upgrade column. Only `STOCK` is ever answerable: a `CarTypeInfo` record
-/// is the car as it ships, and the tables that would say what an upgrade does to it have not been
-/// found. Returning `None` for `L1..L3` is therefore not a stub — it is the measurement.
-fn cell(param: &Param, facts: Option<Facts<'_>>, level: usize) -> Option<String> {
-    let facts = facts?;
-    if level != 0 {
-        return None;
-    }
+/// `level` is the design's upgrade column, and it is no longer decorative: the record carries four
+/// transmission blocks, so every `[::GEARBOX]` row genuinely differs across the four. Everything
+/// else the file stores once, so it is shown in `STOCK` and left blank under the upgrades rather
+/// than repeated four times — a repeated number reads as "this upgrade changes nothing", which is a
+/// claim the file does not make.
+fn cell(param: &Param, car: Option<&Car>, level: usize) -> Option<String> {
+    let car = car?;
+    let stock_only = |v: String| if level == 0 { Some(v) } else { None };
+    let (final_drive, count, forward) = *car.gearbox.get(level)?;
     match param.source {
-        Source::CarName => Some(facts.name.to_owned()),
-        Source::MassKg => Some(format!("{:.0}", facts.mass_kg)),
+        Source::CarName => stock_only(car.name.clone()),
+        Source::MassKg => stock_only(format!("{:.0}", car.mass_kg)),
+        Source::DriveType => stock_only(
+            match car.rear_drive {
+                r if r <= 0.01 => "FWD",
+                r if r >= 0.99 => "RWD",
+                _ => "AWD",
+            }
+            .to_owned(),
+        ),
+        Source::Rpm(which) => stock_only(format!(
+            "{:.0}",
+            car.rpm[match which {
+                Rpm::Idle => 0,
+                Rpm::RedLine => 1,
+                Rpm::Limiter => 2,
+            }]
+        )),
+        Source::Torque(i) => stock_only(format!("{:.0}", car.torque_nm.get(i).copied()?)),
+        Source::TyreWidth => stock_only(format!("{:.0}", car.tyre_width_mm)),
+        Source::GearCount => Some(count.to_string()),
+        Source::FinalDrive => Some(format!("{final_drive:.3}")),
+        Source::Gear(n) => forward.get(n - 1).filter(|_| n <= count).map(|r| format!("{r:.3}")),
         Source::NotLocated => None,
     }
 }
@@ -227,30 +324,28 @@ fn body(app: &mut PryHub, ui: &mut Ui) {
     app.want_car_spec();
     let t = app.lang.strings();
     let d = theme::density_of(ui.ctx());
-    // `Some(None)` is "asked, and the answer was no" — the two are drawn differently below.
-    // Copied out rather than borrowed: the panels below take `&mut app`, and two of the record's
-    // fields are cheaper to own than to fight the borrow checker over.
-    let owned: Option<(String, f32)> = app
-        .car_spec
-        .as_ref()
-        .and_then(|o| o.as_deref())
-        .map(|s| (s.name.clone(), s.mass_kg));
     let asked = app.car_spec.is_some();
-    let facts = owned.as_ref().map(|(name, mass)| Facts { name, mass_kg: *mass });
-
-    header(app, ui, t, d);
-
-    let full = ui.available_rect_before_wrap();
-    ui.horizontal_top(|ui| {
-        ui.set_min_height(full.height());
-        sections_panel(app, ui, t, d);
-        widget::rule_v(ui, full.height(), token::DIVIDER);
-        table_panel(app, ui, t, d, facts, asked);
-    });
+    // The panels take the screen's own state by value and hand back what changed, so the record can
+    // stay *borrowed* out of the app for the whole draw. Copying it per frame would have worked too
+    // and would have been a copy per frame for nothing.
+    let mut state = app.carp;
+    {
+        // `Some(None)` is "asked, and the answer was no" — drawn differently from "not asked yet".
+        let car = app.car_spec.as_ref().and_then(|o| o.as_deref()).map(Car::of);
+        header(ui, t, d, &mut state);
+        let full = ui.available_rect_before_wrap();
+        ui.horizontal_top(|ui| {
+            ui.set_min_height(full.height());
+            sections_panel(ui, t, d, &mut state);
+            widget::rule_v(ui, full.height(), token::DIVIDER);
+            table_panel(ui, t, d, &mut state, car.as_ref(), asked);
+        });
+    }
+    app.carp = state;
 }
 
 /// The row the design puts above everything: what is being read, and the level switch.
-fn header(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Density) {
+fn header(ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Density, state: &mut State) {
     egui::Frame::new()
         .fill(token::SURFACE)
         .inner_margin(egui::Margin::symmetric(12, 8))
@@ -275,11 +370,11 @@ fn header(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Den
                         .font(theme::font::body(d.small_size()))
                         .color(theme::muted(55)),
                 );
-                let mut level = app.carp.level;
+                let mut level = state.level;
                 let items: Vec<(usize, &str)> =
                     LEVELS.iter().enumerate().map(|(i, n)| (i, *n)).collect();
                 if widget::segmented(ui, egui::Id::new("carp-level"), &mut level, &items, widget::Seg::Small) {
-                    app.carp.level = level;
+                    state.level = level;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Drawn, and disabled: there is no CARP.BIN to write back to. The design's own
@@ -308,7 +403,7 @@ fn header(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Den
 }
 
 /// The left column: the nine sections, and the note that says what this screen is.
-fn sections_panel(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Density) {
+fn sections_panel(ui: &mut Ui, t: &crate::i18n::Strings, d: theme::Density, state: &mut State) {
     ui.vertical(|ui| {
         ui.set_width(d.tree_width());
         widget::caption_strip(ui, t.cp_sections, |ui| {
@@ -322,7 +417,7 @@ fn sections_panel(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: th
             ui,
             |ui| {
                 for (i, section) in SECTIONS.iter().enumerate() {
-                    let on = i == app.carp.section;
+                    let on = i == state.section;
                     let filled = section
                         .params
                         .iter()
@@ -368,7 +463,7 @@ fn sections_panel(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: th
                         );
                     }
                     if resp.clicked() {
-                        app.carp.section = i;
+                        state.section = i;
                     }
                 }
             },
@@ -388,14 +483,14 @@ fn sections_panel(app: &mut PryHub, ui: &mut Ui, t: &crate::i18n::Strings, d: th
 
 /// The right column: the parameter table for the open section.
 fn table_panel(
-    app: &mut PryHub,
     ui: &mut Ui,
     t: &crate::i18n::Strings,
     d: theme::Density,
-    facts: Option<Facts<'_>>,
+    state: &mut State,
+    car: Option<&Car>,
     asked: bool,
 ) {
-    let section = &SECTIONS[app.carp.section.min(SECTIONS.len() - 1)];
+    let section = &SECTIONS[state.section.min(SECTIONS.len() - 1)];
     ui.vertical(|ui| {
         widget::caption_strip(ui, t.cp_raw, |ui| {
             ui.label(
@@ -429,8 +524,8 @@ fn table_panel(
 
         // Where the record came from, or why there is none — the screen must distinguish "no
         // install" from "an install with no record for this car".
-        let note = match (asked, facts) {
-            (_, Some(f)) => format!("{} · {}", t.cp_from_globalb, f.name),
+        let note = match (asked, car) {
+            (_, Some(c)) => format!("{} · {}", t.cp_from_globalb, c.name),
             (true, None) => t.cp_no_install.to_owned(),
             (false, None) => String::new(),
         };
@@ -440,7 +535,7 @@ fn table_panel(
                 widget::tag(
                     ui,
                     &note,
-                    if facts.is_some() { widget::Tone::Accent } else { widget::Tone::Neutral },
+                    if car.is_some() { widget::Tone::Accent } else { widget::Tone::Neutral },
                 );
             });
             ui.add_space(token::SPACE_2);
@@ -456,7 +551,7 @@ fn table_panel(
                     ui.label("");
                     for (i, name) in LEVELS.iter().enumerate() {
                         let ink =
-                            if i == app.carp.level { token::ACCENT } else { theme::muted(45) };
+                            if i == state.level { token::ACCENT } else { theme::muted(45) };
                         ui.label(theme::tracked(name, 0.1, theme::font::mono(9.5), ink));
                     }
                     ui.end_row();
@@ -473,7 +568,7 @@ fn table_panel(
                                 .color(theme::muted(42)),
                         );
                         for level in 0..LEVELS.len() {
-                            match cell(param, facts, level) {
+                            match cell(param, car, level) {
                                 Some(v) => {
                                     ui.label(
                                         RichText::new(v)
@@ -508,39 +603,99 @@ mod tests {
     #[test]
     fn the_screen_carries_the_designs_whole_table() {
         assert_eq!(SECTIONS.len(), 9, "the design draws nine sections");
-        // 39, and the torque curve is 8 of them: the design generates that section from its
-        // own `rpmSteps` (1000..8000 in thousands), which is easy to miscount by hand — this
-        // assertion is here because it already caught one.
-        assert_eq!(total(), 39, "and thirty-nine parameters across them");
-        assert_eq!(SECTIONS[3].params.len(), 8, "the torque curve is one row per rpm step");
+        // 40 rows: the design's 39, plus one, because its torque section is eight rows labelled by
+        // rpm and the file holds nine magnitudes with no rpm axis. Labelling nine numbers with
+        // eight invented rpms is the one thing this screen exists not to do.
+        assert_eq!(total(), 40, "thirty-nine design rows, with the torque curve at the file's nine");
+        assert_eq!(SECTIONS[3].params.len(), 9, "the file's nine torque points");
     }
 
-    /// Exactly two parameters have a source, and both are in the record this crate can read. The
-    /// number is asserted so that adding a third is a deliberate act with a test to update, and so
-    /// that quietly wiring one to a guess fails here.
+    /// Exactly which rows claim a source. Asserted by name rather than by count, so that wiring a
+    /// row to a guess has to be done in the open, with this list edited to say so.
     #[test]
     fn only_what_globalb_answers_is_claimed() {
-        assert_eq!(located(), 2, "car_name and mass, and nothing else");
         let named: Vec<&str> = SECTIONS
             .iter()
             .flat_map(|s| s.params.iter())
             .filter(|p| p.source != Source::NotLocated)
             .map(|p| p.label)
             .collect();
-        assert_eq!(named, vec!["car_name", "mass"]);
+        assert_eq!(
+            named,
+            vec![
+                "car_name", "drive_type", "mass", "idle_rpm", "red_line", "max_rpm", "trq_pt_1",
+                "trq_pt_2", "trq_pt_3", "trq_pt_4", "trq_pt_5", "trq_pt_6", "trq_pt_7", "trq_pt_8",
+                "trq_pt_9", "gear_count", "final_drive", "gear_1", "gear_2", "gear_3", "gear_4",
+                "gear_5", "gear_6", "tire_width",
+            ]
+        );
+        assert_eq!(located(), 24);
+        // The sections this game genuinely does not store stay wholly unclaimed. `AERO`, `BRAKES`
+        // and `STEERING` were each searched for and ruled out against all 46 records, so a row here
+        // gaining a source later should be a deliberate edit to this test too.
+        for section in &SECTIONS[6..9] {
+            assert!(
+                section.params.iter().all(|p| p.source == Source::NotLocated),
+                "{} is not in this game's files",
+                section.name
+            );
+        }
     }
 
-    /// Without a record nothing is filled in, and with one only the stock column is.
+    /// With no record nothing is filled. With one, the gearbox varies across all four upgrade
+    /// columns and everything else is shown once, under `STOCK`.
     #[test]
-    fn upgrade_levels_are_never_invented() {
+    fn upgrade_columns_show_only_what_varies() {
         let mass = &SECTIONS[1].params[0];
         assert_eq!(cell(mass, None, 0), None, "no record, no value");
-        let facts = Facts { name: "240SX", mass_kg: 1220.0 };
-        assert_eq!(cell(mass, Some(facts), 0).as_deref(), Some("1220"), "the real stock mass");
+
+        let car = sample();
+        assert_eq!(cell(mass, Some(&car), 0).as_deref(), Some("1220"));
         for level in 1..LEVELS.len() {
-            assert_eq!(cell(mass, Some(facts), level), None, "L{level} is not known");
+            assert_eq!(cell(mass, Some(&car), level), None, "mass is stored once, not per level");
         }
-        // And a parameter with no source stays empty even in the column that has a record.
-        assert_eq!(cell(&SECTIONS[4].params[2], Some(facts), 0), None, "gear_1 is not known");
+
+        // The gearbox is the one section the file stores four times, so it is the one section whose
+        // upgrade columns are filled.
+        let final_drive = &SECTIONS[4].params[1];
+        assert_eq!(cell(final_drive, Some(&car), 0).as_deref(), Some("4.000"));
+        assert_eq!(cell(final_drive, Some(&car), 3).as_deref(), Some("3.500"));
+
+        // A sixth gear the stock box does not have stays empty at STOCK and fills at L3.
+        let gear6 = &SECTIONS[4].params[7];
+        assert_eq!(cell(gear6, Some(&car), 0), None, "the stock five-speed has no sixth gear");
+        assert_eq!(cell(gear6, Some(&car), 3).as_deref(), Some("0.800"));
+
+        // And a row this game does not store stays empty even where a record exists.
+        let drag = &SECTIONS[6].params[0];
+        assert_eq!(cell(drag, Some(&car), 0), None, "aero is not in the file");
+    }
+
+    /// Rear-drive fraction reads as the three words the design's row expects.
+    #[test]
+    fn drive_type_is_named_from_the_fraction() {
+        let mut car = sample();
+        let row = &SECTIONS[0].params[2];
+        car.rear_drive = 0.0;
+        assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("FWD"));
+        car.rear_drive = 0.5;
+        assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("AWD"));
+        car.rear_drive = 1.0;
+        assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("RWD"));
+    }
+
+    /// A stand-in shaped like the 240SX's record: a stock five-speed that gains a sixth by L3.
+    fn sample() -> Car {
+        let five = (4.0, 5, [3.321, 1.902, 1.308, 1.0, 0.9, 0.0]);
+        let six = (3.5, 6, [3.321, 1.902, 1.308, 1.09, 0.92, 0.8]);
+        Car {
+            name: "240SX".into(),
+            mass_kg: 1220.0,
+            rear_drive: 1.0,
+            rpm: [800.0, 6500.0, 7000.0],
+            torque_nm: [140.0, 150.0, 160.0, 180.0, 200.0, 216.0, 203.0, 170.0, 150.0],
+            tyre_width_mm: 205.0,
+            gearbox: [five, five, five, six],
+        }
     }
 }
