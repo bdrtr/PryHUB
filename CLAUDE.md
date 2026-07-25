@@ -163,14 +163,16 @@ belongs on the rule's own card, which is where it now stays.
 
 ### Checking the port against the design
 
-The design is in this repo: `game/STRUKT.dc.html` is the working prototype and
-`game/_ds/modernist-…/styles.css` its token sheet. It renders in any browser, so a screen can be
+The design is in this repo: `STRUKT NFSU2 Asset Tool/PRYBAR.dc.html` is the working prototype and
+`STRUKT NFSU2 Asset Tool/_ds/modernist-…/styles.css` its token sheet. (An earlier drop of the same
+system, branded `STRUKT`, sat in `game/`; the tokens are identical, so anything measured off one
+holds for the other.) It renders in any browser, so a screen can be
 compared side by side with the real thing rather than from memory:
 
 ```bash
-(cd game && python3 -m http.server 8731 &)
+(cd "STRUKT NFSU2 Asset Tool" && python3 -m http.server 8731 &)
 google-chrome --headless --window-size=1360,840 --virtual-time-budget=5000 \
-  --screenshot=design.png http://127.0.0.1:8731/STRUKT.dc.html
+  --screenshot=design.png http://127.0.0.1:8731/PRYBAR.dc.html
 ```
 
 Its initial state is one literal (`this.state = { screen:'workspace', lang:'tr', density:'compact', … }`)
