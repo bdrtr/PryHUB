@@ -408,10 +408,11 @@ fn bounds_rule(roots: &[ChunkNode], bytes: &[u8]) -> RuleResult {
     }
     walk(roots, bytes.len(), &mut findings, &mut examined);
 
-    // Bytes after the last top-level chunk are what a tolerant walk quietly stopped at.
+    // Bytes after the last top-level chunk are what a tolerant walk quietly stopped at — minus the
+    // alignment padding it skipped on purpose.
     if let Some(last) = roots.last() {
         let end = last.data_offset + last.header.size as usize;
-        let tail = bytes.len().saturating_sub(end);
+        let tail = unexplained_tail(bytes, end);
         if tail >= 8 {
             findings.push(Finding {
                 rule: RuleId("bounds"),
@@ -424,6 +425,33 @@ fn bounds_rule(roots: &[ChunkNode], bytes: &[u8]) -> RuleResult {
         }
     }
     RuleResult { rule: RuleId("bounds"), findings, examined }
+}
+
+/// How many bytes after `from` are *not* explained by alignment padding.
+///
+/// The tree deliberately skips `id == 0` chunks, so the tail is expected to hold them and counting
+/// them as "not part of the tree" told every car in the game that it had unexplained bytes — the
+/// 240SX's file ends with exactly one such chunk of 4 zero bytes, 12 with its header.
+///
+/// Padding is only padding when its payload is zero. `CARS/BUS` carries an `id == 0` chunk of 1,332
+/// bytes with a non-zero byte inside it, and something hidden in a chunk that claims to be nothing
+/// is precisely what this rule exists to say out loud.
+fn unexplained_tail(bytes: &[u8], from: usize) -> usize {
+    let mut at = from.min(bytes.len());
+    while at + 8 <= bytes.len() {
+        let head = &bytes[at..at + 8];
+        let id = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        let Some(end) = at.checked_add(8).and_then(|s| s.checked_add(size)) else { break };
+        if id != 0 || end > bytes.len() {
+            break;
+        }
+        if bytes[at + 8..end].iter().any(|&b| b != 0) {
+            break;
+        }
+        at = end;
+    }
+    bytes.len() - at
 }
 
 /// Bounds of the positions in a vertex buffer, or `None` when the layout does not fit.
@@ -455,6 +483,40 @@ fn leading_filler(data: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    /// A file ending in the alignment padding the walk skips is *not* a file with unexplained bytes.
+    /// Every car in the game ends this way — the 240SX with one `id == 0` chunk of four zero bytes —
+    /// and reporting it made the rule cry wolf on all 80 of them.
+    #[test]
+    fn trailing_alignment_padding_is_not_a_finding() {
+        // One real chunk, then an `id == 0` chunk of four zero bytes.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x0000_0002_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        let real = bytes.len();
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(super::unexplained_tail(&bytes, real), 0);
+    }
+
+    /// …but a chunk that claims to be nothing while carrying something is exactly what to report.
+    /// `CARS/BUS` has one of 1,332 bytes with a non-zero byte inside.
+    #[test]
+    fn a_padding_chunk_with_something_in_it_is_still_a_finding() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 7, 0]);
+        assert_eq!(super::unexplained_tail(&bytes, 0), bytes.len());
+    }
+
+    /// A trailing fragment too short to be a header is left where it is rather than read past.
+    #[test]
+    fn a_stub_shorter_than_a_header_is_left_alone() {
+        assert_eq!(super::unexplained_tail(&[0, 0, 0], 0), 3);
+    }
     use super::*;
 
     fn chunk(id: u32, payload: &[u8]) -> Vec<u8> {

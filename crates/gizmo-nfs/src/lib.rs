@@ -60,6 +60,7 @@ pub mod viv;
 
 pub use error::{NfsError, NfsResult};
 pub use geometry::{parse_geometry, parse_geometry_reporting, SkipReason, Skipped};
+pub use globalb::carparts::{CarPart, CarParts, Colour};
 pub use globalb::{parse_cartypeinfos, CarTypeInfo, WheelSpec};
 pub use parts::{group_of, select_car, select_stock_car, CarConfig, Grp};
 pub use texture::{Tpk, TpkEntry};

@@ -128,6 +128,9 @@ enum Command {
         /// Only show cars whose name contains this.
         #[arg(long, value_name = "SUBSTR")]
         filter: Option<String>,
+        /// Show the `CarParts` tables instead: part names, attribute keys, and the paint palette.
+        #[arg(long)]
+        parts: bool,
     },
     /// Probe a car's raw solids: vertex/triangle counts, buffer sizes, mesh-header words.
     ///
@@ -188,7 +191,7 @@ fn main() -> ExitCode {
         Command::Fields { car, at, filter } => fields::run(&car, at, filter.as_deref()),
         Command::Dump { file, max_depth, hex } => dump::run(&file, max_depth, hex),
         Command::Textures { car, filter } => textures::run(&car, filter.as_deref()),
-        Command::Globalb { path, filter } => globalb::run(&path, filter.as_deref()),
+        Command::Globalb { path, filter, parts } => globalb::run(&path, filter.as_deref(), parts),
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {

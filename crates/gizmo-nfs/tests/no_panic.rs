@@ -19,6 +19,14 @@ proptest! {
         let _ = compression::decompress(&data);
     }
 
+    /// `CarParts` reads counts out of the file and multiplies them by a stride, which is exactly the
+    /// shape of an over-allocation: a header claiming four billion parts must be refused by the
+    /// size check, not honoured with a `Vec::with_capacity`.
+    #[test]
+    fn carparts_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _ = gizmo_nfs::CarParts::parse(&data);
+    }
+
     #[test]
     fn chunk_parse_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
         let _ = ChunkNode::parse(&data);

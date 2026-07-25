@@ -11,6 +11,8 @@
 //! Axes (car space): **XValue = longitudinal** (fore/aft, + front − rear), **YValue = lateral**
 //! (track, + left − right), **RideHeight = vertical**, **Diameter = wheel radius (metres)**.
 
+pub mod carparts;
+
 const REC_SIZE: usize = 0x890;
 const OFF_NAME2: usize = 0x20;
 const OFF_PATH: usize = 0x40;

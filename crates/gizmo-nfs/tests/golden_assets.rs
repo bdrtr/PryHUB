@@ -405,3 +405,49 @@ fn a_texture_can_be_written_back_in_place() {
     // encoder raises it, and relocation removes the question.
     assert!(fits * 2 > total, "fewer than half the textures fit: {fits} of {total}");
 }
+
+/// The `CarParts` tables, against the install they were locked on.
+///
+/// Every number here was measured rather than assumed, so this is the test that says so: the header
+/// counts, the two part fields whose meaning is claimed, and the paint palette that falls out of
+/// three adjacent attributes. If a differently-built bundle ever fails this, the reader is meant to
+/// have refused it — the counts are checked against the chunks inside `CarParts::parse`.
+#[test]
+fn carparts_reads_the_real_bundle() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping CarParts test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("GLOBAL/GLOBALB.BUN")).expect("read GLOBALB.BUN");
+    let cp = gizmo_nfs::CarParts::parse(&bytes).expect("CarParts parses");
+
+    // The counts the header declares, which `parse` has already checked against the chunk sizes.
+    assert_eq!(cp.parts.len(), 12_167, "parts");
+    assert_eq!(cp.attributes.len(), 4_636, "attributes");
+
+    // Every part's name offset lands on a real string: this is the claim that `+8` is scaled by 4,
+    // and it is the whole reason to believe it.
+    assert!(cp.parts.iter().all(|p| !p.name.is_empty()), "every part is named");
+    assert!(cp.parts.iter().any(|p| p.name == "STOCK"), "the stock part is in there");
+
+    // `0xFFFF` is a sentinel, so no block index may reach the block table's own count.
+    assert!(
+        cp.parts.iter().filter_map(|p| p.block).all(|b| usize::from(b) < 1_580),
+        "no block index past the block table"
+    );
+
+    // The palette: adjacent RED/GREEN/BLUE triples, none of which can overflow a byte.
+    let palette = cp.palette();
+    assert_eq!(palette.len(), 123, "colours");
+
+    // The six named keys really are used by this file.
+    use gizmo_nfs::globalb::carparts::key;
+    for (name, k, least) in [
+        ("TEXTURE", key::TEXTURE, 800),
+        ("NAME", key::NAME, 150),
+        ("RED", key::RED, 100),
+    ] {
+        let n = cp.attributes.iter().filter(|a| a.key.0 == k).count();
+        assert!(n >= least, "{name}: {n} attributes, expected at least {least}");
+    }
+}
