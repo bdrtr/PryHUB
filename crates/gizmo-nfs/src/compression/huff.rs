@@ -10,6 +10,18 @@
 //! natively), cross-checked against `dbalatoni13/nfsmw` and `NFSTools/GlobalLib`. It uses the
 //! simple, quick-table-free decode path (correctness over speed — texture blobs are small).
 //!
+//! [`compress`] is the inverse, and it exists because a slot sized by HUFF cannot be refilled by
+//! JDLZ: over an install, a HUFF-sourced blob re-packed as JDLZ fits its own slot 60 times in
+//! 52,389, and re-packed as HUFF 4,863 times. It is **not** a reproduction of EA's encoder — two
+//! Huffman coders that break ties differently both produce valid streams — so it is judged the way
+//! [`crate::compression::jdlz`]'s is: on reading back, and on ratio. Every one of the install's
+//! 52,389 HUFF blobs re-encodes and decodes to the original bytes, at **1.028×** EA's total size,
+//! where JDLZ on the same data is 1.242×.
+//!
+//! What carries that ratio is not the Huffman. Order-0 coding with the run escape switched off
+//! comes to **6.37×** EA; with it, 1.03×. The clue escape is where this format's compression lives,
+//! and [`RUN_MIN`] is the whole of the policy.
+//!
 //! **What is locked and what is only transcribed.** Every HUFF blob in a real install — 52,390 of
 //! 52,390 — carries header `(version 1, header size 0x10, flags 0)` and reads its stream type word
 //! as **`0x30fb`**. That value is what decides the shape: `& 0x8000 == 0` takes the small-size
@@ -472,5 +484,467 @@ mod tests {
         // and the unbounded one took over fifteen seconds before it was killed.
         assert!(started.elapsed().as_secs() < 5, "decompress took {:?}", started.elapsed());
         assert!(matches!(out, Err(NfsError::Decompression { codec: "huff", .. })), "{out:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------------------------------
+
+/// The one stream shape this encoder writes, and the only one the game was ever measured to ship.
+///
+/// All 52,390 HUFF blobs in an install read their type word as `0x30fb`: `& 0x8000 == 0` picks the
+/// 24-bit length fields, `& 0x100 == 0` means no skip words, and it matches no arm of
+/// [`undo_delta_filter`], so no pre-filter is undone. Writing anything else would be writing a
+/// variant nothing here has seen read back.
+const TYPE_WORD: u32 = 0x30fb;
+
+/// The longest code this encoder will emit.
+///
+/// Not the format's limit — [`MAX_LEN`] is 32 — but EA's. Across the install the deepest code in a
+/// real blob is 15 bits and the shallowest tree tops out at 7, so a limit of 15 stays inside what
+/// the game's own files demonstrate. It also keeps `cmp_tbl`'s `16 - numbits` shift positive, which
+/// is where a longer code would start meaning something this decoder does not implement.
+const MAX_ENCODED_LEN: usize = 15;
+
+/// MSB-first bit writer, the mirror of [`Bits`].
+///
+/// The reader refills sixteen bits at a time from big-endian pairs, but what it consumes is simply
+/// the bit sequence of the bytes in order, so this writes bytes and pads the tail to an even length.
+struct BitWriter {
+    out: Vec<u8>,
+    acc: u32,
+    n: u32,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        BitWriter { out: Vec::new(), acc: 0, n: 0 }
+    }
+
+    /// Append the low `bits` of `v`, most significant first.
+    fn put(&mut self, v: u32, bits: u32) {
+        for i in (0..bits).rev() {
+            self.acc = (self.acc << 1) | ((v >> i) & 1);
+            self.n += 1;
+            if self.n == 8 {
+                self.out.push(self.acc as u8);
+                self.acc = 0;
+                self.n = 0;
+            }
+        }
+    }
+
+    /// Flush to a whole number of 16-bit words, which is the unit the reader refills in.
+    fn finish(mut self) -> Vec<u8> {
+        if self.n != 0 {
+            self.acc <<= 8 - self.n;
+            self.out.push(self.acc as u8);
+        }
+        if !self.out.len().is_multiple_of(2) {
+            self.out.push(0);
+        }
+        self.out
+    }
+}
+
+/// The inverse of [`getnum`].
+///
+/// One rule covers both of the decoder's branches. A value `v` is written as `n - 2` zeroes, a `1`,
+/// and `n` bits of `v - (2^n - 4)`, for the smallest `n >= 2` that fits — which for `n == 2` is the
+/// three-bit form the decoder takes when it sees the top bit set, and for larger `n` is its
+/// leading-zero count. The ranges tile exactly: `n=2` covers 0..=3, `n=3` covers 4..=11, `n=4`
+/// covers 12..=27, and so on, each starting one past where the last ended.
+fn putnum(w: &mut BitWriter, v: u32) {
+    let mut n = 2u32;
+    // The largest value `n` can express is `2^(n+1) - 5`.
+    while n < 31 && v > (1u32 << (n + 1)).wrapping_sub(5) {
+        n += 1;
+    }
+    let bias = (1u32 << n) - 4;
+    w.put(0, n - 2); // the unary run of zeroes
+    w.put(1, 1); // its terminator
+    w.put(v - bias, n);
+}
+
+/// Code lengths for a canonical Huffman code over `freq`, none longer than [`MAX_ENCODED_LEN`].
+///
+/// Plain Huffman first; if that overflows the limit, the lengths are flattened and repaired so the
+/// Kraft sum comes back to exactly one. The code has to be *complete* — the decoder's table loop
+/// ends only when the code space is exactly filled — so "close enough" is not a thing here.
+fn encode_lengths(freq: &[u64; 256]) -> [u8; 256] {
+    let live: Vec<usize> = (0..256).filter(|&b| freq[b] > 0).collect();
+    let mut len = [0u8; 256];
+    if live.len() <= 1 {
+        // One symbol is not a code. A single one-bit code claims half the space, and the decoder's
+        // table loop ends only when the space is exactly *full* — so it would go on reading counts
+        // past the end of the table and fail as an unterminated run. Two one-bit codes fill it, so
+        // a second symbol is invented; it has no frequency and is never emitted, and it costs one
+        // leap in the symbol table.
+        let only = live.first().copied().unwrap_or(0);
+        len[only] = 1;
+        len[if only == 0 { 1 } else { 0 }] = 1;
+        return len;
+    }
+
+    // Huffman by repeated merge. Nodes are (weight, left, right); leaves have no children.
+    let mut w: Vec<u64> = Vec::new();
+    let mut kids: Vec<(i32, i32)> = Vec::new();
+    let mut leaf = [usize::MAX; 256];
+    for &b in &live {
+        leaf[b] = w.len();
+        w.push(freq[b]);
+        kids.push((-1, -1));
+    }
+    let mut pool: Vec<usize> = (0..w.len()).collect();
+    while pool.len() > 1 {
+        // Smallest two. Ties broken by index so the result does not depend on sort stability.
+        pool.sort_unstable_by_key(|&i| (std::cmp::Reverse(w[i]), i));
+        let a = pool.pop().expect("two nodes");
+        let b = pool.pop().expect("two nodes");
+        w.push(w[a] + w[b]);
+        kids.push((a as i32, b as i32));
+        pool.push(w.len() - 1);
+    }
+
+    let mut depth = vec![0u32; w.len()];
+    let mut stack = vec![(pool[0], 0u32)];
+    while let Some((n, d)) = stack.pop() {
+        let (l, r) = kids[n];
+        if l < 0 {
+            depth[n] = d.max(1);
+            continue;
+        }
+        stack.push((l as usize, d + 1));
+        stack.push((r as usize, d + 1));
+    }
+    for &b in &live {
+        len[b] = depth[leaf[b]].min(u32::from(u8::MAX)) as u8;
+    }
+    limit_lengths(&mut len, &live);
+    len
+}
+
+/// Pull every code back inside [`MAX_ENCODED_LEN`] and restore a complete code.
+///
+/// Clamping alone breaks the Kraft sum — several codes shortened to the limit overfill the space —
+/// so afterwards the sum is repaired: while it is over, lengthen the currently-shortest codes; while
+/// it is under, shorten the longest. It ends at exactly `2^MAX`, which is the completeness the
+/// decoder's table loop requires.
+fn limit_lengths(len: &mut [u8; 256], live: &[usize]) {
+    for &b in live {
+        if len[b] as usize > MAX_ENCODED_LEN {
+            len[b] = MAX_ENCODED_LEN as u8;
+        }
+    }
+    let full = 1u64 << MAX_ENCODED_LEN;
+    let kraft = |len: &[u8; 256]| -> u64 {
+        live.iter().map(|&b| 1u64 << (MAX_ENCODED_LEN - len[b] as usize)).sum()
+    };
+    let mut sum = kraft(len);
+    // Too much code space claimed: lengthen shallow codes, cheapest first.
+    while sum > full {
+        let pick = live
+            .iter()
+            .copied()
+            .filter(|&b| (len[b] as usize) < MAX_ENCODED_LEN)
+            .min_by_key(|&b| len[b])
+            .expect("a code shorter than the limit exists while the sum is over");
+        sum -= 1u64 << (MAX_ENCODED_LEN - len[pick] as usize);
+        len[pick] += 1;
+        sum += 1u64 << (MAX_ENCODED_LEN - len[pick] as usize);
+    }
+    // Room to spare: shorten the deepest codes until it is exactly filled.
+    while let Some(&pick) = live
+        .iter()
+        .filter(|&&b| len[b] > 1)
+        .max_by_key(|&&b| len[b])
+        .filter(|&&b| sum + (1u64 << (MAX_ENCODED_LEN - len[b] as usize)) <= full)
+    {
+        sum += 1u64 << (MAX_ENCODED_LEN - len[pick] as usize);
+        len[pick] -= 1;
+    }
+}
+
+/// One thing the encoder decided to emit.
+enum Op {
+    /// A byte, by its Huffman code.
+    Sym(u8),
+    /// Repeat the byte just emitted `n` more times, through the clue escape.
+    Run(u32),
+    /// A byte with no code of its own — the clue's own value, which cannot be emitted directly.
+    Literal(u8),
+}
+
+/// Split `data` into symbols and runs, and count how often each byte is coded.
+///
+/// A run costs the clue's code plus a [`putnum`], against the byte's own code repeated. Where the
+/// break-even sits depends on the code lengths, which are not known until the frequencies are — so
+/// this uses a fixed threshold rather than iterating to a fixed point. Four is where a run stops
+/// being able to lose: the clue and the length together are never worse than four copies of a byte
+/// whose code is at most fifteen bits, and runs of three or less are left as plain symbols.
+///
+/// This matters more than the Huffman does. Measured over the install's 52,390 HUFF blobs, order-0
+/// Huffman with no runs at all comes to **6.37×** what EA's encoder achieves; with runs it comes to
+/// 1.04×. The clue escape is where this format's compression lives.
+const RUN_MIN: usize = 4;
+
+fn plan(data: &[u8], clue: u8) -> (Vec<Op>, [u64; 256]) {
+    let mut ops = Vec::new();
+    let mut freq = [0u64; 256];
+    let mut i = 0;
+    while i < data.len() {
+        let b = data[i];
+        let mut j = i + 1;
+        while j < data.len() && data[j] == b {
+            j += 1;
+        }
+        let run = j - i;
+        // The clue's own byte has no direct code: every occurrence is an escaped literal.
+        if b == clue {
+            for _ in 0..run {
+                ops.push(Op::Literal(b));
+                freq[clue as usize] += 1;
+            }
+            i = j;
+            continue;
+        }
+        ops.push(Op::Sym(b));
+        freq[b as usize] += 1;
+        if run >= RUN_MIN {
+            ops.push(Op::Run((run - 1) as u32));
+            freq[clue as usize] += 1;
+        } else {
+            for _ in 1..run {
+                ops.push(Op::Sym(b));
+                freq[b as usize] += 1;
+            }
+        }
+        i = j;
+    }
+    // The end-of-stream marker is one more use of the clue.
+    freq[clue as usize] += 1;
+    (ops, freq)
+}
+
+/// Which byte to make the escape.
+///
+/// Any byte can be it, but every occurrence of it in the data then costs an escaped literal — so
+/// the cheapest choice is a byte that does not occur at all, and failing that the rarest one. EA
+/// evidently does the same: across the install the clue takes 254 distinct values, so it is chosen
+/// per blob rather than fixed, and the commonest choices (`0xD0`, `0xFE`, `0xFD`) are bytes that are
+/// rare in texture data.
+fn choose_clue(data: &[u8]) -> u8 {
+    let mut count = [0u64; 256];
+    for &b in data {
+        count[b as usize] += 1;
+    }
+    // Lowest count wins; ties go to the higher byte value, which is where the unused ones cluster.
+    (0..256)
+        .rev()
+        .min_by_key(|&b| count[b])
+        .map_or(0xFF, |b| b as u8)
+}
+
+/// Compress `input` into a HUFF stream this crate's [`decompress`] reads back.
+///
+/// It writes exactly one shape — the [`TYPE_WORD`] one every real blob in an install uses — because
+/// that is the only shape there is evidence for. **It does not try to reproduce EA's byte stream.**
+/// Two Huffman encoders that break frequency ties differently, or draw the run/literal line in
+/// different places, both produce valid streams; the same reasoning [`crate::compression::jdlz`]
+/// records applies here.
+///
+/// So it is judged on reading back — a proptest over arbitrary bytes, and every real HUFF blob in an
+/// install re-encoded and decoded again — and on ratio, which is what decides whether a rewritten
+/// texture still fits the slot it came out of.
+///
+/// # Errors
+/// When the input is longer than the 24-bit length field this stream shape carries (16 MiB − 1).
+pub fn compress(input: &[u8]) -> NfsResult<Vec<u8>> {
+    const MAX_24: usize = (1 << 24) - 1;
+    if input.len() > MAX_24 {
+        return Err(NfsError::Allocation { requested: input.len() });
+    }
+
+    let clue = choose_clue(input);
+    let (ops, freq) = plan(input, clue);
+    let lengths = encode_lengths(&freq);
+
+    // Canonical codes: symbols ordered by (length, value), codes ascending within a length.
+    let mut order: Vec<u8> = (0..=255u8).filter(|&b| lengths[b as usize] > 0).collect();
+    order.sort_by_key(|&b| (lengths[b as usize], b));
+    let maxlen = order.iter().map(|&b| lengths[b as usize] as usize).max().unwrap_or(0);
+    let mut count = [0usize; MAX_ENCODED_LEN + 2];
+    for &b in &order {
+        count[lengths[b as usize] as usize] += 1;
+    }
+    let mut code = [0u32; 256];
+    let mut next = 0u32;
+    for l in 1..=maxlen {
+        for &b in &order {
+            if lengths[b as usize] as usize == l {
+                code[b as usize] = next;
+                next += 1;
+            }
+        }
+        next <<= 1;
+    }
+
+    let mut w = BitWriter::new();
+    w.put(TYPE_WORD, 16);
+    // 24-bit length, high byte first — the small-size branch of the prologue.
+    w.put((input.len() >> 16) as u32, 8);
+    w.put((input.len() & 0xffff) as u32, 16);
+    w.put(u32::from(clue), 8);
+
+    // The code-length table: one count per length, stopping at the length that fills the code
+    // space. The decoder's loop ends on exactly that condition, so an incomplete code would leave
+    // it reading counts forever.
+    for c in count.iter().take(maxlen + 1).skip(1) {
+        putnum(&mut w, *c as u32);
+    }
+
+    // The symbol table, as leaps over the alphabet's still-free slots.
+    let mut used = [false; 256];
+    let mut nextchar: u8 = 0xFF;
+    for &b in &order {
+        let mut leap = 0u32;
+        let mut probe = nextchar;
+        loop {
+            probe = probe.wrapping_add(1);
+            if !used[probe as usize] {
+                leap += 1;
+            }
+            if probe == b {
+                break;
+            }
+        }
+        putnum(&mut w, leap - 1);
+        used[b as usize] = true;
+        nextchar = b;
+    }
+
+    // The symbols themselves.
+    let emit = |w: &mut BitWriter, b: u8| {
+        w.put(code[b as usize], u32::from(lengths[b as usize]));
+    };
+    for op in &ops {
+        match op {
+            Op::Sym(b) => emit(&mut w, *b),
+            Op::Run(n) => {
+                emit(&mut w, clue);
+                putnum(&mut w, *n);
+            }
+            Op::Literal(b) => {
+                emit(&mut w, clue);
+                putnum(&mut w, 0);
+                w.put(0, 1);
+                w.put(u32::from(*b), 8);
+            }
+        }
+    }
+    // End of stream: the clue, a zero run length, and a set bit.
+    emit(&mut w, clue);
+    putnum(&mut w, 0);
+    w.put(1, 1);
+
+    let stream = w.finish();
+    let mut out = Vec::with_capacity(16 + stream.len());
+    out.extend_from_slice(MAGIC);
+    out.push(1); // version
+    out.push(0x10); // header size
+    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&(input.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+    out.extend_from_slice(&stream);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    fn round_trip(data: &[u8]) {
+        let packed = compress(data).expect("compress");
+        assert_eq!(&packed[..4], MAGIC, "magic");
+        let back = decompress(&packed).expect("decompress what we just wrote");
+        assert_eq!(back, data, "round trip differs for {} bytes", data.len());
+    }
+
+    /// The shapes that break a Huffman encoder: nothing, one symbol, two, all of them, and a long
+    /// run of one byte — which is the case the clue escape exists for.
+    #[test]
+    fn the_awkward_inputs_round_trip() {
+        round_trip(&[]);
+        round_trip(&[0]);
+        round_trip(&[0xAB]);
+        round_trip(&[7; 1]);
+        round_trip(&[7; 2]);
+        round_trip(&[7; 3]);
+        round_trip(&[7; 4]);
+        round_trip(&[7; 5000]);
+        round_trip(&[0, 1]);
+        round_trip(&(0..=255u8).collect::<Vec<_>>());
+        round_trip(&(0..=255u8).cycle().take(4096).collect::<Vec<_>>());
+    }
+
+    /// Every byte value present, including whichever one becomes the clue — so the escaped-literal
+    /// path is exercised rather than only described.
+    #[test]
+    fn a_full_alphabet_forces_the_literal_escape() {
+        let mut data: Vec<u8> = (0..=255u8).collect();
+        // Make one byte overwhelmingly common so the clue lands on a byte that *is* in the data.
+        data.extend(std::iter::repeat_n(0x41, 4000));
+        round_trip(&data);
+        let clue = choose_clue(&data);
+        assert!(data.contains(&clue), "this test is pointless unless the clue occurs in the data");
+    }
+
+    /// `putnum` and `getnum` are inverses across every range boundary the tiling has.
+    #[test]
+    fn putnum_is_getnums_inverse() {
+        let mut values: Vec<u32> = (0..600).collect();
+        values.extend([1023, 1024, 65_535, 65_536, 1 << 20, (1 << 24) - 1]);
+        for v in values {
+            let mut w = BitWriter::new();
+            putnum(&mut w, v);
+            // A reader needs a whole word to prime, so pad generously.
+            let mut bytes = w.finish();
+            bytes.extend_from_slice(&[0; 8]);
+            let mut b = Bits::new(&bytes);
+            assert_eq!(getnum(&mut b).expect("getnum"), v as i32, "putnum({v}) did not read back");
+        }
+    }
+
+    /// A code the decoder can use at all has to be *complete*: its table loop ends only when the
+    /// code space is exactly filled, so a Kraft sum under one would leave it reading counts past
+    /// the end of the table.
+    #[test]
+    fn the_code_is_always_complete_and_within_the_limit() {
+        let cases: Vec<Vec<u8>> = vec![
+            vec![1],
+            vec![1, 2],
+            (0..=255u8).collect(),
+            // Wildly skewed, which is what drives codes past the length limit.
+            {
+                let mut v = vec![0u8; 60_000];
+                for (i, x) in v.iter_mut().enumerate() {
+                    *x = if i % 5000 == 0 { (i / 5000) as u8 } else { 0 };
+                }
+                v
+            },
+        ];
+        for data in cases {
+            let clue = choose_clue(&data);
+            let (_, freq) = plan(&data, clue);
+            let len = encode_lengths(&freq);
+            let live: Vec<usize> = (0..256).filter(|&b| freq[b] > 0).collect();
+            let sum: u64 =
+                live.iter().map(|&b| 1u64 << (MAX_ENCODED_LEN - len[b] as usize)).sum();
+            assert_eq!(sum, 1u64 << MAX_ENCODED_LEN, "code space not exactly filled");
+            for &b in &live {
+                assert!(len[b] >= 1 && len[b] as usize <= MAX_ENCODED_LEN, "length {}", len[b]);
+            }
+        }
     }
 }

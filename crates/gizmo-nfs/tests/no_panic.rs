@@ -107,4 +107,29 @@ proptest! {
         let packed = compression::jdlz::compress(&data).expect("compress");
         prop_assert_eq!(compression::jdlz::decompress(&packed).expect("decompress"), data);
     }
+
+    /// The same demand of the HUFF encoder, and it is a harder one to meet. JDLZ is a byte-oriented
+    /// LZ where a wrong decision costs ratio; this builds a Huffman table, a symbol table written as
+    /// leaps over an alphabet, and an escape that means three different things — so an input that
+    /// happens to use one byte, or all of them, or the byte the escape was assigned to, walks a
+    /// different path through the writer than the typical one.
+    #[test]
+    fn huff_compress_round_trips_anything(data in proptest::collection::vec(any::<u8>(), 0..8192)) {
+        let packed = compression::huff::compress(&data).expect("compress");
+        prop_assert_eq!(compression::huff::decompress(&packed).expect("decompress"), data);
+    }
+
+    /// And over inputs drawn from a small alphabet, which is where the runs are: real texture data
+    /// is long stretches of one value, and a `0..8192` uniform sample almost never produces one.
+    #[test]
+    fn huff_round_trips_run_heavy_data(
+        runs in proptest::collection::vec((any::<u8>(), 1usize..300), 0..64)
+    ) {
+        let mut data = Vec::new();
+        for (b, n) in runs {
+            data.extend(std::iter::repeat_n(b, n));
+        }
+        let packed = compression::huff::compress(&data).expect("compress");
+        prop_assert_eq!(compression::huff::decompress(&packed).expect("decompress"), data);
+    }
 }

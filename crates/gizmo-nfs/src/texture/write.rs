@@ -103,14 +103,24 @@ pub fn replace_blob(file: &[u8], hash: AssetHash, blob: &[u8]) -> NfsResult<Vec<
             detail: "a replacement blob must be exactly the decompressed size of the one it replaces",
         });
     }
-    let packed = crate::compression::jdlz::compress(blob)?;
+    // Recompress with the codec the blob arrived in. The slot was sized by that encoder, so using
+    // the other one throws the fit away before the data is even looked at: measured over an
+    // install, a HUFF-sourced blob re-packed as JDLZ fits 60 times in 52,389, and re-packed as HUFF
+    // 4,863 times.
+    let at = entry.abs_offset as usize;
+    let old = file
+        .get(at..at.saturating_add(entry.size as usize))
+        .ok_or(NfsError::CorruptArchive { detail: "TPK texture blob out of range" })?;
+    let packed = match crate::compression::detect(old) {
+        crate::compression::Codec::Huff => crate::compression::huff::compress(blob)?,
+        _ => crate::compression::jdlz::compress(blob)?,
+    };
     if packed.len() > entry.size as usize {
         return Err(NfsError::BufferSizeMismatch {
             detail: "the recompressed texture is larger than the slot it has to fit in",
         });
     }
 
-    let at = entry.abs_offset as usize;
     if at.saturating_add(entry.size as usize) > file.len() {
         return Err(NfsError::CorruptArchive { detail: "TPK texture blob out of range" });
     }

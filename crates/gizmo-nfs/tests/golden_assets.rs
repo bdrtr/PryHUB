@@ -383,6 +383,52 @@ fn the_chunkless_pack_is_refused_by_name() {
     );
 }
 
+/// The HUFF encoder against the only data that can judge it: EA's own blobs.
+///
+/// A round-trip through this crate's own decoder proves the encoder and the decoder agree, which
+/// they would do while both being wrong. What makes this test worth more is the *input*: these are
+/// EA's bytes, decoded by a decoder validated against 52,390 of them, so re-encoding them and
+/// getting the same thing back exercises the writer over real texture statistics rather than over
+/// whatever proptest happens to generate.
+///
+/// Ratio is asserted as well, and loosely on purpose. This does not try to reproduce EA's stream —
+/// two Huffman encoders that break ties differently both produce valid files — so what matters is
+/// staying in the same neighbourhood. Measured over the whole install it comes to 1.028x EA; the
+/// bound here is 1.10x so that a real regression trips it and a tie-break change does not.
+#[test]
+fn huff_re_encodes_eas_own_blobs() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping HUFF encoder test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("CARS/240SX/TEXTURES.BIN")).expect("read TEXTURES.BIN");
+    let entries = gizmo_nfs::texture::Tpk::directory(&bytes).expect("directory");
+
+    let (mut n, mut ea, mut ours) = (0usize, 0usize, 0usize);
+    for e in &entries {
+        let at = e.abs_offset as usize;
+        let Some(blob) = bytes.get(at..at.saturating_add(e.size as usize)) else { continue };
+        if gizmo_nfs::compression::detect(blob) != gizmo_nfs::compression::Codec::Huff {
+            continue;
+        }
+        let plain = gizmo_nfs::compression::huff::decompress(blob).expect("EA's blob decodes");
+        let packed = gizmo_nfs::compression::huff::compress(&plain).expect("re-encode");
+        let back = gizmo_nfs::compression::huff::decompress(&packed).expect("read our own back");
+        assert_eq!(back, plain, "a re-encoded blob did not read back");
+        // What we wrote is the shape the game ships, not merely something we can read.
+        assert_eq!(&packed[..4], b"HUFF", "magic");
+        assert_eq!((packed[4], packed[5]), (1, 0x10), "version and header size");
+        n += 1;
+        ea += blob.len();
+        ours += packed.len();
+    }
+    assert_eq!(n, 29, "the 240SX has 29 HUFF blobs");
+    assert!(
+        ours as f64 <= ea as f64 * 1.10,
+        "our HUFF came to {ours} bytes against EA's {ea} — more than 10% worse"
+    );
+}
+
 /// The discovery proposal, on a buffer whose layout is already known.
 ///
 /// A car's `0x00134B01` vertex buffer is stride 36 (position, normal, colour, uv) behind a run of
@@ -605,17 +651,29 @@ fn a_texture_can_be_written_back_in_place() {
         packs += 1;
         // Iterating `tpk.textures` is `HashMap` order, which Rust randomises per process, and the
         // full round trip below runs once per pack — so *which* texture got verified changed every
-        // run, and with it whether a HUFF-sourced blob was ever round-tripped at all. That is the
-        // one case where the codec changes under the write (HUFF in, JDLZ out), so leaving it to
-        // chance meant the interesting path was usually untested. Ordered by hash, a run verifies
-        // the same textures as the last one, and both codecs get a turn where the pack has both.
+        // run, and with it whether a HUFF-sourced blob was ever round-tripped at all. Ordered by
+        // hash, a run verifies the same textures as the last one, and both codecs get a turn where
+        // the pack has both.
         let mut by_hash: Vec<_> = tpk.textures.iter().collect();
         by_hash.sort_by_key(|(h, _)| h.0);
         let mut checked: [bool; 2] = [false, false];
         for (hash, before) in by_hash {
             let Ok(blob) = gizmo_nfs::texture::blob_of(&file, *hash) else { continue };
             let entry = tpk.entry(*hash).expect("the entry we just read a blob for");
-            let packed = gizmo_nfs::compression::jdlz::compress(&blob).expect("compress");
+            // Predict with the codec `replace_blob` will actually use — the one the blob arrived in.
+            // Predicting with JDLZ regardless, as this did while JDLZ was the only encoder, now
+            // disagrees with the writer: our HUFF beats JDLZ on most of EA's HUFF blobs and loses on
+            // a few, so a JDLZ-based "fits" could be handed to a HUFF write that does not.
+            let at = entry.abs_offset as usize;
+            let stored = gizmo_nfs::compression::detect(
+                file.get(at..at.saturating_add(entry.size as usize)).unwrap_or(&[]),
+            );
+            let packed = match stored {
+                gizmo_nfs::compression::Codec::Huff => {
+                    gizmo_nfs::compression::huff::compress(&blob).expect("huff compress")
+                }
+                _ => gizmo_nfs::compression::jdlz::compress(&blob).expect("jdlz compress"),
+            };
             worst = worst.max(packed.len() as f64 / entry.size as f64);
             if packed.len() > entry.size as usize {
                 misses += 1;
@@ -624,12 +682,8 @@ fn a_texture_can_be_written_back_in_place() {
             fits += 1;
             // The full verification is O(textures²) in this pack, so it runs at most twice — once
             // for a blob that arrived as JDLZ and once for one that arrived as HUFF, because those
-            // are different writes: the second changes the stored codec. The fit/miss counts above
+            // are different writes even now that both keep their codec. The fit/miss counts above
             // still cover every texture in the install.
-            let at = entry.abs_offset as usize;
-            let stored = gizmo_nfs::compression::detect(
-                file.get(at..at.saturating_add(entry.size as usize)).unwrap_or(&[]),
-            );
             let lane = usize::from(stored == gizmo_nfs::compression::Codec::Huff);
             if checked[lane] {
                 continue;
