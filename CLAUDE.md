@@ -370,6 +370,7 @@ $UG2 diff   "$NFSU2_ROOT/CARS/TAXI/GEOMETRY.BIN" "$NFSU2_ROOT/CARS/TAXI02/GEOMET
 $UG2 probe  "$NFSU2_ROOT/CARS/SENTRA" --matrices     # raw solids: counts, buffers, matrices
 $UG2 textures "$NFSU2_ROOT/CARS/240SX"
 $UG2 globalb  "$NFSU2_ROOT/CARS/240SX"
+$UG2 profile  ~/.../AppData/Local/"NFS Underground 2"/<name>   # fitted products + totals
 ```
 
 Pointed at a `CARS/` folder, `export` does the lot: one subdirectory per car, a failed car

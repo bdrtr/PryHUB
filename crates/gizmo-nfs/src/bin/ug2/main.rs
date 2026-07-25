@@ -35,6 +35,7 @@ mod info;
 mod parts;
 mod paths;
 mod probe;
+mod profile;
 mod textures;
 
 use clap::{Parser, Subcommand};
@@ -122,6 +123,11 @@ enum Command {
         filter: Option<String>,
     },
     /// Print the wheel mounts, radius and mass recorded in `GLOBALB.BUN`.
+    /// Read a player profile: which performance products a car has fitted, and their totals.
+    Profile {
+        /// The profile file, or the directory holding it.
+        path: PathBuf,
+    },
     Globalb {
         /// `GLOBAL/GLOBALB.BUN`, or a car directory / game root to find it from.
         path: PathBuf,
@@ -192,6 +198,7 @@ fn main() -> ExitCode {
         Command::Dump { file, max_depth, hex } => dump::run(&file, max_depth, hex),
         Command::Textures { car, filter } => textures::run(&car, filter.as_deref()),
         Command::Globalb { path, filter, parts } => globalb::run(&path, filter.as_deref(), parts),
+        Command::Profile { path } => profile::run(&path),
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
