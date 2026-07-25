@@ -11,9 +11,14 @@
 //! simple, quick-table-free decode path (correctness over speed — texture blobs are small).
 //!
 //! **What is locked and what is only transcribed.** Every HUFF blob in a real install — 52,390 of
-//! 52,390 — is type word `0xfb30`, version 1, header size `0x10`, flags 0. So the small-size
-//! (24-bit length) branch and the plain non-delta path are the ones the install exercises, and they
-//! are the ones validated byte-for-byte. The 32-bit-size branch (`type & 0x8000`), the skip-words
+//! 52,390 — carries header `(version 1, header size 0x10, flags 0)` and reads its stream type word
+//! as **`0x30fb`**. That value is what decides the shape: `& 0x8000 == 0` takes the small-size
+//! (24-bit length) branch, `& 0x100 == 0` means no skip words, and it matches no arm of
+//! [`undo_delta_filter`], so the plain non-delta path is the one the install exercises and the one
+//! validated byte-for-byte. (It is written `0x30fb` and not `0xfb30`, which is how this comment had
+//! it: the two differ by a byte swap, and the swapped spelling has the `0x8000` bit set, so it
+//! describes the 32-bit branch this format never takes. The conclusions below were right and the
+//! number above them was not.) The 32-bit-size branch (`type & 0x8000`), the skip-words
 //! branch (`type & 0x100`) and both delta pre-filters have never seen a real byte here; they are
 //! transcribed from the sources above and are the first place to look if a blob from another EA
 //! title reads as noise. This crate's habit is to say which is which rather than to call all of it

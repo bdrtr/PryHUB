@@ -17,7 +17,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | RefPack / QFS decompression | `compression::refpack` | ✅ done |
 | JDLZ decompression | `compression::jdlz` | ✅ done — validated byte-exact against a real golden pair |
 | JDLZ **compression** | `compression::jdlz` | ✅ done — a real 1.6 MB bundle packs to **29.8%** and reads back byte-exact (EA's own encoder: 30.1%) |
-| HUFF decompression | `compression::huff` | ✅ done — order-0 Huffman + clue escape; 52,390 real blobs decode, every one of them type `0xfb30`. There is no HUFF *compressor*, so a rewritten blob goes back as JDLZ |
+| HUFF decompression | `compression::huff` | ✅ done — order-0 Huffman + clue escape; 52,390 real blobs decode, every one of them stream type `0x30fb` (small 24-bit lengths, no skip words, no delta filter). There is no HUFF *compressor*, so a rewritten blob goes back as JDLZ |
 | TPK texture write-back | `texture::write` | 🟡 in place only — 1,402 of 2,123 blobs (66%) recompress small enough to fit their slot. Split by source codec that is 1,392/1,538 JDLZ but 10/585 HUFF, because JDLZ is the only encoder: 575 of the 721 misses want a HUFF *encoder*, not relocation |
 | BIGF / VIV archive reader | `viv` | ✅ done |
 | Output data contract | `types` | ✅ defined |
@@ -29,7 +29,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | Schema discovery (unknown chunks) | `discover` | ✅ done — user-typed stride/columns, exact-divisor candidates ranked by lane consistency, `0x11` filler skipped; re-derives the real vertex layout in a golden test |
 | glTF (`.glb`) + OBJ/MTL + PNG output | `export` | ✅ done — pure text/bytes, no filesystem; shared by `ug2 export` and PryHUB |
 | `GLOBALB.BUN` car + `CarParts` tables | `globalb` | ✅ done — `CarTypeInfo` (wheels, mass, body box) plus the per-car **handling** record `0x00034600` (`8 + 46×2192` = the chunk exactly): rpm limits, a 9-point torque curve in N·m, and four gearboxes — stock and three upgrade levels. Also 12,167 `CarParts`, 49 of 51 attribute keys named, and the 123-colour paint palette; every count checked against its chunk rather than trusted |
-| Player profile (fitted upgrades) | `profile` | ✅ done — which performance products a car has fitted and the per-category totals, locked by diffing a save after each purchase |
+| Player profile (fitted upgrades, applied vinyl) | `profile` | ✅ done — which performance products a car has fitted, the per-category totals, and the vinyl on the car (`bStringHash` of its menu name). All locked by diffing a save after each change, twice with the next value written down first |
 | World / city (`STREAM*.BUN`, `L4RA.BUN`) | `world` | 🔴 research-frontier |
 
 The crate is **synchronous on purpose**: it is CPU work over byte slices with no I/O to wait for,
@@ -64,7 +64,7 @@ cargo run -p gizmo-nfs --features tools --bin ug2 -- <command>
 | `ug2 diff A B [--all --max N]` | what differs between two asset files, chunk by chunk |
 | `ug2 probe CARS/240SX [--matrices]` | the raw solid view: declared counts vs. buffer sizes, mesh-header words, matrix classification |
 | `ug2 globalb GLOBALB.BUN [--parts]` | wheel mounts, radius and mass per car; `--parts` for the `CarParts` tables and the paint palette |
-| `ug2 profile PROFILE` | a save's fitted performance products and the per-category totals they sum to |
+| `ug2 profile PROFILE` | a save's fitted performance products, the per-category totals they sum to, and the vinyl applied to the car |
 
 `dump` and `probe` are the reverse-engineering levers: every unconfirmed offset in this crate
 was locked with them against a legally-owned install, never by assuming a constant.
