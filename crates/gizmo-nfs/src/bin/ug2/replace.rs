@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub fn run(pack: &Path, texture: &str, png: &Path, out: &Path, force: bool) -> Result<()> {
     let pack_path = resolve(pack)?;
-    if out == pack_path && !force {
+    if !force && same_file(out, &pack_path) {
         return Err(format!(
             "{} is the file being read; pass --force to overwrite it, or -o somewhere else",
             out.display()
@@ -92,6 +92,20 @@ pub fn run(pack: &Path, texture: &str, png: &Path, out: &Path, force: bool) -> R
         outln!("  read back at {psnr:.1} dB — {:?} stores two endpoints per 4×4 block", before.source_format);
     }
     Ok(())
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// Compared after resolving rather than as written, because the guard this feeds is about *intent*
+/// and the strings routinely disagree while the file does not: `-o TEXTURES.BIN` from inside a car's
+/// directory is the same file as `./TEXTURES.BIN`, and a comparison of the two paths says otherwise.
+/// A target that does not exist yet cannot be the input, which is the case the `unwrap_or(false)`
+/// covers.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// A pack path, or a car directory to find one in.
