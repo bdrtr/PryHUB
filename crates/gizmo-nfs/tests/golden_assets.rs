@@ -357,9 +357,11 @@ fn tool_compiled_packs_relocate_too() {
 /// The one tool-made shape that is *not* an ordinary pack, and is refused rather than guessed at.
 ///
 /// `PEUGOT/TEXTURES.BIN` has no `0x33320002`: its directory is followed by raw compressed blocks,
-/// and the tolerant walk reads the first block's `JDLZ` magic as a chunk id. Four other packs from
-/// the same author's tooling do not look like this, so it is a rarer variant rather than "what a
-/// compiler does" — and one sample is not enough to rewrite a file on.
+/// and the tolerant walk reads the first block's `JDLZ` magic as a chunk id. Four packs made on
+/// purpose with NFS-CarToolkit do not look like this, so it is a rarer variant rather than "what a
+/// compiler does". It is a third-party mod, downloaded rather than built, so what wrote it cannot be
+/// asked and a second sample cannot be produced — which is why it stays refused rather than being
+/// supported on one artefact.
 #[test]
 fn the_chunkless_pack_is_refused_by_name() {
     let Some(root) = root() else {

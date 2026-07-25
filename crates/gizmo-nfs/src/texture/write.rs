@@ -175,16 +175,17 @@ const BLOB_ALIGN: usize = 128;
 /// them, and the tolerant walk reads the first block's `JDLZ` magic as a chunk id (`0x5a4c444a`).
 /// Its blobs run from the end of the directory to the end of the file.
 ///
-/// The first guess about that was that it is simply what a texture compiler does, the file being a
-/// mod made by this repository's own author. **Four more packs made deliberately with the same
-/// tooling disproved it**: 240SX, GOLF, RX7 and SUPRA re-saved through NFS-CarToolkit all have the
-/// chunk, and relocate through this function unchanged, every texture pixel-identical. So a
-/// compiler's ordinary output is an ordinary pack — what marks it is only that its blobs are
+/// The first guess about that was that it is simply what a texture compiler does. **Four packs made
+/// deliberately to check disproved it**: 240SX, GOLF, RX7 and SUPRA re-saved through NFS-CarToolkit
+/// all have the chunk, and relocate through this function unchanged, every texture pixel-identical.
+/// So a compiler's ordinary output is an ordinary pack — what marks it is only that its blobs are
 /// *tidier* than EA's, in descriptor order and contiguous and all JDLZ where EA mixes in HUFF.
 ///
-/// Which leaves `PEUGOT` as a rarer variant of unknown making rather than a whole second format, and
-/// one sample is not something to rewrite a file on. It is turned away by name, and the error says
-/// which shape it found.
+/// `PEUGOT` is a third-party mod, downloaded rather than built here, so **what wrote it is not
+/// known** — which tool, which version, how long ago. That is the whole reason it stays refused: not
+/// that the shape is hard, but that there is one file of it and no way to make a second. A layout is
+/// not lockable from a single artefact whose provenance nobody can state. It is turned away by name,
+/// and the error says which shape it found.
 ///
 /// # Errors
 /// - A hash in `edits` is not in the pack.
