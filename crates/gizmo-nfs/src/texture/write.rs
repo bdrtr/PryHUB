@@ -38,6 +38,12 @@
 //! last leaf (77 of 77), nothing outside the descriptor table points at a blob, and the bytes
 //! between blobs are junk rather than a pattern. Relocating every pack with nothing replaced and
 //! decompressing all 54,875 blobs back gives **byte-identical** results, for 0.36% more file.
+//!
+//! And then the game read one. A 240SX pack was relocated with a single texture repainted — every
+//! one of its 73 blobs at a new offset, every descriptor rewritten — installed, and looked at: the
+//! edited texture showed the colour it was given and the other 72 drew correctly. That is the check
+//! nothing here can make for itself. A decoder reading back what this encoder wrote proves the two
+//! agree; only the game proves they are both right.
 
 use super::directory::{find_chunk, parse_descriptors, DESCRIPTORS};
 use crate::chunk::{ChunkNode, WalkOptions};
