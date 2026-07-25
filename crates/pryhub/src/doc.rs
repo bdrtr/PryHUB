@@ -53,6 +53,13 @@ pub enum NoteKind {
     /// An export that landed: what it wrote and where.
     Exported { summary: String, into: String },
     ExportFailed { error: String },
+    /// A texture written back into a pack: which one, into which file, whether the pack had to be
+    /// relocated to take it, and what the round trip cost.
+    ///
+    /// `psnr` is `None` when the image came back identical — which is not a rounding of "very
+    /// close" but the two lossless cases, a channel swap and a palette the image fits inside.
+    Replaced { name: String, into: String, moved: bool, psnr: Option<f32> },
+    ReplaceFailed { error: String },
     /// Anything the program itself has to say — a panicking job, say. Not localised: it is a
     /// diagnostic that happens to be worth showing.
     Diagnostic(String),
@@ -78,6 +85,15 @@ impl NoteKind {
             Self::Finding { subject, message } => format!("{subject}: {message}"),
             Self::Exported { summary, into } => format!("{} — {summary} → {into}", t.exported),
             Self::ExportFailed { error } => format!("{}: {error}", t.export_failed),
+            Self::Replaced { name, into, moved, psnr } => {
+                let how = match psnr {
+                    None => t.rep_exact.to_string(),
+                    Some(db) => format!("{db:.1} dB"),
+                };
+                let moved = if *moved { format!(" · {}", t.rep_moved) } else { String::new() };
+                format!("{name} {} → {into} · {how}{moved}", t.replaced)
+            }
+            Self::ReplaceFailed { error } => format!("{}: {error}", t.replace_failed),
             Self::Diagnostic(text) => text.clone(),
         }
     }
@@ -228,12 +244,32 @@ impl Doc {
     /// answer from the ones that could not be decoded — see [`DECODE_BUDGET`].
     #[must_use]
     pub fn decode_textures(&self, tell: &dyn Fn(usize, usize)) -> Option<(gizmo_nfs::Tpk, usize)> {
-        let own = decode_pack(&self.bytes, tell).filter(|(t, _)| !t.entries.is_empty());
-        own.or_else(|| {
-            let beside = self.path.parent()?.join("TEXTURES.BIN");
-            let bytes = std::fs::read(beside).ok()?;
-            decode_pack(&bytes, tell)
-        })
+        match self.pack_path()? {
+            p if p == self.path => decode_pack(&self.bytes, tell),
+            beside => decode_pack(&std::fs::read(beside).ok()?, tell),
+        }
+    }
+
+    /// Which file the textures on screen came out of: this document, or the pack beside it.
+    ///
+    /// It exists because a *write* needs the answer and there was nowhere to get it. Decoding used
+    /// to make this choice inline and then drop it, so the app held a decoded pack with no record of
+    /// where it had been read — fine while every path was read-only, and the first thing missing the
+    /// moment one of them was not.
+    ///
+    /// So the choice is made here and [`Self::decode_textures`] follows it, rather than the two
+    /// making it separately and agreeing. A texture replaced in the interface goes back into the
+    /// file the interface was showing.
+    #[must_use]
+    pub fn pack_path(&self) -> Option<std::path::PathBuf> {
+        // The open file itself, when it is a pack: a directory that parses and is not empty. That
+        // is the same test the decode applied, one step earlier and without the pixels.
+        if gizmo_nfs::Tpk::directory(&self.bytes).is_ok_and(|e| !e.is_empty()) {
+            return Some(self.path.clone());
+        }
+        // Otherwise the car's own pack, which is what a `GEOMETRY.BIN` is drawn with.
+        let beside = self.path.parent()?.join("TEXTURES.BIN");
+        beside.is_file().then_some(beside)
     }
 
     /// Every texture's name, without decoding a pixel of it.

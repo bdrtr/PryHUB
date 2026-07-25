@@ -16,6 +16,37 @@ use std::sync::mpsc::{channel, Receiver};
 /// Denenecek seçiciler, sırayla. İlk bulunan kazanır.
 const CHOOSERS: &[&str] = &["zenity", "kdialog", "qarma", "yad"];
 
+/// Seçicinin ne arayacağı.
+///
+/// Süzgeç bir kolaylık değil: bu pencere iki ayrı şey için açılıyor ve ikisi birbirinin dosyasını
+/// kabul etmiyor. Oyunun kabını PNG diye vermek de, PNG'yi belge diye açmaya çalışmak da sessizce
+/// yanlış sonuç veriyor — hangisi istendiği burada söyleniyor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Filter {
+    /// Oyunun kapları — açılacak dosya.
+    Assets,
+    /// Bir dokunun yerine konacak görüntü.
+    Images,
+}
+
+impl Filter {
+    /// `desenler|etiket` — kdialog'un dilbilgisi.
+    fn kdialog(self) -> &'static str {
+        match self {
+            Self::Assets => "*.BIN *.bin *.VIV *.viv *.BUN *.bun|NFSU2",
+            Self::Images => "*.png *.PNG|PNG",
+        }
+    }
+
+    /// `etiket | desenler` — zenity ailesinin dilbilgisi.
+    fn gtk(self) -> &'static str {
+        match self {
+            Self::Assets => "--file-filter=NFSU2 | *.BIN *.bin *.VIV *.viv *.BUN *.bun",
+            Self::Images => "--file-filter=PNG | *.png *.PNG",
+        }
+    }
+}
+
 /// Bu makinede bir seçici var mı. Çağıran, olmayan bir şeyi açan bir düğme çizmesin diye sorar.
 #[must_use]
 pub fn available() -> bool {
@@ -42,14 +73,18 @@ fn chooser() -> Option<&'static str> {
 /// çalışıyor; açık duran bir pencere yüzünden bir çözme işinin beklemesi için sebep yok.
 ///
 /// `None` gelmesi "vazgeçildi" demek. Kanal kapanırsa iplik zaten bitmiştir.
-pub fn open(ctx: &egui::Context, start_in: Option<PathBuf>) -> Option<Receiver<Option<PathBuf>>> {
+pub fn open(
+    ctx: &egui::Context,
+    start_in: Option<PathBuf>,
+    filter: Filter,
+) -> Option<Receiver<Option<PathBuf>>> {
     let name = chooser()?;
     let (tx, rx) = channel();
     let ctx = ctx.clone();
     std::thread::Builder::new()
         .name("pryhub-picker".into())
         .spawn(move || {
-            let picked = run(name, start_in.as_deref());
+            let picked = run(name, start_in.as_deref(), filter);
             let _ = tx.send(picked);
             // Seçici kapandığında pencerenin kendiliğinden uyanması gerekiyor; kimse fare
             // oynatmıyor olabilir.
@@ -60,14 +95,13 @@ pub fn open(ctx: &egui::Context, start_in: Option<PathBuf>) -> Option<Receiver<O
 }
 
 /// Seçiciyi çalıştır ve seçilen yolu döndür.
-fn run(name: &str, start_in: Option<&Path>) -> Option<PathBuf> {
+fn run(name: &str, start_in: Option<&Path>, filter: Filter) -> Option<PathBuf> {
     let mut cmd = std::process::Command::new(name);
     match name {
         "kdialog" => {
             cmd.arg("--getopenfilename");
             cmd.arg(start_in.map_or_else(|| PathBuf::from("."), Path::to_path_buf));
-            // kdialog'un süzgeç dilbilgisi: `desenler|etiket`.
-            cmd.arg("*.BIN *.bin *.VIV *.viv *.BUN *.bun|NFSU2");
+            cmd.arg(filter.kdialog());
         }
         // zenity, qarma ve yad aynı GTK arayüzünü paylaşıyor.
         _ => {
@@ -78,7 +112,7 @@ fn run(name: &str, start_in: Option<&Path>) -> Option<PathBuf> {
                 // dosya adı sanıyor.
                 cmd.arg(format!("--filename={}/", dir.display()));
             }
-            cmd.arg("--file-filter=NFSU2 | *.BIN *.bin *.VIV *.viv *.BUN *.bun");
+            cmd.arg(filter.gtk());
             cmd.arg("--file-filter=All files | *");
         }
     }

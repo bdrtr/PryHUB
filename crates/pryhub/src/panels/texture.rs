@@ -74,7 +74,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     }
     let selected = app.texture_selection.filter(|h| tpk.texture(*h).is_some());
     let mut pick = None;
-    let mut save_one = None;
+    let mut action = None;
 
     egui::Panel::right("texture_preview")
         .resizable(true)
@@ -94,7 +94,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
                 0.0_f32,
                 token::DIVIDER,
             );
-            save_one = preview(app, ui, tpk, selected);
+            action = preview(app, ui, tpk, selected);
         });
 
     egui::CentralPanel::default()
@@ -106,13 +106,25 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     if let Some(hash) = pick {
         app.texture_selection = Some(hash);
     }
-    if let Some(hash) = save_one {
-        app.export_now(crate::export::Kind::OneTexture(hash));
+    match action {
+        Some(Action::SavePng(hash)) => app.export_now(crate::export::Kind::OneTexture(hash)),
+        // The dialog rather than the write: which image, and — the part worth being asked — whether
+        // it goes over the game's own file.
+        Some(Action::Replace) => app.show_replace = true,
+        None => {}
     }
 }
 
-/// The right-hand pane: the selected image at size, what the file says about it, and the button that
-/// writes just that one. Returns the texture to save, if it was pressed.
+/// What the preview pane's buttons ask for.
+enum Action {
+    /// Write this one image out as a PNG.
+    SavePng(AssetHash),
+    /// Put an image in its place.
+    Replace,
+}
+
+/// The right-hand pane: the selected image at size, what the file says about it, and the two buttons
+/// that move an image in or out. Returns whichever was pressed.
 ///
 /// The design has no preview pane, so this is set as its *inspector* — the one place the system
 /// defines a titled key/value column (design:236-249): a kicker, the name, the numbers that
@@ -122,9 +134,9 @@ fn preview(
     ui: &mut egui::Ui,
     tpk: &gizmo_nfs::Tpk,
     selected: Option<AssetHash>,
-) -> Option<AssetHash> {
+) -> Option<Action> {
     let t = app.lang.strings();
-    let mut save_one = None;
+    let mut action = None;
     // A panel only keeps the width it was given if its contents claim it; an image and a few short
     // rows do not, and the panel would collapse to its 96 px minimum.
     ui.set_min_width(ui.max_rect().width());
@@ -181,16 +193,26 @@ fn preview(
     }
 
     ui.add_space(token::SPACE_3);
-    // Just this one image. The toolbar's export writes the whole pack; someone who came
-    // for a single texture should not have to take 73. "PNG" is the format's name rather than a
-    // word, which is why it is not in the string table.
-    if crate::widget::action(ui, "PNG", true, theme::icon::export)
-        .on_hover_text(t.export_hint)
-        .clicked()
-    {
-        save_one = Some(tex.hash);
-    }
-    save_one
+    // Out and in, side by side, because they are the same thing in two directions. Just this one
+    // image either way: the toolbar's export writes the whole pack, and someone who came for a
+    // single texture should not have to take 73. "PNG" is the format's name rather than a word,
+    // which is why it alone is not in the string table.
+    ui.spacing_mut().item_spacing.x = token::SPACE_2;
+    ui.horizontal_wrapped(|ui| {
+        if crate::widget::action(ui, "PNG", true, theme::icon::export)
+            .on_hover_text(t.export_hint)
+            .clicked()
+        {
+            action = Some(Action::SavePng(tex.hash));
+        }
+        if crate::widget::action(ui, t.rep_action, true, theme::icon::import)
+            .on_hover_text(t.rep_hint)
+            .clicked()
+        {
+            action = Some(Action::Replace);
+        }
+    });
+    action
 }
 
 /// One field of the preview: the label on its own line, the value under it in mono, and the soft

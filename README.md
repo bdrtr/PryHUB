@@ -26,6 +26,7 @@ it, PryHUB leans on what it can do differently:
 | Fixed parser | **Discovery mode** — read an undecoded chunk with a layout you type |
 | Silent failure | **Validation** — every check says what it examined, so "no findings" is never confused with "nobody looked" |
 | Mostly OBJ | glTF (`.glb`, self-contained) + OBJ/MTL + PNG |
+| Read-only for textures | **Writes them back** — a PNG into a pack, in place or by relocating it |
 
 ## Build & run
 
@@ -45,9 +46,10 @@ $UG2 info    "$NFSU2_ROOT/CARS/240SX"
 $UG2 export  "$NFSU2_ROOT/CARS"  -o out/          # every car: .glb + OBJ/MTL + PNG
 $UG2 diff    A.BIN B.BIN                          # chunk-by-chunk comparison
 $UG2 dump    "$NFSU2_ROOT/CARS/240SX/GEOMETRY.BIN"
+$UG2 replace "$NFSU2_ROOT/CARS/240SX" --texture 240SX_BADGING --png new.png -o out.BIN
 ```
 
-Flags worth knowing: `--tab 3d|hex|texture`, `--screen validation|discovery|diff|dictionary`,
+Flags worth knowing: `--tab 3d|hex|texture`, `--screen validation|discovery|diff|dictionary|replace`,
 `--select <offset>`, `--compare <file>`, and `--shot <png>` (draw a few frames, save the window,
 exit — how the interface gets checked on a machine whose compositor will not hand out a screen
 grab).

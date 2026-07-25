@@ -236,6 +236,7 @@ fn job_word(kind: crate::jobs::Kind, t: &crate::i18n::Strings) -> &'static str {
         crate::jobs::Kind::Export => t.job_export,
         crate::jobs::Kind::Palette => t.job_palette,
         crate::jobs::Kind::CarSpec => t.job_car_spec,
+        crate::jobs::Kind::Replace => t.job_replace,
     }
 }
 

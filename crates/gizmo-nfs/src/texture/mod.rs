@@ -87,7 +87,7 @@ mod directory;
 
 pub use directory::TpkEntry;
 pub use encode::replace_pixels;
-pub use write::{blob_of, relocate, replace_blob};
+pub use write::{blob_of, relocate, replace_blob, replace_image};
 
 use crate::chunk::{ChunkNode, WalkOptions};
 use directory::DESCRIPTORS;

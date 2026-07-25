@@ -18,6 +18,10 @@ Cargo.lock.orig
 # Aracın kendi çıktısı: `Dışa Aktar` çalıştığı dizine yazar, o da genelde repo kökü oluyor.
 /pryhub-export/
 
+# `Değiştir…` de öyle: düzenlenmiş paket varsayılan olarak buraya iniyor. Ayrıca bir `.BIN`, yani
+# yukarıdaki kural onu zaten yakalıyor — dizin yine de adıyla yazılı, çünkü ne olduğu görünsün.
+/pryhub-edit/
+
 # Tasarım drop'u: repoya girmez, dışarıdan sağlanır (bkz. CLAUDE.md, "Checking the port against
 # the design"). Takip edilmediği hâlde yok sayılmayınca her commit'te untracked gürültü oluyordu ve
 # bir `git add -A` 820 KB'ı kazara içeri alıyordu.

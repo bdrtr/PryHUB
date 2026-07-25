@@ -140,6 +140,45 @@ pub fn replace_blob(file: &[u8], hash: AssetHash, blob: &[u8]) -> NfsResult<Vec<
     Ok(out)
 }
 
+/// Put an image into a pack: encode it into the texture's own format and write it back.
+///
+/// The whole replacement, from pixels to a file, in the order a caller has to do it anyway — and
+/// therefore in one place rather than in each of them. `ug2 replace` and PryHUB's texture tab both
+/// come through here, so the two cannot come to different conclusions about when a pack has to move.
+///
+/// Which of the two write paths it took is the `bool`: `false` means the new blob compressed back
+/// into the slot the old one had and **not one other byte of the file changed**; `true` means it did
+/// not, so every blob was laid out afresh and every descriptor rewritten. That is worth reporting
+/// rather than hiding, because the two results are different things to hand somebody — one is an
+/// edit to a pack and the other is a new pack with the same contents.
+///
+/// # Errors
+/// Whatever [`crate::texture::replace_pixels`] refuses (dimensions that are not the texture's, a
+/// format with no encoder, a header that fails its own check) and whatever [`relocate`] refuses (a
+/// pack with no blob chunk — see its docs for the one file in the install that is like that).
+pub fn replace_image(
+    file: &[u8],
+    hash: AssetHash,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> NfsResult<(Vec<u8>, bool)> {
+    let (entries, _) = table(file)?;
+    let entry = *entries
+        .iter()
+        .find(|e| e.hash == hash)
+        .ok_or(NfsError::CorruptArchive { detail: "no texture with that hash in this TPK" })?;
+    let blob = blob_of(file, hash)?;
+    let new = super::encode::replace_pixels(&blob, &entry, rgba, width, height)?;
+    // The cheap path first, always. Whether a re-encoded blob of the same length compresses back
+    // into its old slot is a property of the pixels rather than of the format, so it is answered by
+    // trying rather than by predicting: over the install's 2,243 textures, 1,975 fit and 268 did not.
+    match replace_blob(file, hash, &new) {
+        Ok(out) => Ok((out, false)),
+        Err(_) => relocate(file, &[(hash, new)]).map(|out| (out, true)),
+    }
+}
+
 /// The chunk whose payload is every pixel blob in the pack.
 const BLOBS: u32 = 0x3332_0002;
 

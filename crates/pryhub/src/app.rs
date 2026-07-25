@@ -38,6 +38,19 @@ pub enum Tab {
     Assembly,
 }
 
+/// What the desktop's file chooser was opened for.
+///
+/// One chooser at a time and one slot to hold it, so the slot has to say what the answer means. It
+/// arrives from another thread several frames after the click that asked for it, and by then there
+/// is nothing else left to tell "this is the file to open" from "this is the image to put in".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Picking {
+    /// A document, for one side of the compare screen.
+    Open(crate::jobs::Side),
+    /// An image, for the replace dialog's field.
+    Image,
+}
+
 /// The state of the open file's textures.
 ///
 /// Decoding is a whole pack expanded to RGBA8 — 73 images for a car, 1,786 for its vinyls — so it
@@ -143,8 +156,7 @@ pub struct PryHub {
     /// own thread — the chooser does not return until the user has decided, and the interface may
     /// not stop drawing meanwhile. One slot, because two choosers at once is not a thing anyone
     /// means to open.
-    pub picking:
-        Option<(crate::jobs::Side, std::sync::mpsc::Receiver<Option<std::path::PathBuf>>)>,
+    pub picking: Option<(Picking, std::sync::mpsc::Receiver<Option<std::path::PathBuf>>)>,
     /// The selected chunk's parsed model, keyed by its offset so it is rebuilt only on a change.
     model: Option<(usize, gizmo_nfs::inspect::ChunkModel)>,
     /// eframe's wgpu device, for the 3D tab. `None` when the backend is not wgpu, in which case
@@ -188,6 +200,14 @@ pub struct PryHub {
     /// thing the second time.
     pub show_export: bool,
     pub export_choice: crate::export::Choice,
+    /// Whether the replace dialog is up, the image it has been given, and whether it has been told
+    /// to write over the game's own file. The path outlives the dialog the way the export choice
+    /// does; the *overwrite* flag does not, and that asymmetry is the point — someone who exports
+    /// twice means the same thing twice, and someone who overwrites a game file once has not
+    /// thereby asked to do it again.
+    pub show_replace: bool,
+    pub replace_png: String,
+    pub replace_over: bool,
     /// Set when the density or language changed and the style must be rebuilt.
     pub(crate) restyle: bool,
     /// `--shot <path>`: draw a few frames, save the window as a PNG, and exit. The tool renders
@@ -247,6 +267,9 @@ impl PryHub {
             texture_cache: std::collections::HashMap::new(),
             show_export: false,
             export_choice: crate::export::Choice::default(),
+            show_replace: false,
+            replace_png: String::new(),
+            replace_over: false,
             restyle: false,
             shot: shot.map(|p| crate::shot::Shot {
                 path: p.into(),
@@ -272,6 +295,14 @@ impl PryHub {
                 // interface a screenshot could otherwise never reach.
                 "export" => {
                     app.show_export = true;
+                    Screen::Workspace
+                }
+                // The same, for the other dialog. It sits over the texture tab because that is
+                // where it is reached from and what it is about — a screenshot of it over the hex
+                // view would be a picture of a state the program cannot be in.
+                "replace" => {
+                    app.show_replace = true;
+                    app.tab = Tab::Texture;
                     Screen::Workspace
                 }
                 _ => Screen::Workspace,
@@ -300,12 +331,17 @@ impl PryHub {
         use crate::jobs::{Outcome, Side};
         // The file chooser, if one is open. `try_recv` rather than a wait: it is a whole desktop
         // window away and may never be answered at all.
-        if let Some((side, rx)) = &self.picking {
-            let side = *side;
+        if let Some((what, rx)) = &self.picking {
+            let what = *what;
             match rx.try_recv() {
                 Ok(Some(path)) => {
                     self.picking = None;
-                    self.open_side(&path, side);
+                    match what {
+                        Picking::Open(side) => self.open_side(&path, side),
+                        // Into the dialog's field rather than straight into a write: the target is
+                        // still to be chosen, and this is a file that will be written over a game's.
+                        Picking::Image => self.replace_png = path.display().to_string(),
+                    }
                 }
                 // Cancelled, or the thread went away with it.
                 Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picking = None,
@@ -336,6 +372,13 @@ impl PryHub {
                 Outcome::Palette(colours) => self.palette = Some(colours),
                 Outcome::CarSpec(spec) => self.car_spec = Some(spec),
                 Outcome::Exported(result) => self.report_export(result),
+                // A write that landed for a file the user has since closed is reported anyway — it
+                // happened, and the log is what happened — but only the document it was for gets
+                // its pack re-read and its thumbnails dropped.
+                Outcome::Replaced { for_path, result } => {
+                    let mine = self.doc.as_ref().is_some_and(|d| d.path == for_path);
+                    self.report_replace(*result, mine);
+                }
                 // `poll` keeps progress to itself; this arm exists so the compiler says something
                 // if that ever changes.
                 Outcome::Progress { .. } => {}
@@ -468,16 +511,32 @@ impl PryHub {
         std::env::var("NFSU2_ROOT").map(|r| format!("{r}/CARS/")).unwrap_or_default()
     }
 
-    /// Ask the desktop for a file, for `side`. Does nothing if a chooser is already up, or if this
-    /// machine has none — in which case the caller's own path field remains the way in.
+    /// Ask the desktop for a file to *open*, for `side`. Does nothing if a chooser is already up, or
+    /// if this machine has none — in which case the caller's own path field remains the way in.
     pub(crate) fn ask_for_file(&mut self, ctx: &egui::Context, side: crate::jobs::Side) -> bool {
+        self.ask(ctx, Picking::Open(side), crate::picker::Filter::Assets)
+    }
+
+    /// Ask for an image to put in place of a texture. The same chooser and a different answer: this
+    /// one fills the replace dialog's field rather than opening a document.
+    pub(crate) fn ask_for_image(&mut self, ctx: &egui::Context) -> bool {
+        self.ask(ctx, Picking::Image, crate::picker::Filter::Images)
+    }
+
+    /// One chooser at a time, and it remembers what it was opened for.
+    ///
+    /// The purpose has to travel with it because the answer arrives frames later, from another
+    /// thread, with nothing else to say what it is. It used to be a `Side` and every answer went to
+    /// `open_side` — which was right while the only question was "which file shall I open", and
+    /// would have quietly tried to parse a PNG as a document the moment it was not.
+    fn ask(&mut self, ctx: &egui::Context, what: Picking, filter: crate::picker::Filter) -> bool {
         if self.picking.is_some() {
             return true;
         }
         let start = self.start_dir();
-        match crate::picker::open(ctx, start) {
+        match crate::picker::open(ctx, start, filter) {
             Some(rx) => {
-                self.picking = Some((side, rx));
+                self.picking = Some((what, rx));
                 true
             }
             None => false,
@@ -588,6 +647,7 @@ impl eframe::App for PryHub {
         // Last, and over whatever the screen drew: the dialog is modal, and it opens the workspace
         // under itself so it is always over the thing it is about to export.
         screens::export_dialog::show(self, ui.ctx());
+        screens::replace_dialog::show(self, ui.ctx());
         // A file dropped on the window opens it — the welcome screen's drop target, everywhere.
         // On the compare screen it loads the other side instead, which is what dropping a second
         // file onto a comparison plainly means.
@@ -643,6 +703,67 @@ impl PryHub {
                 chunk: None,
                 chunk_id: String::new(),
                 kind: NoteKind::ExportFailed { error: e },
+            },
+        };
+        self.log.push(note);
+    }
+
+    /// Queue a replacement of the selected texture with the image the dialog has been given.
+    ///
+    /// Everything it needs is resolved **here**, on the click: which pack, which texture, which
+    /// file, and whether to write over the original. The worker is handed a decision rather than a
+    /// question, for the same reason the export snapshots the mounted build — the user is free to
+    /// change the selection while it runs, and what they pressed the button on is what should be
+    /// written.
+    pub fn replace_now(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        let Some(pack) = doc.pack_path() else { return };
+        let Some(hash) = self.texture_selection else { return };
+        // The name is not carried: the worker decodes the texture anyway, to check the image against
+        // its dimensions, so it has the file's own name rather than a copy of the one on screen.
+        let spec = crate::replace::Spec {
+            doc: doc.path.clone(),
+            pack,
+            hash,
+            png: std::path::PathBuf::from(self.replace_png.trim()),
+            over: self.replace_over,
+        };
+        self.jobs.send(crate::jobs::Request::Replace(Box::new(spec)));
+    }
+
+    /// Take a replacement's result: say what happened, and show it.
+    ///
+    /// `mine` is whether the document it was computed for is still the open one. When it is, the
+    /// pack is decoded again and the uploaded thumbnails dropped — the file on disk has changed
+    /// under the contact sheet, and an interface that went on showing the old pixels after saying it
+    /// had written new ones would be the worst of the two possible lies.
+    pub fn report_replace(&mut self, result: Result<crate::replace::Done, String>, mine: bool) {
+        let note = match result {
+            Ok(done) => {
+                if mine {
+                    self.textures = Textures::Unasked;
+                    self.texture_cache.clear();
+                }
+                if let Some(bak) = &done.backup {
+                    log::info!(target: "jobs", "backed up to {}", bak.display());
+                }
+                Note {
+                    level: Level::Info,
+                    chunk: None,
+                    chunk_id: String::new(),
+                    kind: NoteKind::Replaced {
+                        name: done.name,
+                        into: done.into.display().to_string(),
+                        moved: done.moved,
+                        psnr: done.psnr,
+                    },
+                }
+            }
+            Err(e) => Note {
+                level: Level::Error,
+                chunk: None,
+                chunk_id: String::new(),
+                kind: NoteKind::ReplaceFailed { error: e },
             },
         };
         self.log.push(note);

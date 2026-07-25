@@ -53,6 +53,13 @@ pub enum Request {
     /// The open car's `CarTypeInfo` record out of `GLOBALB.BUN`. Same bundle as [`Self::Palette`]
     /// and the same 8 MB read, so it is a job for the same reason.
     CarSpec { beside: PathBuf },
+    /// Put a PNG into the open pack. Boxed for the same reason [`Outcome::Opened`] is — it carries
+    /// three paths and this enum travels through a channel.
+    ///
+    /// A job because it is the heaviest thing here per byte: a PNG decode, a whole mip chain
+    /// re-encoded, a re-compression, and then the written pack decoded again to check it. On a
+    /// 512² vinyl that is not a frame's worth of work.
+    Replace(Box<crate::replace::Spec>),
 }
 
 /// What came back.
@@ -66,6 +73,10 @@ pub enum Outcome {
     /// for, for the same reason [`Self::Decoded`] does.
     TextureNames { for_path: PathBuf, names: Arc<Vec<(gizmo_nfs::AssetHash, String)>> },
     Exported(Result<Written, String>),
+    /// A texture written back. Carries the *document* it was asked for, the way [`Self::Decoded`]
+    /// does: this one changes what is on screen, so landing it against a file the user has since
+    /// replaced would repaint the wrong pack's contact sheet.
+    Replaced { for_path: PathBuf, result: Box<Result<crate::replace::Done, String>> },
     /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
     /// a fact about the *worker*, not about the document.
     Progress { done: usize, total: usize },
@@ -94,6 +105,7 @@ pub enum Kind {
     Export,
     Palette,
     CarSpec,
+    Replace,
 }
 
 impl Kind {
@@ -106,6 +118,7 @@ impl Kind {
             Self::Export => "export",
             Self::Palette => "palette",
             Self::CarSpec => "car spec",
+            Self::Replace => "replace",
         }
     }
 }
@@ -126,7 +139,7 @@ impl Outcome {
             Request::Export { .. } => Kind::Export,
             Request::Palette { .. } => Kind::Palette,
             Request::CarSpec { .. } => Kind::CarSpec,
-
+            Request::Replace(_) => Kind::Replace,
         }
     }
 }
@@ -233,6 +246,9 @@ fn describe(request: &Request) -> String {
         Request::Export { doc, spec } => format!("{} as {}", doc.path.display(), spec.kind.name()),
         Request::Palette { beside } => format!("palette beside {}", beside.display()),
         Request::CarSpec { beside } => format!("car spec beside {}", beside.display()),
+        Request::Replace(spec) => {
+            format!("{} into {}", spec.png.display(), spec.pack.display())
+        }
     }
 }
 
@@ -256,6 +272,13 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
         },
         Request::Export { doc, spec } => {
             Outcome::Exported(crate::export::run(&doc, &spec, tell))
+        }
+        Request::Replace(spec) => {
+            // The document the replacement was asked for is the pack's *neighbour* as often as the
+            // pack itself — a `GEOMETRY.BIN` is drawn with the `TEXTURES.BIN` next to it — so the
+            // identity carried back is the one the app matches on, which the caller put here.
+            let for_path = spec.doc.clone();
+            Outcome::Replaced { for_path, result: Box::new(crate::replace::run(&spec)) }
         }
         Request::Palette { beside } => Outcome::Palette(palette(&beside)),
         Request::CarSpec { beside } => Outcome::CarSpec(car_spec(&beside).map(Box::new)),

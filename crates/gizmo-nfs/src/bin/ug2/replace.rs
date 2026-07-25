@@ -5,7 +5,7 @@
 //! says which of the two write paths it took, and it re-reads what it wrote before claiming success.
 
 use crate::paths::{read, Result};
-use gizmo_nfs::texture::{blob_of, relocate, replace_blob, replace_pixels, Tpk, TpkEntry};
+use gizmo_nfs::texture::{replace_image, Tpk, TpkEntry};
 use gizmo_nfs::AssetHash;
 use std::path::{Path, PathBuf};
 
@@ -38,18 +38,12 @@ pub fn run(pack: &Path, texture: &str, png: &Path, out: &Path, force: bool) -> R
         ));
     }
 
-    let blob = blob_of(&bytes, entry.hash).map_err(|e| format!("{e}"))?;
-    let new = replace_pixels(&blob, &entry, &rgba, w, h).map_err(|e| format!("{e}"))?;
-
-    // The cheap path first. A re-encoded blob is the same length but not the same bytes, so whether
-    // it compresses back into its old slot is a property of the pixels, not of the format.
-    let (written, how) = match replace_blob(&bytes, entry.hash, &new) {
-        Ok(w) => (w, "in place"),
-        Err(_) => (
-            relocate(&bytes, &[(entry.hash, new)]).map_err(|e| format!("{e}"))?,
-            "relocated",
-        ),
-    };
+    // The encode, the in-place attempt and the fall back to relocation are one function in the
+    // library, so this command and PryHUB's texture tab cannot reach different conclusions about
+    // when a pack has to be rewritten.
+    let (written, moved) =
+        replace_image(&bytes, entry.hash, &rgba, w, h).map_err(|e| format!("{e}"))?;
+    let how = if moved { "relocated" } else { "in place" };
 
     // Read back what is about to be written, before writing it. A pack that does not decode is not
     // one to hand somebody with a message saying it worked.

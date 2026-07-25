@@ -474,6 +474,23 @@ pub mod icon {
         p.line_segment([v(12.0, 15.0), v(12.0, 3.0)], stroke);
     }
 
+    /// Lucide `upload`: the same tray, and the arrow going the other way.
+    ///
+    /// Deliberately [`export`] mirrored rather than a different shape. The two actions sit next to
+    /// each other under one preview — write this image out, put that image in — and the only thing
+    /// that differs between them is the direction the file moves, which is exactly the only thing
+    /// that differs between the two icons. The design draws neither; it has no import anywhere.
+    pub fn import(p: &Painter, at: Pos2, size: f32, colour: Color32) {
+        let v = |x: f32, y: f32| pt(at, size, x, y);
+        let stroke = stroke(size, colour);
+        p.add(Shape::line(
+            vec![v(21.0, 15.0), v(21.0, 19.0), v(19.0, 21.0), v(5.0, 21.0), v(3.0, 19.0), v(3.0, 15.0)],
+            stroke,
+        ));
+        p.add(Shape::line(vec![v(7.0, 8.0), v(12.0, 3.0), v(17.0, 8.0)], stroke));
+        p.line_segment([v(12.0, 3.0), v(12.0, 15.0)], stroke);
+    }
+
     /// The design's `stroke-width: 2` in the same 24-unit box, but never thin enough to vanish.
     fn stroke(size: f32, colour: Color32) -> Stroke {
         Stroke::new((size * 2.0 / 24.0).max(1.1), colour)

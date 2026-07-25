@@ -19,6 +19,7 @@ mod logo;
 mod names;
 mod panels;
 mod picker;
+mod replace;
 mod screens;
 mod settings;
 mod shot;
