@@ -304,6 +304,161 @@ fn a_relocated_pack_reads_back() {
     }
 }
 
+/// The write path end to end: decode a real texture, re-encode it, put it back, and decode it
+/// again.
+///
+/// `replace_pixels` is the only part of this crate that *makes* file bytes out of pixels, so it is
+/// the only part whose output nothing else can check. A unit test can say the encoder agrees with
+/// the decoder on a buffer the test itself built; only a real pack can say the two agree about a
+/// file EA wrote, with the mip chain the compiler chose, the palette where the compiler put it, and
+/// the header at the distance the descriptor declares.
+///
+/// Two of the claims here are **exact equality**, and they are the ones worth guarding. `0x20` is a
+/// channel swap and loses nothing; a palettised image with no more colours than its tag populates
+/// is reproduced entry for entry by the median cut. Anything less than identical in those two means
+/// a bug, not a format. S3TC cannot make that promise — it holds two endpoints per 4×4 block — so it
+/// is held to a floor instead: 30 dB per texture, which the measured mean of 47.9 clears by enough
+/// that only a broken fit trips it.
+///
+/// The comparison is deliberately made **after a round trip through the pack** rather than on the
+/// blob: encode, write it back where it came from, re-read the descriptor table, decode. That is
+/// the path a caller actually takes, and it is where a mistake about the chain, the palette offset
+/// or the descriptor's sizes would show up.
+#[test]
+fn a_re_encoded_texture_reads_back_from_the_pack() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping re-encode test");
+        return;
+    };
+    use gizmo_nfs::texture::{blob_of, relocate, replace_blob, replace_pixels, Tpk};
+    use gizmo_nfs::TexFormat;
+
+    let bytes = std::fs::read(root.join("CARS/240SX/TEXTURES.BIN")).expect("read TEXTURES.BIN");
+    let entries = Tpk::directory(&bytes).expect("directory");
+    assert_eq!(entries.len(), 73);
+
+    let (mut dxt1, mut dxt3, mut bgra) = (0usize, 0usize, 0usize);
+    let mut in_place = 0usize;
+    for e in &entries {
+        let before = Tpk::decode_one(&bytes, e).expect("every 240SX texture decodes");
+        let blob = blob_of(&bytes, e.hash).expect("its blob comes out");
+        let new = replace_pixels(&blob, e, &before.rgba, before.width, before.height)
+            .expect("its own pixels go back in");
+        assert_eq!(new.len(), blob.len(), "{}: a replacement resized the blob", before.name);
+
+        // The `DebugName` and everything after it — the embedded header, the slack — is the
+        // compiler's, and a pixel write must not reach it.
+        //
+        // The boundary is the name's own position and **not** `out_size − header_from_end`, which
+        // is the obvious guess and is wrong: measured over 2,323 real textures, `ImageSize` runs
+        // past that point in 2,113 of them, so the two descriptor fields are not nested the way
+        // they look. What is true is the thing this asserts — the image (with its palette, where
+        // there is one) ends before the name in 2,323 of 2,323, and in 2,313 of them by exactly
+        // twelve bytes.
+        let name_at = blob.len() - e.header_from_end as usize + 0x88 - 0x18;
+        assert_eq!(
+            &new[name_at..],
+            &blob[name_at..],
+            "{}: the write reached the DebugName",
+            before.name
+        );
+
+        // Back into the pack, by the cheap path where it fits and the general one where it does not.
+        let written = match replace_blob(&bytes, e.hash, &new) {
+            Ok(w) => {
+                in_place += 1;
+                w
+            }
+            Err(_) => relocate(&bytes, &[(e.hash, new.clone())]).expect("relocation takes it"),
+        };
+        let again = Tpk::directory(&written).expect("the written pack still has a directory");
+        let e2 = again.iter().find(|x| x.hash == e.hash).expect("its descriptor");
+        let after = Tpk::decode_one(&written, e2).expect("and the texture decodes again");
+
+        assert_eq!((after.width, after.height), (before.width, before.height), "{}", before.name);
+        assert_eq!(after.name, before.name, "the DebugName survived the write");
+        match before.source_format {
+            TexFormat::Dxt1 => dxt1 += 1,
+            TexFormat::Dxt3 => dxt3 += 1,
+            TexFormat::Bgra8888 => bgra += 1,
+            other => panic!("{}: a car pack held {other:?}", before.name),
+        }
+
+        match before.source_format {
+            // The two that lose nothing must lose nothing.
+            TexFormat::Bgra8888 | TexFormat::P8 => {
+                assert_eq!(after.rgba, before.rgba, "{}: a lossless format lost something", before.name);
+            }
+            _ => {
+                let mse: f64 = after
+                    .rgba
+                    .iter()
+                    .zip(before.rgba.iter())
+                    .map(|(a, b)| {
+                        let d = f64::from(i32::from(*a) - i32::from(*b));
+                        d * d
+                    })
+                    .sum::<f64>()
+                    / after.rgba.len() as f64;
+                let psnr = if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
+                assert!(psnr >= 30.0, "{}: re-encoded to {psnr:.1} dB", before.name);
+            }
+        }
+    }
+
+    // The pack's own composition, so a change to which formats this exercises is a failure rather
+    // than a quietly smaller test.
+    assert_eq!((dxt1, dxt3, bgra), (39, 28, 6), "the 240SX pack's format split");
+    // Most re-encoded blobs still fit where they lay; the rest is what `relocate` is for. The
+    // number is recorded rather than asserted tightly because it depends on the compressor.
+    assert!(in_place >= 60, "only {in_place} of 73 fit in place");
+}
+
+/// The palettised half of the same claim, on the pack that is nothing but palettised: a `VINYLS.BIN`.
+///
+/// Kept apart from the car pack rather than folded into it because the two exercise different code
+/// and cost different amounts. This one is decoded a texture at a time — the pack is 1.87 GB of
+/// RGBA8 if taken all at once — and it is the only place the palette is rebuilt, capped by its tag
+/// and written back to the offset the header's own two placements name.
+#[test]
+fn a_re_encoded_vinyl_keeps_every_colour() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping vinyl re-encode test");
+        return;
+    };
+    use gizmo_nfs::texture::{blob_of, relocate, replace_blob, replace_pixels, Tpk};
+
+    let bytes = std::fs::read(root.join("CARS/240SX/VINYLS.BIN")).expect("read VINYLS.BIN");
+    let entries = Tpk::directory(&bytes).expect("directory");
+    assert_eq!(entries.len(), 1786, "the real vinyls pack, not one of the two stubs");
+
+    // A slice is enough: they are all one layout, and 1,786 round trips is minutes rather than
+    // seconds. The first 40 span both the `0x08` ramps and the `0x80` colour-with-alpha artwork.
+    let mut checked = 0usize;
+    for e in entries.iter().take(40) {
+        let before = Tpk::decode_one(&bytes, e).expect("a vinyl decodes");
+        let blob = blob_of(&bytes, e.hash).expect("its blob");
+        let new = replace_pixels(&blob, e, &before.rgba, before.width, before.height)
+            .expect("its own pixels go back");
+        assert_eq!(new.len(), blob.len());
+
+        // Same two ways in as anywhere else: a re-encoded blob is the same length but not the same
+        // bytes, so it does not always compress back into the slot it came out of.
+        let written = match replace_blob(&bytes, e.hash, &new) {
+            Ok(w) => w,
+            Err(_) => relocate(&bytes, &[(e.hash, new.clone())]).expect("relocation takes it"),
+        };
+        let again = Tpk::directory(&written).expect("directory");
+        let e2 = again.iter().find(|x| x.hash == e.hash).expect("descriptor");
+        let after = Tpk::decode_one(&written, e2).expect("and decodes again");
+        // Exact: the image came out of a palette of at most this tag's cap, so a median cut that
+        // splits until it has that many boxes must find every one of them again.
+        assert_eq!(after.rgba, before.rgba, "{}: a colour was lost", before.name);
+        checked += 1;
+    }
+    assert_eq!(checked, 40);
+}
+
 /// Packs a *texture compiler* wrote, rather than EA — the files a modder actually has.
 ///
 /// Gated on `NFSU2_TOOLPACKS`, a directory of `<car>/TEXTURES.BIN` produced by re-saving cars

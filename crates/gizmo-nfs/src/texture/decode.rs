@@ -10,7 +10,7 @@ use crate::types::{NfsTexture, PixelFormat, TexFormat};
 const RGBA: usize = 4;
 
 /// `ImageCompressionType` codes (embedded `OldTextureInfo`, byte at `P+38`).
-mod fmt {
+pub(super) mod fmt {
     pub const RGBA8888: u8 = 0x20; // 32bpp, stored B,G,R,A
     pub const DXT1: u8 = 0x22;
     pub const DXT3: u8 = 0x24;
@@ -21,7 +21,7 @@ mod fmt {
 }
 
 /// Is this one of the three tags that store one palette index per pixel?
-const fn is_palettised(comp: u8) -> bool {
+pub(super) const fn is_palettised(comp: u8) -> bool {
     matches!(comp, fmt::P8 | fmt::P8_16 | fmt::P8_64)
 }
 
@@ -52,10 +52,27 @@ const fn is_palettised(comp: u8) -> bool {
 /// [`palette_of`] checks it against this rather than trusting it — a pack that says otherwise is a
 /// pack this arm has not been shown, and decoding it against the wrong length would silently read a
 /// neighbouring mip as colours.
-const PALETTE_BYTES: usize = 256 * 4;
+pub(super) const PALETTE_BYTES: usize = 256 * 4;
 
 /// The largest texture dimension we will decode (guards allocation from a corrupt header).
-const MAX_DIM: usize = 4096;
+pub(super) const MAX_DIM: usize = 4096;
+
+/// Bytes of the embedded header this module reads, and the constant that finds it.
+///
+/// `P` is not stored: it is `out_size − header_from_end` plus a fixed distance into the structure
+/// the descriptor points at. Both halves are the file's own numbers; only the `0x88` is ours, and it
+/// is the same one [`decompress_to_header`] has always used — factored out so the write side finds
+/// the header at the byte the read side does rather than at a byte that agrees today.
+pub(super) const HEADER_LEN: usize = 39;
+const HEADER_INTO: usize = 0x64 + 0x24;
+
+/// Where the embedded `OldTextureInfo` sits inside a decompressed blob of `out_size` bytes.
+pub(super) fn header_at(out_size: usize, header_from_end: usize) -> NfsResult<usize> {
+    out_size
+        .checked_sub(header_from_end)
+        .and_then(|h| h.checked_add(HEADER_INTO))
+        .ok_or(NfsError::CorruptArchive { detail: "TPK header offset underflow" })
+}
 
 /// One texture's blob, decompressed, and the offset of its embedded `OldTextureInfo` header.
 ///
@@ -80,12 +97,9 @@ fn decompress_to_header(file: &[u8], e: &TpkEntry) -> NfsResult<(Vec<u8>, usize)
     }
 
     // Locate the embedded OldTextureInfo header.
-    let p = out_size
-        .checked_sub(e.header_from_end as usize)
-        .and_then(|h| h.checked_add(0x64 + 0x24))
-        .ok_or(NfsError::CorruptArchive { detail: "TPK header offset underflow" })?;
+    let p = header_at(out_size, e.header_from_end as usize)?;
     let hdr = pool
-        .get(p..p + 39)
+        .get(p..p + HEADER_LEN)
         .ok_or(NfsError::CorruptArchive { detail: "TPK header out of range" })?;
     // Self-check: the u32 at P is the texture's own hash. If it isn't, the header formula
     // doesn't apply to this texture — skip rather than decode noise.
@@ -124,7 +138,7 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
         return Err(NfsError::CorruptArchive { detail: "TPK texture dimensions out of range" });
     }
 
-    let top = top_mip_size(width, height, comp)
+    let top = level_size(width, height, comp)
         .ok_or(NfsError::NotImplemented { feature: "TPK pixel format" })?;
     let pixels = pool
         .get(0..top)
@@ -180,9 +194,14 @@ fn named_format(comp: u8) -> Option<TexFormat> {
     })
 }
 
-/// Byte size of the top mipmap for `width`x`height` in the given compression type, or `None`
+/// Byte size of one mip level at `width`x`height` in the given compression type, or `None`
 /// for a format we do not decode.
-fn top_mip_size(width: usize, height: usize, comp: u8) -> Option<usize> {
+///
+/// Named for a *level* rather than for the top one because the write side walks the whole chain
+/// with it: the same arithmetic that says where the top mip ends says where every level below it
+/// does, and the two sides must agree or a re-encoded texture would write its second level over
+/// the tail of its first.
+pub(super) fn level_size(width: usize, height: usize, comp: u8) -> Option<usize> {
     let blocks = width.div_ceil(4) * height.div_ceil(4);
     match comp {
         fmt::DXT1 => Some(blocks * 8),
@@ -212,6 +231,18 @@ fn top_mip_size(width: usize, height: usize, comp: u8) -> Option<usize> {
 /// times four plus three is at most 1023, and the type says there are 1024 bytes. Returned as a
 /// slice instead, the same loop is correct only for as long as nobody hands it a shorter one.
 fn palette_of<'a>(pool: &'a [u8], hdr: &[u8], top: usize) -> NfsResult<&'a [u8; PALETTE_BYTES]> {
+    let start = palette_at(hdr, top)?;
+    pool.get(start..start + PALETTE_BYTES)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(NfsError::BufferSizeMismatch { detail: "TPK palette out of range" })
+}
+
+/// Where the palette begins inside the decompressed blob.
+///
+/// Split out of [`palette_of`] so the write side puts a re-quantised palette at the byte the read
+/// side will look for it, rather than at a byte derived a second time and agreeing by luck. All the
+/// reasoning below is about this arithmetic; [`palette_of`] is only the slice it names.
+pub(super) fn palette_at(hdr: &[u8], top: usize) -> NfsResult<usize> {
     let at = |o: usize| -> Option<u32> {
         let b = hdr.get(o..o + 4)?;
         Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -236,12 +267,10 @@ fn palette_of<'a>(pool: &'a [u8], hdr: &[u8], top: usize) -> NfsResult<&'a [u8; 
     if start < floor {
         return Err(NfsError::CorruptArchive { detail: "TPK palette overlaps the image" });
     }
-    let end = start
+    start
         .checked_add(PALETTE_BYTES)
         .ok_or(NfsError::CorruptArchive { detail: "TPK palette offset overflow" })?;
-    pool.get(start..end)
-        .and_then(|s| s.try_into().ok())
-        .ok_or(NfsError::BufferSizeMismatch { detail: "TPK palette out of range" })
+    Ok(start)
 }
 
 /// Unpack one palette index per pixel into RGBA8.
@@ -287,30 +316,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn top_mip_sizes_match_s3tc() {
+    fn level_sizes_match_s3tc() {
         // DXT1 128x128 = 32*32 blocks * 8 = 8192 bytes.
-        assert_eq!(top_mip_size(128, 128, fmt::DXT1), Some(8192));
+        assert_eq!(level_size(128, 128, fmt::DXT1), Some(8192));
         // DXT3/5 double that.
-        assert_eq!(top_mip_size(128, 128, fmt::DXT3), Some(16384));
-        assert_eq!(top_mip_size(64, 32, fmt::DXT5), Some(64 / 4 * 32 / 4 * 16));
+        assert_eq!(level_size(128, 128, fmt::DXT3), Some(16384));
+        assert_eq!(level_size(64, 32, fmt::DXT5), Some(64 / 4 * 32 / 4 * 16));
         // RGBA is 4 bytes/pixel.
-        assert_eq!(top_mip_size(16, 16, fmt::RGBA8888), Some(16 * 16 * 4));
+        assert_eq!(level_size(16, 16, fmt::RGBA8888), Some(16 * 16 * 4));
         // Unknown format -> None.
-        assert_eq!(top_mip_size(16, 16, 0x99), None);
+        assert_eq!(level_size(16, 16, 0x99), None);
     }
 
-    /// Every format with a size is a format with a name. `top_mip_size` returning `Some` is the
+    /// Every format with a size is a format with a name. `level_size` returning `Some` is the
     /// crate saying "I know this layout"; reporting `Unknown` for the same tag would contradict it.
     ///
     /// It asserts through [`named_format`] — the function `decode_texture` itself reports from —
-    /// rather than against a hand-copied list of the same `fmt::` constants `top_mip_size` matches
+    /// rather than against a hand-copied list of the same `fmt::` constants `level_size` matches
     /// on. Written that second way, as it first was, the two sets were the same five constants by
     /// construction and the assertion could not fail: it passed identically with the format left
     /// anonymous, which is the one thing it existed to catch.
     #[test]
     fn a_format_the_crate_can_measure_is_a_format_it_can_name() {
         for comp in 0u8..=255 {
-            if top_mip_size(64, 64, comp).is_none() {
+            if level_size(64, 64, comp).is_none() {
                 continue;
             }
             let named = named_format(comp);

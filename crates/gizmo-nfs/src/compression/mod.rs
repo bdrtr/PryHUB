@@ -41,11 +41,11 @@ pub fn detect(buf: &[u8]) -> Codec {
 
 /// Decompress `buf` if it carries a recognised codec, otherwise return a plain copy.
 ///
-/// All three codecs decompress. Only JDLZ also *compresses* — see [`jdlz::compress`] — so a blob
-/// read as RefPack or HUFF and written back comes back as JDLZ. The reader accepts that, because it
-/// dispatches on the magic bytes rather than on where the blob came from; what usually refuses it is
-/// the *slot*, since a JDLZ re-pack of a HUFF blob fits the space HUFF sized for 10 of 585 measured
-/// textures. See [`crate::texture::replace_blob`].
+/// All three codecs decompress and two of them — JDLZ and HUFF — also *compress*, which is both of
+/// the ones a TPK uses. RefPack is the remaining asymmetry: a blob read as RefPack and written back
+/// comes back as JDLZ. The reader accepts that, because it dispatches on the magic bytes rather than
+/// on where the blob came from. See [`crate::texture::replace_blob`], which keeps a blob's own codec
+/// precisely because the slot it has to fit was sized by that encoder.
 pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     match detect(buf) {
         Codec::RefPack => refpack::decompress(buf),

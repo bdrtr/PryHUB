@@ -70,19 +70,23 @@
 //! [`Tpk::decode_one`] is there for exactly that, and is what PryHUB uses to hold a pack to a
 //! budget.
 //!
-//! Compression is the other asymmetry: only JDLZ has an encoder, so a HUFF blob read here and
-//! written back returns as JDLZ, and almost never fits the slot HUFF made for it — see [`write`].
+//! Both codecs a pack uses now encode as well as decode, and [`write`] keeps the one a blob arrived
+//! in — so a HUFF texture written back is still HUFF. What is left is that re-compressing anything
+//! rarely reproduces a stream to the byte, which is why an in-place write can still be refused for
+//! size and [`write::relocate`] exists.
 //!
 //! The module is split by layer: [`directory`] reads the descriptor table (and the DebugNames
 //! beside it), [`decode`] turns one descriptor's blob into RGBA8, and [`dxt`] holds the S3TC
 //! block decoders. This file is only the container: find the directory, decode what it lists.
 
 pub mod dxt;
+pub mod encode;
 pub mod write;
 mod decode;
 mod directory;
 
 pub use directory::TpkEntry;
+pub use encode::replace_pixels;
 pub use write::{blob_of, relocate, replace_blob};
 
 use crate::chunk::{ChunkNode, WalkOptions};

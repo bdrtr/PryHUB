@@ -12,26 +12,26 @@
 //!
 //! # In place
 //!
-//! Replace a texture where it lies. The new
-//! blob is compressed with [`crate::compression::jdlz`], and if it fits the slot the old one
-//! occupied, it is written there and the descriptor's compressed size updated. Nothing else in the
-//! file moves — not one other offset changes — which is why this is safe to do without a theory of
-//! the whole layout.
+//! Replace a texture where it lies. The new blob is compressed with the codec the old one arrived
+//! in, and if it fits the slot that one occupied, it is written there and the descriptor's
+//! compressed size updated. Nothing else in the file moves — not one other offset changes — which is
+//! why this is safe to do without a theory of the whole layout.
 //!
 //! When it does not fit, that is said plainly rather than worked around. **What the misses are is
-//! measured, not assumed**, and the answer is not the one this file used to give. Over one install:
-//! 1,402 of 2,123 blobs fit (66%) — but split by the codec the blob arrived in, that is 1,392 of
-//! 1,538 JDLZ-sourced (90.5%) and 10 of 585 HUFF-sourced (1.7%). A HUFF blob is re-packed with the
-//! only encoder there is, JDLZ, into a slot HUFF sized, so it does not fit by construction: 575 of
-//! the 721 misses are a missing *encoder*, and only 146 are a layout problem.
+//! measured, not assumed**, and the answer has changed twice as the crate learned to write. With
+//! JDLZ as the only encoder, 1,402 of 2,123 blobs fit — 1,392 of 1,538 JDLZ-sourced but only 10 of
+//! 585 HUFF-sourced, which was not a layout problem at all: a HUFF blob re-packed as JDLZ into a
+//! slot HUFF had sized does not fit by construction. With a HUFF encoder, and [`replace_blob`]
+//! keeping the codec a blob arrived in, it is **1,451 of 2,123** (1,393/1,539 JDLZ and 59/584
+//! HUFF). The HUFF share is still the low one, because re-compressing anything at all rarely
+//! reproduces a stream to the byte and HUFF's slots are tight.
 //!
 //! # Relocation
 //!
 //! [`relocate`] rewrites the whole pack instead: every blob is laid out afresh and every descriptor
 //! updated, so a replacement's size stops being a question. That makes the numbers above a fact
-//! about the *cheap* path rather than a limit on the format — a HUFF encoder would still buy back
-//! four fifths of the in-place misses without moving a byte, but nothing is now blocked on having
-//! one.
+//! about the *cheap* path rather than a limit on the format: nothing is blocked on a replacement
+//! fitting.
 //!
 //! It rests on four things, each measured over the install's 77 chunked packs before any of this was
 //! written: every blob lives in one leaf chunk (`0x33320002`, 54,875 of 54,875), that chunk is the
@@ -87,9 +87,10 @@ pub fn blob_of(file: &[u8], hash: AssetHash) -> NfsResult<Vec<u8>> {
 /// - The hash is not in the pack.
 /// - `blob` is not the length the descriptor declares.
 /// - The recompressed blob is larger than the slot the old one occupied. Nothing is written; the
-///   caller is told rather than silently overwriting whatever follows. This is where the codec
-///   asymmetry bites: JDLZ is the only encoder here, so a blob that arrived as HUFF goes back as
-///   JDLZ into a slot HUFF sized, and measured over one install that fits for 10 of 585.
+///   caller is told rather than silently overwriting whatever follows. Measured over one install,
+///   1,451 of 2,123 blobs fit — and the codec a blob arrived in is kept precisely because the slot
+///   was sized by that encoder: re-packing a HUFF blob as JDLZ threw the fit away before the data
+///   was looked at, and fixing that took HUFF-sourced fits from 10 of 585 to 59 of 584.
 pub fn replace_blob(file: &[u8], hash: AssetHash, blob: &[u8]) -> NfsResult<Vec<u8>> {
     let (entries, table_at) = table(file)?;
     let (index, entry) = entries
@@ -156,7 +157,7 @@ const BLOB_ALIGN: usize = 128;
 /// [`replace_blob`] cannot grow a texture by one byte: the descriptors hold **absolute file
 /// offsets**, so anything that moves invalidates them. This moves everything and then says so, which
 /// makes the size of a replacement a non-question. Measured over one install, the in-place path fits
-/// 1,402 of 2,123 blobs; this one has no such number, because there is nothing for it to fail at.
+/// 1,451 of 2,123 blobs; this one has no such number, because there is nothing for it to fail at.
 ///
 /// What makes it tractable is that the layout is simpler than it looks, and every part of that was
 /// measured over 77 real packs before a byte was written here:
@@ -176,9 +177,9 @@ const BLOB_ALIGN: usize = 128;
 ///
 /// `edits` gives new **decompressed** blobs by hash, in the shape [`blob_of`] hands them out. A
 /// texture not named keeps the bytes it already had, copied across without being decompressed and
-/// recompressed — so a pack rewritten for one texture does not silently re-encode the other 1,785,
-/// and the HUFF-sourced ones among them keep their original encoding rather than growing under the
-/// only encoder this crate has.
+/// recompressed — so a pack rewritten for one texture does not silently re-encode the other 1,785.
+/// A texture that *is* named is re-compressed with the codec its old blob used, so an edit does not
+/// convert a pack either.
 ///
 /// One pack in the install is refused, and deliberately. `CARS/PEUGOT/TEXTURES.BIN` has no
 /// [`BLOBS`] chunk at all: the directory is followed by raw compressed blocks with nothing wrapping
@@ -233,18 +234,28 @@ pub fn relocate(file: &[u8], edits: &[(AssetHash, Vec<u8>)]) -> NfsResult<Vec<u8
     let mut placed: Vec<(usize, usize, usize)> = Vec::with_capacity(entries.len());
     for e in &entries {
         let new = edits.iter().find(|(h, _)| *h == e.hash);
+        let at = e.abs_offset as usize;
+        let end = at
+            .checked_add(e.size as usize)
+            .ok_or(NfsError::CorruptArchive { detail: "TPK blob extent overflows" })?;
+        let old = file
+            .get(at..end)
+            .ok_or(NfsError::CorruptArchive { detail: "TPK texture blob out of range" })?;
         let (bytes, out_size) = match new {
-            Some((_, blob)) => (crate::compression::jdlz::compress(blob)?, blob.len()),
-            None => {
-                let at = e.abs_offset as usize;
-                let end = at
-                    .checked_add(e.size as usize)
-                    .ok_or(NfsError::CorruptArchive { detail: "TPK blob extent overflows" })?;
-                let old = file
-                    .get(at..end)
-                    .ok_or(NfsError::CorruptArchive { detail: "TPK texture blob out of range" })?;
-                (old.to_vec(), e.out_size as usize)
+            // The codec a blob arrived in, the same way [`replace_blob`] keeps it. Nothing here
+            // needs it to fit — that is the whole point of relocating — so this is not about size
+            // but about not quietly converting a pack: an EA pack mixes HUFF and JDLZ, and a
+            // replacement written in the other one makes the edited texture the only blob in the
+            // file encoded unlike its neighbours. It is also smaller, HUFF being 1.028× EA on this
+            // data where JDLZ is 1.242×.
+            Some((_, blob)) => {
+                let packed = match crate::compression::detect(old) {
+                    crate::compression::Codec::Huff => crate::compression::huff::compress(blob)?,
+                    _ => crate::compression::jdlz::compress(blob)?,
+                };
+                (packed, blob.len())
             }
+            None => (old.to_vec(), e.out_size as usize),
         };
         // Pad to the boundary. `blobs_at` is where payload position 0 lands in the file, so the
         // boundary is worked out in absolute terms and not in payload-relative ones.

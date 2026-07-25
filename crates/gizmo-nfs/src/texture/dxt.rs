@@ -8,7 +8,7 @@
 
 /// Expand a 5-6-5 packed colour to RGB888.
 #[inline]
-fn rgb565(c: u16) -> [u8; 3] {
+pub(super) fn rgb565(c: u16) -> [u8; 3] {
     let r = ((c >> 11) & 0x1f) as u8;
     let g = ((c >> 5) & 0x3f) as u8;
     let b = (c & 0x1f) as u8;
@@ -24,8 +24,16 @@ fn u16_le(d: &[u8], o: usize) -> u16 {
 /// The four-entry RGB palette of one BC1-style colour block, plus whether index 3 is the
 /// transparent "punch-through" slot (DXT1 only, when `color0 <= color1`).
 fn color_palette(block: &[u8], allow_punch_through: bool) -> ([[u8; 3]; 4], bool) {
-    let c0 = u16_le(block, 0);
-    let c1 = u16_le(block, 2);
+    palette_from(u16_le(block, 0), u16_le(block, 2), allow_punch_through)
+}
+
+/// The same four entries, from the two endpoints rather than from the eight bytes that hold them.
+///
+/// Split out for the encoder next door, which has to *score* a pair of candidate endpoints and must
+/// score them against the palette a decoder will actually build. Written twice, the two would agree
+/// until one of them was tuned; written once, a block that round-trips does so because the same
+/// arithmetic produced and consumed it.
+pub(super) fn palette_from(c0: u16, c1: u16, allow_punch_through: bool) -> ([[u8; 3]; 4], bool) {
     let e0 = rgb565(c0);
     let e1 = rgb565(c1);
     let mut pal = [[0u8; 3]; 4];
@@ -157,7 +165,7 @@ pub fn decode_dxt5(data: &[u8], width: usize, height: usize) -> Vec<u8> {
 }
 
 /// The eight interpolated alpha values of a BC3 alpha block.
-fn build_alpha_table(a0: u8, a1: u8) -> [u8; 8] {
+pub(super) fn build_alpha_table(a0: u8, a1: u8) -> [u8; 8] {
     let mut a = [0u8; 8];
     a[0] = a0;
     a[1] = a1;

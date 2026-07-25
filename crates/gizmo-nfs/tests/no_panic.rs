@@ -13,6 +13,20 @@ use gizmo_nfs::texture::Tpk;
 use gizmo_nfs::viv::VivArchive;
 use proptest::prelude::*;
 
+/// A one-descriptor TPK carrying the given field values, so a property test can hand the parser
+/// numbers a real file would never contain and get a `TpkEntry` back out of it.
+fn tpk_with(hash: u32, out_size: u32, header_from_end: u32) -> Vec<u8> {
+    let mut desc = Vec::new();
+    for f in [hash, 0, 0, out_size, header_from_end, 0] {
+        desc.extend_from_slice(&f.to_le_bytes());
+    }
+    let mut file = Vec::new();
+    file.extend_from_slice(&0x3331_0003u32.to_le_bytes());
+    file.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+    file.extend_from_slice(&desc);
+    file
+}
+
 proptest! {
     #[test]
     fn decompress_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
@@ -97,6 +111,32 @@ proptest! {
         if let Ok(out) = repack::rebuild(&data, &edits) {
             // Whatever came out has to be a chunk stream this crate can read back.
             prop_assert!(gizmo_nfs::chunk::ChunkNode::parse(&out).is_ok() || !out.is_empty());
+        }
+    }
+
+    /// Re-encoding takes *three* untrusted inputs, which is one more than anything else here: the
+    /// blob, the descriptor that says where its header is, and the caller's pixels. The descriptor
+    /// is the interesting one — `out_size` and `header_from_end` are read out of a file and then
+    /// subtracted from one another, and the dimensions and `ImageSize` that decide how much gets
+    /// written come from inside the blob those two numbers point at.
+    #[test]
+    fn replace_pixels_never_panics(
+        blob in proptest::collection::vec(any::<u8>(), 0..4096),
+        out_size in any::<u32>(),
+        header_from_end in any::<u32>(),
+        hash in any::<u32>(),
+        w in 0u32..64,
+        h in 0u32..64,
+        pixels in proptest::collection::vec(any::<u8>(), 0..4096),
+    ) {
+        // A descriptor cannot be built from outside the crate — `TpkEntry` is `#[non_exhaustive]`,
+        // because a caller is meant to get one from a file. So the arbitrary fields are written
+        // into a pack and read back out through the parser, which is the path a caller takes.
+        let pack = tpk_with(hash, out_size, header_from_end);
+        if let Ok(entries) = gizmo_nfs::texture::Tpk::directory(&pack) {
+            if let Some(entry) = entries.first() {
+                let _ = gizmo_nfs::texture::replace_pixels(&blob, entry, &pixels, w, h);
+            }
         }
     }
 
