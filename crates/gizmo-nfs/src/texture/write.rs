@@ -6,7 +6,13 @@
 //! contiguous. Moving anything therefore means rewriting every offset, and moving anything *inside*
 //! a chunk changes that chunk's size, which moves the blobs after it again.
 //!
-//! So this module does the part that needs no relocation: replace a texture **in place**. The new
+//! There are therefore two ways in. [`replace_blob`] does the part that needs no relocation, and
+//! [`relocate`] does the part that needs all of it. The first is the safer edit and the second is
+//! the general one.
+//!
+//! # In place
+//!
+//! Replace a texture where it lies. The new
 //! blob is compressed with [`crate::compression::jdlz`], and if it fits the slot the old one
 //! occupied, it is written there and the descriptor's compressed size updated. Nothing else in the
 //! file moves — not one other offset changes — which is why this is safe to do without a theory of
@@ -19,9 +25,19 @@
 //! only encoder there is, JDLZ, into a slot HUFF sized, so it does not fit by construction: 575 of
 //! the 721 misses are a missing *encoder*, and only 146 are a layout problem.
 //!
-//! So a HUFF encoder buys back four fifths of the gap without moving one byte, and relocation —
-//! rewriting every absolute offset — is what the remaining 146 need. Relocation is still the
-//! general answer, for the day a texture changes size at all; it is not the next piece of work.
+//! # Relocation
+//!
+//! [`relocate`] rewrites the whole pack instead: every blob is laid out afresh and every descriptor
+//! updated, so a replacement's size stops being a question. That makes the numbers above a fact
+//! about the *cheap* path rather than a limit on the format — a HUFF encoder would still buy back
+//! four fifths of the in-place misses without moving a byte, but nothing is now blocked on having
+//! one.
+//!
+//! It rests on four things, each measured over the install's 77 chunked packs before any of this was
+//! written: every blob lives in one leaf chunk (`0x33320002`, 54,875 of 54,875), that chunk is the
+//! last leaf (77 of 77), nothing outside the descriptor table points at a blob, and the bytes
+//! between blobs are junk rather than a pattern. Relocating every pack with nothing replaced and
+//! decompressing all 54,875 blobs back gives **byte-identical** results, for 0.36% more file.
 
 use super::directory::{find_chunk, parse_descriptors, DESCRIPTORS};
 use crate::chunk::{ChunkNode, WalkOptions};
@@ -105,6 +121,154 @@ pub fn replace_blob(file: &[u8], hash: AssetHash, blob: &[u8]) -> NfsResult<Vec<
         .ok_or(NfsError::CorruptArchive { detail: "TPK descriptor table out of range" })?
         .copy_from_slice(&(packed.len() as u32).to_le_bytes());
     Ok(out)
+}
+
+/// The chunk whose payload is every pixel blob in the pack.
+const BLOBS: u32 = 0x3332_0002;
+
+/// The boundary each relocated blob is put on.
+///
+/// A choice, not a rule the file states — which is why it is the generous end of what the file
+/// does. Measured over 54,875 real blobs in 77 packs: 27,234 sit on exactly 64, 13,636 on 128 and
+/// 13,942 on 256 or better, and 63 sit lower than 64. So 128 is at or above where all but a handful
+/// were, and the padding it costs is under a tenth of a percent of a pack.
+const BLOB_ALIGN: usize = 128;
+
+/// Rewrite a whole pack, putting every blob at a new offset — the general answer to a replacement
+/// that does not fit.
+///
+/// [`replace_blob`] cannot grow a texture by one byte: the descriptors hold **absolute file
+/// offsets**, so anything that moves invalidates them. This moves everything and then says so, which
+/// makes the size of a replacement a non-question. Measured over one install, the in-place path fits
+/// 1,402 of 2,123 blobs; this one has no such number, because there is nothing for it to fail at.
+///
+/// What makes it tractable is that the layout is simpler than it looks, and every part of that was
+/// measured over 77 real packs before a byte was written here:
+///
+/// * Every blob in every pack lives inside **one** leaf chunk, [`BLOBS`] — 54,875 of 54,875, with
+///   none in the file's tail and none in any other chunk.
+/// * That chunk is the **last leaf** in all 77, so growing it moves nothing that anything points at.
+/// * **Nothing else in the file points at a blob.** Every 4-aligned `u32` outside the descriptor
+///   table was checked against every declared offset; the only hits were misaligned reads straddling
+///   two fields, which is noise. So the descriptor table is the whole of what relocation must fix.
+/// * The bytes between blobs are not a filler pattern — they are whatever was left in the writing
+///   tool's buffer, and differ byte by byte — so replacing them with zeroes loses nothing.
+///
+/// Blobs are written out in **descriptor order**, which is not the order they were in: only 3 of 77
+/// packs had them ascending and only 3 had them contiguous. Descriptor order is chosen because it is
+/// the one order the file itself states, so two runs over one pack produce the same bytes.
+///
+/// `edits` gives new **decompressed** blobs by hash, in the shape [`blob_of`] hands them out. A
+/// texture not named keeps the bytes it already had, copied across without being decompressed and
+/// recompressed — so a pack rewritten for one texture does not silently re-encode the other 1,785,
+/// and the HUFF-sourced ones among them keep their original encoding rather than growing under the
+/// only encoder this crate has.
+///
+/// One pack in the install is refused, and deliberately. `CARS/PEUGOT/TEXTURES.BIN` has no
+/// [`BLOBS`] chunk at all: the directory is followed by raw compressed blocks with nothing wrapping
+/// them, and the tolerant walk reads the first block's `JDLZ` magic as a chunk id (`0x5a4c444a`).
+/// Its blobs run from the end of the directory to the end of the file.
+///
+/// That is **a texture compiler's output rather than EA's** — the file is a mod, made by this
+/// repository's own author, which is how its provenance is known rather than inferred. So the shape
+/// is real and worth supporting eventually; it is simply a second layout, and this one is locked on
+/// 77 files while that one has one. Turning it away by name beats rewriting it on a guess, and the
+/// error says which shape it found.
+///
+/// # Errors
+/// - A hash in `edits` is not in the pack.
+/// - The pack has no [`BLOBS`] chunk (the tool-compiled shape above), or that chunk is not the last
+///   leaf — a shape none of the 77 measured packs has, and one this reasoning does not cover.
+/// - A blob's declared extent lies outside the file.
+pub fn relocate(file: &[u8], edits: &[(AssetHash, Vec<u8>)]) -> NfsResult<Vec<u8>> {
+    let (entries, table_at) = table(file)?;
+    for (hash, _) in edits {
+        if !entries.iter().any(|e| e.hash == *hash) {
+            return Err(NfsError::CorruptArchive {
+                detail: "no texture with that hash in this TPK",
+            });
+        }
+    }
+
+    // The blob chunk, and the check that it is where this reasoning assumes.
+    let opts = WalkOptions { stop_on_overrun: true, ..Default::default() };
+    let roots = ChunkNode::parse_with(file, opts)?;
+    let blobs = find_chunk(&roots, BLOBS).ok_or(NfsError::NotImplemented {
+        feature: "relocating a tool-compiled TPK (raw blocks, no 0x33320002 chunk)",
+    })?;
+    let (blobs_at, blobs_len) = (blobs.data_offset, blobs.header.size as usize);
+    let blobs_header = blobs.offset;
+    if last_leaf_end(&roots) > blobs_at + blobs_len {
+        return Err(NfsError::CorruptArchive {
+            detail: "TPK blob chunk is not the last leaf; this pack's layout was never measured",
+        });
+    }
+
+    // Lay the blobs out, in descriptor order, each on its own boundary. The offsets written into
+    // the descriptors are absolute, so they are computed from where the chunk's payload begins —
+    // which does not move, because nothing before it changes size.
+    let mut payload: Vec<u8> = Vec::with_capacity(blobs_len);
+    let mut placed: Vec<(usize, usize, usize)> = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let new = edits.iter().find(|(h, _)| *h == e.hash);
+        let (bytes, out_size) = match new {
+            Some((_, blob)) => (crate::compression::jdlz::compress(blob)?, blob.len()),
+            None => {
+                let at = e.abs_offset as usize;
+                let end = at
+                    .checked_add(e.size as usize)
+                    .ok_or(NfsError::CorruptArchive { detail: "TPK blob extent overflows" })?;
+                let old = file
+                    .get(at..end)
+                    .ok_or(NfsError::CorruptArchive { detail: "TPK texture blob out of range" })?;
+                (old.to_vec(), e.out_size as usize)
+            }
+        };
+        // Pad to the boundary. `blobs_at` is where payload position 0 lands in the file, so the
+        // boundary is worked out in absolute terms and not in payload-relative ones.
+        while !(blobs_at + payload.len()).is_multiple_of(BLOB_ALIGN) {
+            payload.push(0);
+        }
+        placed.push((blobs_at + payload.len(), bytes.len(), out_size));
+        payload.extend_from_slice(&bytes);
+    }
+
+    // Rewrite the descriptor table where it lies. It is ahead of the blob chunk and does not change
+    // length, so patching it in the input and rebuilding afterwards leaves it exactly here.
+    let mut patched = file.to_vec();
+    for (i, (at, size, out_size)) in placed.iter().enumerate() {
+        let d = table_at + i * DESCRIPTOR_STRIDE;
+        let field = |o: usize| d + o;
+        let write = |buf: &mut Vec<u8>, o: usize, v: u32| -> NfsResult<()> {
+            buf.get_mut(field(o)..field(o) + 4)
+                .ok_or(NfsError::CorruptArchive { detail: "TPK descriptor table out of range" })?
+                .copy_from_slice(&v.to_le_bytes());
+            Ok(())
+        };
+        write(&mut patched, 4, u32::try_from(*at).unwrap_or(u32::MAX))?;
+        write(&mut patched, SIZE_FIELD, u32::try_from(*size).unwrap_or(u32::MAX))?;
+        write(&mut patched, 0x0C, u32::try_from(*out_size).unwrap_or(u32::MAX))?;
+    }
+
+    // And hand the new payload to the repacker, which recomputes the container sizes above it.
+    let mut swap = crate::repack::Edits::new();
+    swap.insert(blobs_header, payload);
+    crate::repack::rebuild(&patched, &swap)
+}
+
+/// Where the last leaf in the tree ends.
+fn last_leaf_end(nodes: &[ChunkNode]) -> usize {
+    nodes
+        .iter()
+        .map(|n| {
+            if n.children.is_empty() {
+                n.data_offset + n.header.size as usize
+            } else {
+                last_leaf_end(&n.children)
+            }
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The descriptor table, and where it starts in the file.

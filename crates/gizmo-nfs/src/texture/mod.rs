@@ -83,7 +83,7 @@ mod decode;
 mod directory;
 
 pub use directory::TpkEntry;
-pub use write::{blob_of, replace_blob};
+pub use write::{blob_of, relocate, replace_blob};
 
 use crate::chunk::{ChunkNode, WalkOptions};
 use directory::DESCRIPTORS;

@@ -222,6 +222,88 @@ fn vinyls_pack_decodes_as_palettised() {
     assert_eq!((red, blue), (7598, 0), "the Clarion wordmark is red, and B,G,R,A is why");
 }
 
+/// Relocation: a pack rewritten with every blob at a new offset still reads back as the same pack,
+/// and a texture that grew past its old slot goes in.
+///
+/// This is the check `replace_blob` can never make. In-place writing is safe *because* nothing
+/// moves, so it needs no theory of the layout; relocation moves all of it, and the only thing that
+/// proves the theory is decoding the result. So the assertion is not "the bytes look right" but
+/// **every texture in the rewritten pack decodes to the pixels it decoded to before** — 73 of them,
+/// compared image by image.
+///
+/// The growth case is the point of the whole exercise. It replaces a texture with a blob that
+/// deliberately does not compress — random bytes, so JDLZ cannot shrink them — which is exactly the
+/// case `replace_blob` refuses. If the offsets were not fixed up, the textures *after* it in the
+/// file would decode as noise or not at all, and the pixel comparison below would say so.
+#[test]
+fn a_relocated_pack_reads_back() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping relocation test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("CARS/240SX/TEXTURES.BIN")).expect("read TEXTURES.BIN");
+    let before = gizmo_nfs::texture::Tpk::parse(&bytes).expect("parse");
+    assert_eq!(before.textures.len(), 73);
+
+    // 1. Relocate with nothing replaced. Every image must survive the move unchanged.
+    let moved = gizmo_nfs::texture::relocate(&bytes, &[]).expect("relocate with no edits");
+    let after = gizmo_nfs::texture::Tpk::parse(&moved).expect("the relocated pack parses");
+    assert_eq!(after.textures.len(), before.textures.len(), "same number of images");
+    for (hash, old) in &before.textures {
+        let new = after.texture(*hash).expect("every texture survives relocation");
+        assert_eq!((new.width, new.height), (old.width, old.height), "{} size", old.name);
+        assert_eq!(new.rgba, old.rgba, "{} pixels changed under relocation", old.name);
+        assert_eq!(new.name, old.name, "name changed under relocation");
+    }
+    // The blobs were packed onto boundaries and the junk between them dropped, so the file is
+    // allowed to change size — it is the pixels that must not.
+    let dir = gizmo_nfs::texture::Tpk::directory(&moved).expect("directory");
+    assert!(dir.iter().all(|e| (e.abs_offset as usize).is_multiple_of(128)), "every blob is on its boundary");
+
+    // 2. Replace one texture with something that cannot be compressed and is far too big for its
+    //    old slot, which is what in-place writing refuses.
+    let victim = *before.textures.keys().next().expect("a texture");
+    let old_slot = before.entries.iter().find(|e| e.hash == victim).expect("its descriptor");
+    let mut blob = gizmo_nfs::texture::blob_of(&bytes, victim).expect("blob out");
+    // Incompressible filler, appended so the embedded header keeps its distance from the end.
+    let grown = {
+        let mut v = vec![0u8; 64 * 1024];
+        let mut x = 0x1234_5678u32;
+        for b in v.iter_mut() {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *b = (x >> 24) as u8;
+        }
+        v.extend_from_slice(&blob);
+        v
+    };
+    blob = grown;
+    assert!(
+        gizmo_nfs::texture::replace_blob(&bytes, victim, &blob).is_err(),
+        "in-place writing must refuse a blob this size — that is why relocation exists"
+    );
+
+    let bigger = gizmo_nfs::texture::relocate(&bytes, &[(victim, blob.clone())])
+        .expect("relocation takes a blob that does not fit");
+    let out = gizmo_nfs::texture::Tpk::directory(&bigger).expect("directory");
+    let grown_entry = out.iter().find(|e| e.hash == victim).expect("its descriptor");
+    assert_eq!(grown_entry.out_size as usize, blob.len(), "the new decompressed size is recorded");
+    assert!(grown_entry.size > old_slot.size, "the new blob really is larger than the old slot");
+    assert_eq!(
+        gizmo_nfs::texture::blob_of(&bigger, victim).expect("read it back"),
+        blob,
+        "the replacement comes back out byte for byte"
+    );
+    // And every *other* texture still decodes — the thing that breaks when offsets are not fixed.
+    let grown_pack = gizmo_nfs::texture::Tpk::parse(&bigger).expect("the grown pack parses");
+    for (hash, old) in &before.textures {
+        if *hash == victim {
+            continue;
+        }
+        let new = grown_pack.texture(*hash).expect("a neighbour survived the insertion");
+        assert_eq!(new.rgba, old.rgba, "{} moved and changed", old.name);
+    }
+}
+
 /// The discovery proposal, on a buffer whose layout is already known.
 ///
 /// A car's `0x00134B01` vertex buffer is stride 36 (position, normal, colour, uv) behind a run of
