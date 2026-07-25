@@ -251,3 +251,43 @@ fn truncation_hides_masks_that_the_hash_finds() {
         "exactly one of the twins is the mask"
     );
 }
+
+/// The repacker's foundation: rebuilding a file nobody edited must give the file back, byte for
+/// byte, across a whole install.
+///
+/// This is the test that turns the layout rules in [`gizmo_nfs::repack`] from a reading of the
+/// bytes into a claim that has been checked. Padding is *recomputed* from the alignment rules
+/// rather than copied, so a single wrong boundary — or one solid that is not on 128 after all —
+/// shows up here as a mismatch, on the first file that disagrees.
+#[test]
+fn every_file_rebuilds_byte_for_byte() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping golden repack test");
+        return;
+    };
+    let edits = gizmo_nfs::repack::Edits::new();
+    let (mut files, mut bytes_seen) = (0usize, 0usize);
+    for car in std::fs::read_dir(root.join("CARS")).expect("CARS/").flatten() {
+        for name in ["GEOMETRY.BIN", "TEXTURES.BIN"] {
+            let path = car.path().join(name);
+            let Ok(original) = std::fs::read(&path) else { continue };
+            if gizmo_nfs::chunk::ChunkNode::parse(&original).is_err() {
+                continue; // not a chunk stream; the repacker makes no claim about it
+            }
+            let rebuilt = gizmo_nfs::repack::rebuild(&original, &edits).expect("rebuild");
+            files += 1;
+            bytes_seen += original.len();
+            assert_eq!(rebuilt.len(), original.len(), "{}: length changed", path.display());
+            if let Some(at) = rebuilt.iter().zip(&original).position(|(a, b)| a != b) {
+                panic!(
+                    "{}: first difference at byte {at} (0x{at:X}): rebuilt {:02X?} vs original {:02X?}",
+                    path.display(),
+                    rebuilt.get(at..at + 8).unwrap_or(&[]),
+                    original.get(at..at + 8).unwrap_or(&[]),
+                );
+            }
+        }
+    }
+    assert!(files > 50, "only {files} files rebuilt — the test read nothing");
+    eprintln!("rebuilt {files} files, {} MB, byte-exact", bytes_seen / (1024 * 1024));
+}

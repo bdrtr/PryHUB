@@ -52,6 +52,7 @@ pub mod inspect;
 pub mod parts;
 pub mod placement;
 pub mod reader;
+pub mod repack;
 pub mod texture;
 pub mod types;
 pub mod validate;

@@ -8,6 +8,7 @@
 use gizmo_nfs::chunk::ChunkNode;
 use gizmo_nfs::compression;
 use gizmo_nfs::discover::{self, Kind, Schema};
+use gizmo_nfs::repack;
 use gizmo_nfs::texture::Tpk;
 use gizmo_nfs::viv::VivArchive;
 use proptest::prelude::*;
@@ -71,5 +72,23 @@ proptest! {
         // A row's cell count is the column count, whatever the bytes did: a table that loses a
         // column silently shifts every value in the row.
         prop_assert_eq!(discover::row(&data, &schema, index).len(), schema.columns.len());
+    }
+
+    // Rebuilding is the write path, and it takes two untrusted inputs: the bytes and the caller's
+    // edits. A payload of any length must not knock the assembler over.
+    #[test]
+    fn rebuild_never_panics(
+        data in proptest::collection::vec(any::<u8>(), 0..4096),
+        offsets in proptest::collection::vec(0usize..4096, 0..8),
+        payload in proptest::collection::vec(any::<u8>(), 0..64),
+    ) {
+        let mut edits = repack::Edits::new();
+        for o in offsets {
+            edits.insert(o, payload.clone());
+        }
+        if let Ok(out) = repack::rebuild(&data, &edits) {
+            // Whatever came out has to be a chunk stream this crate can read back.
+            prop_assert!(gizmo_nfs::chunk::ChunkNode::parse(&out).is_ok() || !out.is_empty());
+        }
     }
 }

@@ -20,6 +20,7 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | Output data contract | `types` | ✅ defined |
 | `GEOMETRY.BIN` car models | `geometry` | ✅ done — stride-36 vertices (pos/normal/uv) + u16 indices, validated on real cars |
 | TPK textures → RGBA8 images | `texture` | 🟡 mostly done — each 24-byte descriptor decoded to its own image: whole-file offset → JDLZ blob → embedded `OldTextureInfo` (width/height/format) → DXT1/3/5 or raw RGBA. **HUFF-compressed** textures are listed in `entries` but not decoded. |
+| Chunk stream **writing** | `repack` | 🟡 foundation done — byte-exact rebuild of 113 real files (241 MB); payload replacement with size/alignment fix-up. TPK offset fix-up and a JDLZ *compressor* still to come |
 | Asset-name hash (`bStringHash`) | `hash` | ✅ done — locked against 2,123 real (name, hash) pairs; recovers truncated names by confirming a candidate |
 | Chunk-tree comparison | `diff` | ✅ done — paired by position among same-id siblings; changed / resized / one-sided, with the first differing byte |
 | Schema discovery (unknown chunks) | `discover` | ✅ done — user-typed stride/columns, exact-divisor candidates ranked by lane consistency, `0x11` filler skipped; re-derives the real vertex layout in a golden test |
