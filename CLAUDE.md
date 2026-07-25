@@ -437,7 +437,21 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     *visual customisation*, and the performance numbers are not in it. `palette()` reads colours as three *adjacent* attributes rather
     than through a part, because that link is missing and this does not need it: 123 colours, no
     component over 255. `ug2 globalb --parts` shows the lot.
-18. **`types`** — the engine-agnostic output contract (see below).
+18. **`profile`** — the player profile (`AppData/Local/NFS Underground 2/<name>/<name>`, 54,966 B,
+    magic `20CM`): which performance products a car has fitted, and the per-category totals they add
+    up to. Locked by **experiment**, not by reading: eight purchases made one at a time, the file
+    diffed after each — the first wrote 388 bytes, every one after it 11–13. A product owns a *flag
+    byte* and products sharing a slot replace one another (nitrous L2 moved the flag `+0x0BFC →
+    `+0x0BFD`; a differential swap moved `+0x0BF8 → +0x0BF9`, which was **predicted before the
+    purchase**). The per-category `f32` is the **sum of what is fitted**, each product carrying its
+    own weight — 0.33 a step for the gearbox, 1.0 for nitrous, 0.21 then 0.30 for the engine; a
+    "0..1 fill" model was held for two rounds and the file disproved it. Only the three measured
+    slots are read: widening the window to the neighbours looked contiguous and was a guess, and the
+    real saves rejected it. **The displayed torque and power are not in the file** — 3.64 / 1.75
+    appear nowhere at any scale, so they are computed at run time, which is why no torque table was
+    ever found in any static asset: there is not one. `NFSU2_PROFILES` gates the golden test, the
+    saves being somebody's rather than fixtures that can ship.
+19. **`types`** — the engine-agnostic output contract (see below).
 
 The top-level `decompress_file()` is one of the few functions that touch the filesystem; everything downstream is pure `&[u8]`.
 

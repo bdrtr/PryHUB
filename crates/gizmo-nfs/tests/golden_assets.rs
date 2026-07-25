@@ -451,3 +451,47 @@ fn carparts_reads_the_real_bundle() {
         assert!(n >= least, "{name}: {n} attributes, expected at least {least}");
     }
 }
+
+/// The profile reader against the saves the model was measured on.
+///
+/// `NFSU2_PROFILES` points at a directory of them; the series this was locked with is
+/// `A_engine1_trans1` … `J_diff2`, one purchase apart. Skipped when it is unset, like every other
+/// golden test — these are somebody's save files, not fixtures that can ship.
+#[test]
+fn profile_reads_the_measured_series() {
+    let Some(dir) = std::env::var_os("NFSU2_PROFILES").map(PathBuf::from) else {
+        eprintln!("NFSU2_PROFILES unset — skipping profile test");
+        return;
+    };
+    let read = |name: &str| {
+        let bytes = std::fs::read(dir.join(name)).expect("read profile");
+        gizmo_nfs::Profile::parse(&bytes).expect("profile parses")
+    };
+    use gizmo_nfs::profile::Category;
+
+    // The gearbox category, one purchase at a time: three products, then one swapped for its next
+    // level. Steps of 0.33, which is this category's own weight rather than a rule.
+    for (name, want) in [
+        ("A_engine1_trans1", 0.00),
+        ("D_transmission", 0.33),
+        ("E_flywheel", 0.66),
+        ("F_differential", 0.99),
+        ("J_diff2", 1.32),
+    ] {
+        let got = read(name).total(Category::Transmission);
+        assert!((got - want).abs() < 0.01, "{name}: transmission {got} != {want}");
+    }
+
+    // Nitrous steps by a whole unit, and level 2 *replaces* level 1 rather than adding to it, so the
+    // number of fitted products does not change.
+    let (h, i) = (read("H_nitro"), read("I_nitro2"));
+    assert!((h.total(Category::Nitrous) - 1.0).abs() < 0.01);
+    assert!((i.total(Category::Nitrous) - 2.0).abs() < 0.01);
+    assert_eq!(h.fitted(), i.fitted(), "a swap fits the same number of products");
+    assert_ne!(h.installed, i.installed, "…but not the same ones");
+
+    // The engine's two products weigh differently — 0.21 and 0.30 — which is why the total is a sum
+    // and not a fill.
+    assert!((read("C_coldintake").total(Category::Engine) - 0.21).abs() < 0.01);
+    assert!((read("G_headers").total(Category::Engine) - 0.51).abs() < 0.01);
+}
