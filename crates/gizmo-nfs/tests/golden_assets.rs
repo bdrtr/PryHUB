@@ -323,11 +323,85 @@ fn jdlz_compresses_a_real_bundle_and_reads_it_back() {
         ea.len(),
         theirs * 100.0
     );
-    // Well within reach of EA's encoder — not matching it, but in the same class rather than
-    // accidentally storing the file.
-    assert!(ours < theirs * 1.5, "ours {ours:.3} is more than 50% worse than EA's {theirs:.3}");
+    // On this file the encoder is slightly *better* than EA's. That is a regression lock, not a
+    // boast: the in-place texture write below only works while the ratio holds.
+    assert!(ours < theirs * 1.02, "ours {ours:.3} lost ground against EA's {theirs:.3}");
 
     // And the decompressor must accept a stream that mixes both token forms at scale — which this
     // one does, or the ratio above would be nowhere near.
     assert!(packed.len() > 16, "the stream has a body");
+}
+
+/// In-place texture replacement, on every texture of every real pack.
+///
+/// The mechanism cannot move anything, so the only question that decides whether it is useful is
+/// empirical: does a blob recompressed by *our* encoder still fit the slot EA's encoder left for it?
+/// This measures that over a whole install and asserts the round trip for the ones that fit — a
+/// replaced texture must decode to exactly the pixels it decoded to before.
+#[test]
+fn a_texture_can_be_written_back_in_place() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping golden TPK write test");
+        return;
+    };
+    let (mut fits, mut misses, mut packs, mut verified) = (0usize, 0usize, 0usize, 0usize);
+    let mut worst = 0f64;
+    for car in std::fs::read_dir(root.join("CARS")).expect("CARS/").flatten() {
+        let Ok(file) = std::fs::read(car.path().join("TEXTURES.BIN")) else { continue };
+        let Ok(tpk) = gizmo_nfs::Tpk::parse(&file) else { continue };
+        if tpk.textures.is_empty() {
+            continue;
+        }
+        packs += 1;
+        let mut checked_this_pack = false;
+        for (hash, before) in &tpk.textures {
+            let Ok(blob) = gizmo_nfs::texture::blob_of(&file, *hash) else { continue };
+            let entry = tpk.entry(*hash).expect("the entry we just read a blob for");
+            let packed = gizmo_nfs::compression::jdlz::compress(&blob).expect("compress");
+            worst = worst.max(packed.len() as f64 / entry.size as f64);
+            if packed.len() > entry.size as usize {
+                misses += 1;
+                continue;
+            }
+            fits += 1;
+            // The full verification is O(textures²) in this pack, so it runs once per pack; the
+            // fit/miss counts above cover every texture in the install.
+            if checked_this_pack {
+                continue;
+            }
+            checked_this_pack = true;
+            match gizmo_nfs::texture::replace_blob(&file, *hash, &blob) {
+                Ok(out) => {
+                    verified += 1;
+                    assert_eq!(out.len(), file.len(), "an in-place write must not resize the file");
+                    let after = gizmo_nfs::Tpk::parse(&out).expect("the rewritten pack parses");
+                    let after_tex = after.texture(*hash).expect("the replaced texture is still there");
+                    assert_eq!(after_tex.rgba, before.rgba, "the pixels came back unchanged");
+                    assert_eq!(after_tex.width, before.width);
+                    assert_eq!(after_tex.name, before.name);
+                    // And every *other* texture is untouched, which is the point of not moving.
+                    for (other, was) in &tpk.textures {
+                        if other != hash {
+                            assert_eq!(
+                                after.texture(*other).map(|t| &t.rgba),
+                                Some(&was.rgba),
+                                "another texture changed"
+                            );
+                        }
+                    }
+                }
+                Err(e) => panic!("a blob that fits must be writable: {e}"),
+            }
+        }
+    }
+    assert!(packs > 20, "only {packs} packs read");
+    let total = fits + misses;
+    eprintln!(
+        "tpk in-place: {fits}/{total} textures fit their own slot ({:.0}%), verified in {verified} packs, worst {worst:.2}× the slot",
+        fits as f64 / total as f64 * 100.0
+    );
+    assert!(verified > 20, "only {verified} packs verified");
+    // The number that decides how useful this is today. It is a floor, not a target: a better
+    // encoder raises it, and relocation removes the question.
+    assert!(fits * 2 > total, "fewer than half the textures fit: {fits} of {total}");
 }

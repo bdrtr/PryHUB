@@ -41,10 +41,12 @@
 //! block decoders. This file is only the container: find the directory, decode what it lists.
 
 pub mod dxt;
+pub mod write;
 mod decode;
 mod directory;
 
 pub use directory::TpkEntry;
+pub use write::{blob_of, replace_blob};
 
 use crate::chunk::{ChunkNode, WalkOptions};
 use directory::DESCRIPTORS;

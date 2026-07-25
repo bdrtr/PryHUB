@@ -40,7 +40,7 @@ pub(super) fn find_leaf<'a>(roots: &[ChunkNode], id: u32, root_buf: &'a [u8]) ->
 }
 
 /// Parse the fixed-stride descriptor table (trailing partial bytes ignored).
-pub(super) fn parse_descriptors(desc: &[u8]) -> Vec<TpkEntry> {
+pub(crate) fn parse_descriptors(desc: &[u8]) -> Vec<TpkEntry> {
     let count = desc.len() / DESCRIPTOR_STRIDE;
     let mut entries = Vec::with_capacity(count);
     let mut r = ByteReader::new(desc);
