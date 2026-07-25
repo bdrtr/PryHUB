@@ -32,6 +32,8 @@ pub enum Tab {
     Hex,
     /// Designed, not yet built.
     Texture,
+    /// The build: which parts are mounted, and the car they make.
+    Assembly,
 }
 
 /// The state of the open file's textures.
@@ -116,15 +118,33 @@ pub struct PryHub {
     pub recents: Vec<std::path::PathBuf>,
     /// The welcome screen's path field.
     pub path_input: String,
+    /// A desktop file chooser waiting to be answered, and which side asked for it. It runs in its
+    /// own thread — the chooser does not return until the user has decided, and the interface may
+    /// not stop drawing meanwhile. One slot, because two choosers at once is not a thing anyone
+    /// means to open.
+    pub picking:
+        Option<(crate::jobs::Side, std::sync::mpsc::Receiver<Option<std::path::PathBuf>>)>,
     /// The selected chunk's parsed model, keyed by its offset so it is rebuilt only on a change.
     model: Option<(usize, gizmo_nfs::inspect::ChunkModel)>,
     /// eframe's wgpu device, for the 3D tab. `None` when the backend is not wgpu, in which case
     /// the tab says so instead of the app refusing to run.
     pub render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// The project's mark, decoded once at startup. `None` if the PNG would not decode, which
+    /// costs the interface a picture and nothing else.
+    pub logo: Option<crate::logo::Logo>,
     /// The preview renderer, built lazily the first time the tab is opened.
     pub preview: Option<crate::gpu::preview::Preview>,
     /// Where the preview camera is looking from.
     pub camera: crate::panels::viewport3d::Camera,
+    /// Whether the 3D tab draws edges instead of surfaces — the design's `Tel kafes` / `Wireframe`.
+    pub wire: bool,
+    /// The game's paint palette, read from `GLOBALB.BUN` on first need. `None` until asked for.
+    pub palette: Option<Vec<gizmo_nfs::Colour>>,
+    /// The colour the body is painted, or `None` for the material group's own.
+    pub paint: Option<gizmo_nfs::Colour>,
+    /// Parts the assembly tab has switched **off**, by display key. Off rather than on, so a file
+    /// that has just been opened is fully built without anyone having to enumerate it first.
+    pub unmounted: std::collections::HashSet<String>,
     /// Names the user has given to asset hashes, loaded from disk at startup.
     pub names: crate::names::Names,
     /// The dictionary screen's filter and in-progress edits.
@@ -137,6 +157,11 @@ pub struct PryHub {
     pub texture_selection: Option<gizmo_nfs::AssetHash>,
     /// Uploaded texture handles, keyed by hash and by thumbnail-or-full-image.
     pub texture_cache: std::collections::HashMap<(u32, bool), egui::TextureHandle>,
+    /// Whether the export dialog is up, and what it was last set to. The choice outlives the
+    /// dialog on purpose: someone who exports twice in a session almost always means the same
+    /// thing the second time.
+    pub show_export: bool,
+    pub export_choice: crate::export::Choice,
     /// Set when the density or language changed and the style must be rebuilt.
     pub(crate) restyle: bool,
     /// `--shot <path>`: draw a few frames, save the window as a PNG, and exit. The tool renders
@@ -174,16 +199,24 @@ impl PryHub {
             pending_selection: None,
             recents: Vec::new(),
             path_input: String::new(),
+            picking: None,
             model: None,
             render_state: None,
+            logo: crate::logo::Logo::load(ctx),
             preview: None,
             camera: crate::panels::viewport3d::Camera::default(),
+            wire: false,
+            palette: None,
+            paint: None,
+            unmounted: std::collections::HashSet::new(),
             names: crate::names::Names::load(),
             dict: crate::screens::dictionary::State::default(),
             diff: crate::screens::diff::State::default(),
             discover: crate::screens::discovery::State::default(),
             texture_selection: None,
             texture_cache: std::collections::HashMap::new(),
+            show_export: false,
+            export_choice: crate::export::Choice::default(),
             restyle: false,
             shot: shot.map(|p| crate::shot::Shot {
                 path: p.into(),
@@ -204,6 +237,12 @@ impl PryHub {
                 "discovery" => Screen::Discovery,
                 "diff" => Screen::Diff,
                 "dictionary" => Screen::Dictionary,
+                // The dialog is not a screen, but it is a *view* — and it is the one thing in the
+                // interface a screenshot could otherwise never reach.
+                "export" => {
+                    app.show_export = true;
+                    Screen::Workspace
+                }
                 _ => Screen::Workspace,
             };
         }
@@ -221,13 +260,27 @@ impl PryHub {
         self.open_side(path, crate::jobs::Side::Other);
     }
 
-    fn open_side(&mut self, path: &std::path::Path, side: crate::jobs::Side) {
+    pub(crate) fn open_side(&mut self, path: &std::path::Path, side: crate::jobs::Side) {
         self.jobs.send(crate::jobs::Request::Open { path: path.to_path_buf(), side });
     }
 
     /// Take everything the worker has finished.
     fn collect_jobs(&mut self) {
         use crate::jobs::{Outcome, Side};
+        // The file chooser, if one is open. `try_recv` rather than a wait: it is a whole desktop
+        // window away and may never be answered at all.
+        if let Some((side, rx)) = &self.picking {
+            let side = *side;
+            match rx.try_recv() {
+                Ok(Some(path)) => {
+                    self.picking = None;
+                    self.open_side(&path, side);
+                }
+                // Cancelled, or the thread went away with it.
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picking = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         for outcome in self.jobs.poll() {
             match outcome {
                 Outcome::Opened { result, side: Side::Main, path } => match *result {
@@ -244,6 +297,7 @@ impl PryHub {
                         self.textures = Textures::Ready(tpk);
                     }
                 }
+                Outcome::Palette(colours) => self.palette = Some(colours),
                 Outcome::Exported(result) => self.report_export(result),
                 // `poll` keeps progress to itself; this arm exists so the compiler says something
                 // if that ever changes.
@@ -280,11 +334,36 @@ impl PryHub {
         self.textures = Textures::Unasked;
         self.texture_selection = None;
         self.texture_cache.clear();
+        // Everything below describes the file that was open, in terms that mean something different
+        // in the one that just arrived. A chunk offset, a stride, a mesh key: all of them are still
+        // *valid numbers* against the new bytes, which is exactly why none of them announce
+        // themselves as stale — the tab simply keeps drawing the previous car and the table keeps
+        // reading the new payload through the old layout.
+        self.discover = crate::screens::discovery::State::default();
+        self.unmounted.clear();
+        self.paint = None;
+        // The palette belongs to the *install*, not to the file, so it is kept across an open.
+        if let Some(preview) = &mut self.preview {
+            preview.forget_mesh();
+        }
+        self.camera.framed = None;
         // Only take the user to the workspace if they had nowhere else to be. Opening used to be
         // synchronous, so this ran before the command line could pick a screen and before anyone
         // could navigate; as a job it lands later, and forcing the workspace then overrode both.
         if self.screen == Screen::Welcome {
             self.screen = Screen::Workspace;
+        }
+    }
+
+    /// Ask for the paint palette, unless it is here or already coming.
+    pub fn want_palette(&mut self) {
+        if self.palette.is_some() {
+            return;
+        }
+        if let Some(doc) = &self.doc {
+            // Marked as asked by answering it empty now; the job overwrites that when it lands.
+            self.palette = Some(Vec::new());
+            self.jobs.send(crate::jobs::Request::Palette { beside: doc.path.clone() });
         }
     }
 
@@ -304,9 +383,12 @@ impl PryHub {
     /// Queue an export of what the centre area is showing.
     pub fn export_now(&mut self, kind: crate::export::Kind) {
         let Some(doc) = &self.doc else { return };
+        let build = crate::panels::assembly::mounted_indices(self, &doc.parts);
         let spec = crate::export::ExportSpec {
             kind,
             selection: self.selection,
+            build,
+            choice: self.export_choice,
             strings: self.lang.strings(),
             textures: self.textures.ready().map(std::sync::Arc::clone),
         };
@@ -317,6 +399,36 @@ impl PryHub {
     #[must_use]
     pub fn suggested_dir() -> String {
         std::env::var("NFSU2_ROOT").map(|r| format!("{r}/CARS/")).unwrap_or_default()
+    }
+
+    /// Ask the desktop for a file, for `side`. Does nothing if a chooser is already up, or if this
+    /// machine has none — in which case the caller's own path field remains the way in.
+    pub(crate) fn ask_for_file(&mut self, ctx: &egui::Context, side: crate::jobs::Side) -> bool {
+        if self.picking.is_some() {
+            return true;
+        }
+        let start = self.start_dir();
+        match crate::picker::open(ctx, start) {
+            Some(rx) => {
+                self.picking = Some((side, rx));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Where a file chooser should open: beside the file that is already open, else the install if
+    /// `NFSU2_ROOT` names one. Somewhere useful beats the process's working directory.
+    #[must_use]
+    pub fn start_dir(&self) -> Option<std::path::PathBuf> {
+        if let Some(doc) = &self.doc {
+            if let Some(dir) = doc.path.parent() {
+                return Some(dir.to_path_buf());
+            }
+        }
+        let root = std::env::var("NFSU2_ROOT").ok()?;
+        let cars = std::path::PathBuf::from(root).join("CARS");
+        cars.is_dir().then_some(cars)
     }
 
     /// Select a chunk and make the hex view follow it.
@@ -405,6 +517,9 @@ impl eframe::App for PryHub {
             }
             Screen::Dictionary => screens::dictionary::show(self, ui),
         }
+        // Last, and over whatever the screen drew: the dialog is modal, and it opens the workspace
+        // under itself so it is always over the thing it is about to export.
+        screens::export_dialog::show(self, ui.ctx());
         // A file dropped on the window opens it — the welcome screen's drop target, everywhere.
         // On the compare screen it loads the other side instead, which is what dropping a second
         // file onto a comparison plainly means.
@@ -525,7 +640,7 @@ mod tests {
             "queueing a job took {:?}",
             started.elapsed()
         );
-        assert_eq!(app.jobs.busy(), Some("open"), "the status bar has something to say");
+        assert_eq!(app.jobs.busy(), Some(crate::jobs::Kind::Open), "the status bar has something to say");
         assert!(settle(&mut app, |a| a.jobs.busy().is_none()));
     }
 }

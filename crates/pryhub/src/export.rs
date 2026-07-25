@@ -34,9 +34,67 @@ pub struct ExportSpec {
     pub kind: Kind,
     /// The selected chunk, which decides *which* model is written.
     pub selection: Option<usize>,
+    /// Indices into `doc.parts` of what the assembly tab has mounted, resolved when the button was
+    /// pressed. Resolved *then* rather than read on the worker: the export is about the build the
+    /// user was looking at, and they may go on toggling while it writes.
+    pub build: Vec<usize>,
+    /// What the dialog was set to when the button was pressed.
+    pub choice: Choice,
     /// The interface's language, so the summary line reads in it.
     pub strings: &'static Strings,
     pub textures: Option<Arc<gizmo_nfs::Tpk>>,
+}
+
+/// The dialog's answers: how much of the file, and in what.
+///
+/// It lives on the app rather than being rebuilt per opening, so the dialog reopens where it was
+/// left — the design's state is component-level for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Choice {
+    pub scope: Scope,
+    pub model: Model,
+}
+
+impl Default for Choice {
+    fn default() -> Self {
+        // The design's own defaults (`expScope:'sel', expModel:'gltf'`).
+        Self { scope: Scope::Selection, model: Model::Gltf }
+    }
+}
+
+/// How much of the file to write.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The solid the selection sits in — what the 3D tab is showing.
+    Selection,
+    /// Every part in the file, including the kit and widebody variants the showroom car leaves out.
+    All,
+    /// What the assembly tab has mounted — the car on screen, with whatever has been taken off it
+    /// taken off. The point of building it is to be able to write *that* out.
+    Build,
+}
+
+/// Which mesh files to write. Both formats come from the parser, so this only decides what is
+/// *kept* — there is no second exporter behind either option.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    /// `.glb` — one file, with the materials and the hierarchy in it.
+    Gltf,
+    /// `.obj` + `.mtl` — geometry and material names, for the older tools around this game.
+    Obj,
+    Both,
+}
+
+impl Model {
+    /// The word the dialog's own button says it is about to write.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Gltf => "GLB",
+            Self::Obj => "OBJ",
+            Self::Both => "GLB + OBJ",
+        }
+    }
 }
 
 /// The three things the button can mean.
@@ -88,7 +146,7 @@ pub fn run(
         Kind::Model if doc.parts.is_empty() && has_images => {
             textures(tpk, &out, spec.strings, tell)
         }
-        Kind::Model => model(doc, tpk, spec.selection, &out, spec.strings, tell),
+        Kind::Model => model(doc, tpk, spec, &out, tell),
     }
 }
 
@@ -147,41 +205,52 @@ fn textures(
 fn model(
     doc: &Doc,
     tpk: Option<&gizmo_nfs::Tpk>,
-    selection: Option<usize>,
+    spec: &ExportSpec,
     out: &Path,
-    t: &Strings,
     tell: &dyn Fn(usize, usize),
 ) -> Result<Written, String> {
-    let parts = shown_parts(doc, selection);
+    // The spec whole rather than four of its fields: it grew a third way of choosing parts and the
+    // argument list was already at the edge of being read rather than counted.
+    let (choice, t) = (spec.choice, spec.strings);
+    let parts = shown_parts(doc, spec.selection, choice.scope, &spec.build);
     if parts.is_empty() {
-        return Err("this file holds no parts to export".into());
+        return Err(t.no_parts.to_owned());
     }
     let stem = stem(doc);
     let mtl_name = format!("{stem}.mtl");
 
     let plan = MaterialPlan::build(&parts, tpk);
-    let obj_text = export::write_obj(&parts, &mtl_name, |p, run| plan.name_for(p, run));
-    let mtl_text = export::write_mtl(&plan.materials);
 
     create_dir(out)?;
+    let mut files = Vec::new();
     // The `.glb` first: it is the one file someone can drag into a viewer and see the car, images
     // and all. The OBJ beside it is for the older tools around this game.
-    let glb_path = out.join(format!("{stem}.glb"));
-    let glb = export::write_glb(&parts, tpk).map_err(|e| format!("{}: {e}", glb_path.display()))?;
-    write(&glb_path, &glb)?;
-    let obj_path = out.join(format!("{stem}.obj"));
-    let mtl_path = out.join(&mtl_name);
-    write(&obj_path, obj_text.as_bytes())?;
-    write(&mtl_path, mtl_text.as_bytes())?;
-    let mut files = vec![glb_path, obj_path, mtl_path];
+    if matches!(choice.model, Model::Gltf | Model::Both) {
+        let glb_path = out.join(format!("{stem}.glb"));
+        let glb =
+            export::write_glb(&parts, tpk).map_err(|e| format!("{}: {e}", glb_path.display()))?;
+        write(&glb_path, &glb)?;
+        files.push(glb_path);
+    }
+    if matches!(choice.model, Model::Obj | Model::Both) {
+        let obj_text = export::write_obj(&parts, &mtl_name, |p, run| plan.name_for(p, run));
+        let mtl_text = export::write_mtl(&plan.materials);
+        let obj_path = out.join(format!("{stem}.obj"));
+        let mtl_path = out.join(&mtl_name);
+        write(&obj_path, obj_text.as_bytes())?;
+        write(&mtl_path, mtl_text.as_bytes())?;
+        files.push(obj_path);
+        files.push(mtl_path);
+    }
+    let mesh_files = files.len();
 
     if let Some(tpk) = tpk {
         let dir = out.join("tex");
         create_dir(&dir)?;
-        let total = plan.textures.len() + 2; // the model's two files are already written
-        tell(2, total);
+        let total = plan.textures.len() + mesh_files; // the mesh files are already written
+        tell(mesh_files, total);
         for (i, hash) in plan.textures.iter().enumerate() {
-            tell(i + 2, total);
+            tell(i + mesh_files, total);
             if let Some(tex) = tpk.texture(*hash) {
                 let path = dir.join(export::png_name(tex));
                 let bytes = export::png_bytes(tex).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -194,22 +263,39 @@ fn model(
     let tris: usize = parts.iter().map(|p| p.triangle_count()).sum();
     Ok(Written {
         summary: format!(
-            "GLB + OBJ · {} {} · {tris} {} · {} {} · {} PNG",
+            "{} · {} {} · {tris} {} · {} {} · {} PNG",
+            choice.model.label(),
             parts.len(),
-            t.ex_parts,
-            t.ex_triangles,
+            t.ex_parts.of(parts.len()),
+            t.ex_triangles.of(tris),
             plan.materials.len(),
-            t.ex_materials,
-            files.len().saturating_sub(3)
+            t.ex_materials.of(plan.materials.len()),
+            files.len().saturating_sub(mesh_files)
         ),
         files,
     })
 }
 
-/// What the 3D tab is showing: the solid the selection sits in, else the showroom car. Kept in
-/// step with `panels::viewport3d` on purpose — an export that wrote something else would make the
-/// viewport a lie.
-fn shown_parts(doc: &Doc, selection: Option<usize>) -> Vec<&NfsMeshPart> {
+/// Which parts an export covers.
+///
+/// [`Scope::Selection`] is what the 3D tab is showing — the solid the selection sits in, else the
+/// showroom car — and is kept in step with `panels::viewport3d` on purpose, since an export that
+/// wrote something else would make the viewport a lie. [`Scope::All`] is the file itself: every kit,
+/// widebody and style variant, which is *more* than any one car ever wears at once.
+fn shown_parts<'a>(
+    doc: &'a Doc,
+    selection: Option<usize>,
+    scope: Scope,
+    build: &[usize],
+) -> Vec<&'a NfsMeshPart> {
+    if scope == Scope::All {
+        return doc.parts.iter().collect();
+    }
+    if scope == Scope::Build {
+        // An index the document no longer has is dropped rather than panicked on: the two were
+        // resolved together, but nothing in the type system says so.
+        return build.iter().filter_map(|&i| doc.parts.get(i)).collect();
+    }
     match selection.and_then(|o| doc.solid_of(o)) {
         Some(solid) => {
             let name = solid
@@ -225,7 +311,10 @@ fn shown_parts(doc: &Doc, selection: Option<usize>) -> Vec<&NfsMeshPart> {
 /// `pryhub-export/<car>_<file>/` under the working directory. The car folder is in the name
 /// because every car's geometry file is called `GEOMETRY.BIN`, and two exports must not land on
 /// top of each other.
-fn out_dir(doc: &Doc) -> Result<PathBuf, String> {
+///
+/// Public to the crate because the dialog shows the path *before* the job runs: a button that says
+/// where the files will go is worth more than a log line that says where they went.
+pub(crate) fn out_dir(doc: &Doc) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("working directory: {e}"))?;
     Ok(cwd.join("pryhub-export").join(stem(doc)))
 }

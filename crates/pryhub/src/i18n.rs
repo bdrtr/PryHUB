@@ -36,6 +36,42 @@ impl Lang {
     }
 }
 
+/// A noun that is drawn after a number.
+///
+/// English agrees the noun with its count — `1 finding`, `2 findings` — and Turkish does not: a
+/// numeral already carries the plural there, so `1 bulgu` and `4 bulgu` are both right. Both forms
+/// are asked of *every* language rather than a rule being applied to one of them, because the
+/// alternative is a branch that says "if English"; Turkish simply answers with the same word twice.
+///
+/// This is not pedantry about grammar. English became the default language of a fresh install, and
+/// the first window someone saw said `1 warnings` in three places.
+pub struct Counted {
+    pub one: &'static str,
+    pub many: &'static str,
+}
+
+impl Counted {
+    /// The form that goes with `n`. Zero takes the plural, in both languages.
+    #[must_use]
+    pub fn of(&self, n: usize) -> &'static str {
+        if n == 1 {
+            self.one
+        } else {
+            self.many
+        }
+    }
+}
+
+/// A counted noun with two forms — the English table.
+const fn counted(one: &'static str, many: &'static str) -> Counted {
+    Counted { one, many }
+}
+
+/// A counted noun with one form, for a language that does not agree it with the numeral.
+const fn same(word: &'static str) -> Counted {
+    Counted { one: word, many: word }
+}
+
 /// Every piece of interface text, in one language.
 ///
 /// Strings for screens that are designed but not yet drawn are carried too — they come from the
@@ -45,6 +81,9 @@ pub struct Strings {
     pub brand_sub: &'static str,
     pub m_open: &'static str,
     pub m_export: &'static str,
+    /// The compare screen's second button: ask the desktop for a file, as opposed to `m_open`,
+    /// which opens whatever the field beside it already holds.
+    pub browse: &'static str,
     /// The settings menu.
     pub m_settings: &'static str,
     pub set_language: &'static str,
@@ -66,28 +105,83 @@ pub struct Strings {
     pub tab_3d: &'static str,
     pub tab_hex: &'static str,
     pub tab_tex: &'static str,
+    /// The assembly tab: which parts are mounted, and the car they make.
+    pub tab_asm: &'static str,
+    pub asm_mounted: &'static str,
+    pub asm_total: &'static str,
+    pub asm_all: &'static str,
+    pub asm_stock: &'static str,
+    pub asm_hint: &'static str,
+    /// The one part that cannot be taken off.
+    pub asm_base: &'static str,
+    pub asm_paint: &'static str,
+    pub asm_paint_stock: &'static str,
+    pub asm_full: &'static str,
+    pub asm_partial: &'static str,
+    pub asm_tri: Counted,
     pub matrix: &'static str,
+    /// The chips the inspector puts on a field: read straight out of the file, worked out from it,
+    /// or not believed. "Suspect" rather than "error" — the rule flags it, the reader judges it.
+    pub f_derived: &'static str,
+    pub f_const: &'static str,
+    pub f_suspect: &'static str,
     /// Over the 3D viewport: the part's bounding box, and how to move the camera.
     pub bbox: &'static str,
     pub drag_hint: &'static str,
     /// Shown when the viewport is showing the showroom car rather than one part.
     pub stock_car: &'static str,
+    /// The viewport's own buttons.
+    pub wire: &'static str,
+    pub rotate: &'static str,
+    pub reset: &'static str,
+    /// Stands in for the whole viewport when there is no adapter. Not in the design — the mock
+    /// always had a canvas, so this is the one string the app needs and the prototype never did.
+    pub no_gpu: &'static str,
+    /// The hex view's legend: which colour is the chunk's own extent, which is a field inside it.
+    pub hx_region: &'static str,
+    pub hx_field: &'static str,
     /// The texture tab: the empty states, and the counts over the contact sheet.
     pub no_textures: &'static str,
     /// Shown while the worker is decoding a pack, instead of a frozen window.
     pub decoding: &'static str,
     pub pick_texture: &'static str,
-    pub textures_count: &'static str,
+    pub textures_count: Counted,
     pub textures_undecoded: &'static str,
+    /// The row labels under a single texture's preview. "hash" is the same word in both languages
+    /// — it is what the file stores, not a description of it.
+    pub tx_hash: &'static str,
+    pub tx_size: &'static str,
+    pub tx_format: &'static str,
+    pub tx_opaque: &'static str,
     /// Export: the toolbar button's hover text, and the two log lines it can produce.
     pub export_hint: &'static str,
     pub exported: &'static str,
     pub export_failed: &'static str,
     /// The units an export's summary line counts in.
-    pub ex_parts: &'static str,
-    pub ex_materials: &'static str,
+    pub ex_parts: Counted,
+    pub ex_materials: Counted,
     /// Written out rather than a `▲`: the bundled font has no triangle, and a missing glyph is a box.
-    pub ex_triangles: &'static str,
+    pub ex_triangles: Counted,
+    /// The export dialog. glTF, OBJ, GLB, PNG and DDS are names of formats, not words, so they
+    /// stay out of the table.
+    pub exp_title: &'static str,
+    pub exp_scope: &'static str,
+    pub exp_scope_selection: &'static str,
+    pub exp_scope_all: &'static str,
+    /// The third scope: what the assembly tab has mounted.
+    pub exp_scope_build: &'static str,
+    pub exp_model: &'static str,
+    pub exp_tex: &'static str,
+    pub exp_both: &'static str,
+    pub exp_target: &'static str,
+    pub exp_cancel: &'static str,
+    pub exp_go: &'static str,
+    /// States the one difference that decides the format, so the choice needs no tooltip.
+    pub exp_note: &'static str,
+    /// Why a row the design draws as a choice cannot be chosen from. Both are about this tool's
+    /// limits rather than about the file, so they say which limit rather than "unavailable".
+    pub exp_png_only: &'static str,
+    pub no_parts: &'static str,
     /// The log's own vocabulary. A note carries what happened; these are the words for it.
     pub n_decompressed: &'static str,
     pub n_decompress_failed: &'static str,
@@ -113,6 +207,19 @@ pub struct Strings {
     pub d_cycle: &'static str,
     pub d_add: &'static str,
     pub d_remove: &'static str,
+    /// What the screen is and what it is called in the mode list. The tag is loud on purpose:
+    /// this is the one mode the Windows tools have no answer to.
+    pub d_sub: &'static str,
+    pub d_pattern: &'static str,
+    pub d_add_field: &'static str,
+    /// The hint in a column's name box, before anyone has called it anything.
+    pub d_name: &'static str,
+    pub d_preview: &'static str,
+    pub d_hint: &'static str,
+    pub d_tag: &'static str,
+    /// The two units a stride is read in: so many bytes make a row, so many rows come out.
+    pub d_rows: Counted,
+    pub d_bytes_row: &'static str,
     /// The compare screen.
     pub df_left: &'static str,
     pub df_right: &'static str,
@@ -128,6 +235,9 @@ pub struct Strings {
     pub df_go: &'static str,
     /// The dictionary screen.
     pub dc_hint: &'static str,
+    /// The dictionary's own meta line counts rows, and English wants a plural on the word the
+    /// column header leaves alone — `hash` is the design's literal there, `4 hashes` is a count.
+    pub dc_hashes: Counted,
     pub dc_named: &'static str,
     pub dc_in_dictionary: &'static str,
     pub dc_verified: &'static str,
@@ -143,7 +253,22 @@ pub struct Strings {
     pub dc_src_material: &'static str,
     pub dc_src_shader: &'static str,
     pub dc_src_part: &'static str,
-    pub st_chunks: &'static str,
+    /// The screen's subtitle and its table's columns. The hash column is not named — the numbers
+    /// under it say what they are.
+    pub h_sub: &'static str,
+    pub h_name: &'static str,
+    pub h_source: &'static str,
+    pub h_unknown: &'static str,
+    pub h_add: &'static str,
+    /// Only a name someone typed is translated; `auto` is what the code wrote and stays as it is.
+    pub h_src_user: &'static str,
+    /// What the worker is doing, for the status bar. The program's own log says the same three
+    /// things in English (`jobs::Kind::as_str`) — this is the half a person reads.
+    pub job_open: &'static str,
+    pub job_decode: &'static str,
+    pub job_export: &'static str,
+    pub job_palette: &'static str,
+    pub st_chunks: Counted,
     pub st_sel: &'static str,
     pub st_scale: &'static str,
     pub log_all: &'static str,
@@ -161,22 +286,30 @@ pub struct Strings {
     pub w_card_discovery: &'static str,
     pub w_card_diff: &'static str,
     pub w_card_dict: &'static str,
+    /// Under the four cards. It names the four axes instead of claiming a niche, because the
+    /// tools this one is measured against do not run here at all.
+    pub w_strategy: &'static str,
     /// Shown in the centre area before a file is open.
     pub no_file: &'static str,
     pub open_failed: &'static str,
     pub nothing_selected: &'static str,
     pub val_no_findings: &'static str,
     /// How many chunks a rule read, and how many findings it produced.
-    pub val_examined: &'static str,
-    pub val_findings: &'static str,
+    pub val_examined: Counted,
+    pub val_findings: Counted,
     /// Shown for a rule that had nothing to read — deliberately not phrased as a pass.
     pub val_unread: &'static str,
+    /// The tallies over the screen, and the three words that say when it runs: on open, unasked.
+    pub v_warns: Counted,
+    pub v_pass: &'static str,
+    pub v_auto: &'static str,
 }
 
 static TR: Strings = Strings {
     brand_sub: "nfsu2 varlık aracı",
     m_open: "Aç",
     m_export: "Dışa Aktar",
+    browse: "Gözat",
     m_settings: "Ayarlar",
     set_language: "DİL",
     set_size: "BOYUT",
@@ -197,21 +330,60 @@ static TR: Strings = Strings {
     tab_3d: "3D",
     tab_hex: "HEX",
     tab_tex: "DOKU",
+    tab_asm: "MONTAJ",
+    asm_mounted: "TAKILI PARÇALAR",
+    asm_total: "toplam",
+    asm_all: "Hepsi",
+    asm_stock: "Standart",
+    asm_hint: "bir parçayı aç/kapa — yapı anında güncellenir",
+    asm_base: "temel",
+    asm_paint: "BOYA",
+    asm_paint_stock: "standart",
+    asm_full: "Tam yapı — bütün parçalar takılı",
+    asm_partial: "parça çıkarıldı",
+    asm_tri: same("üçgen"),
     matrix: "Birim matris (4×4)",
-    bbox: "sınır kutusu",
+    f_derived: "türetildi",
+    f_const: "sabit",
+    f_suspect: "şüpheli",
+    bbox: "bbox",
     drag_hint: "sürükle döndür · kaydır yakınlaş",
     stock_car: "stok araç",
+    wire: "Tel kafes",
+    rotate: "Döndür",
+    reset: "Sıfırla",
+    no_gpu: "wgpu arka ucu yok",
+    hx_region: "chunk bölgesi",
+    hx_field: "sayaç alanı",
     no_textures: "Bu dosyada doku yok — yanında TEXTURES.BIN de bulunamadı",
     decoding: "Dokular çözülüyor…",
     pick_texture: "Izgaradan bir doku seç",
-    textures_count: "doku",
+    textures_count: same("doku"),
     textures_undecoded: "çözülemedi",
+    tx_hash: "hash",
+    tx_size: "boyut",
+    tx_format: "biçim",
+    tx_opaque: "opaklık",
     export_hint: "ekranda ne varsa onu pryhub-export/ altına yazar",
     exported: "yazıldı",
     export_failed: "dışa aktarılamadı",
-    ex_parts: "parça",
-    ex_materials: "materyal",
-    ex_triangles: "üçgen",
+    ex_parts: same("parça"),
+    ex_materials: same("materyal"),
+    ex_triangles: same("üçgen"),
+    exp_title: "Dışa Aktar",
+    exp_scope: "Kapsam",
+    exp_scope_selection: "Seçili parça",
+    exp_scope_all: "Tüm dosya",
+    exp_scope_build: "Montaj",
+    exp_model: "Model biçimi",
+    exp_tex: "Doku biçimi",
+    exp_both: "İkisi",
+    exp_target: "Hedef klasör",
+    exp_cancel: "Vazgeç",
+    exp_go: "Aktar",
+    exp_note: "glTF materyal + hiyerarşiyi taşır — OBJ taşımaz.",
+    exp_png_only: "çözülen tek doku biçimi PNG",
+    no_parts: "bu dosyada parça yok",
     n_decompressed: "açıldı",
     n_decompress_failed: "açılamadı — ham baytlar okunuyor",
     n_tree_failed: "chunk ağacı okunamadı",
@@ -234,8 +406,17 @@ static TR: Strings = Strings {
     d_cycle: "tıkla: tipi değiştir",
     d_add: "sütun ekle",
     d_remove: "son sütunu sil",
-    df_left: "sol",
-    df_right: "sağ",
+    d_sub: "Bilinmeyen chunk’ı seç, alan/stride tanımla, tablo anında yenilensin — gömülü ImHex.",
+    d_pattern: "Desen",
+    d_add_field: "Alan ekle",
+    d_name: "alan adı",
+    d_preview: "Canlı önizleme",
+    d_hint: "İlke: hiçbir offset’i sabit tutma. Her şey stride ve sayaçlardan türesin.",
+    d_tag: "EN ÇOK AYRIŞTIRAN",
+    d_rows: same("satır"),
+    d_bytes_row: "bayt/satır",
+    df_left: "A dosyası",
+    df_right: "B dosyası",
     df_pick: "Karşılaştırmak için ikinci dosyayı seç — yolu yaz ya da pencereye bırak",
     df_identical: "İki dosya birebir aynı: aynı chunk'lar, aynı boyutlar, aynı baytlar",
     df_changed: "değişti",
@@ -247,6 +428,7 @@ static TR: Strings = Strings {
     df_first: "ilk fark",
     df_go: "tıkla: sol dosyada bu chunk'a git",
     dc_hint: "Dosyanın işaret ettiği her hash. Verdiğin isim hash'e geri dönüyorsa işaretlenir — kırpılmış bir ismin kuyruğu ancak böyle geri gelir.",
+    dc_hashes: same("hash"),
     dc_named: "isimli",
     dc_in_dictionary: "sözlükte",
     dc_verified: "doğrulandı",
@@ -262,7 +444,17 @@ static TR: Strings = Strings {
     dc_src_material: "materyal",
     dc_src_shader: "shader",
     dc_src_part: "parça",
-    st_chunks: "chunk",
+    h_sub: "Dokular yalnızca hash tutuyor — isim eşlemesi burada.",
+    h_name: "isim",
+    h_source: "kaynak",
+    h_unknown: "bilinmiyor",
+    h_add: "Ekle",
+    h_src_user: "kullanıcı",
+    job_open: "açılıyor",
+    job_decode: "çözülüyor",
+    job_export: "dışa aktarılıyor",
+    job_palette: "palet okunuyor",
+    st_chunks: same("chunk"),
     st_sel: "seçim",
     st_scale: "1u = 1m · Z↑",
     log_all: "Tümü",
@@ -272,27 +464,32 @@ static TR: Strings = Strings {
     w_open_source: "açık kaynak",
     w_validates: "doğrular",
     w_discovers: "keşfettirir",
-    w_open_file: "DOSYA AÇ",
-    w_drop: "Dosyayı buraya bırak ya da tıkla",
-    w_recent: "SON KULLANILANLAR",
-    w_modes: "MODLAR",
-    w_card_validation: "Dosyayı açar açmaz sağlık kontrolü: stride, bbox, normaller, indeksler.",
-    w_card_discovery: "Bilinmeyen chunk'ı canlı olarak yeniden yorumla: stride ve alanları dene.",
-    w_card_diff: "İki dosyayı yan yana koy, chunk farklarını gör.",
-    w_card_dict: "Doku hash'lerine isim ver; isim ↔ hash tablosunu yönet.",
+    w_open_file: "Dosya aç",
+    w_drop: "Dosya bırak ya da tıkla",
+    w_recent: "Son kullanılanlar",
+    w_modes: "Modlar",
+    w_card_validation: "Aç, gez, gör, uyar. Otomatik sağlık kontrolü.",
+    w_card_discovery: "Bilinmeyen chunk'ı canlı stride/alanla çöz.",
+    w_card_diff: "İki dosyayı yan yana, chunk farkları.",
+    w_card_dict: "Doku hash'lerine kendi isimlerini ver.",
+    w_strategy: "Konumlandırma: taklit değil, dört eksende aşmak — Linux-native + açık kaynak + doğrulayan + keşfettiren.",
     no_file: "Bir dosya aç",
     open_failed: "Dosya açılamadı",
     nothing_selected: "Ağaçtan bir chunk seç",
     val_no_findings: "Bulgu yok — dosya temiz görünüyor",
-    val_examined: "chunk okundu",
-    val_findings: "bulgu",
+    val_examined: same("chunk okundu"),
+    val_findings: same("bulgu"),
     val_unread: "bu dosyada okunacak bir şey yoktu — geçti demek değil",
+    v_warns: same("uyarı"),
+    v_pass: "geçti",
+    v_auto: "otomatik sağlık kontrolü",
 };
 
 static EN: Strings = Strings {
     brand_sub: "nfsu2 asset toolkit",
     m_open: "Open",
     m_export: "Export",
+    browse: "Browse",
     m_settings: "Settings",
     set_language: "LANGUAGE",
     set_size: "SIZE",
@@ -313,21 +510,60 @@ static EN: Strings = Strings {
     tab_3d: "3D",
     tab_hex: "HEX",
     tab_tex: "TEXTURE",
+    tab_asm: "ASSEMBLY",
+    asm_mounted: "MOUNTED PARTS",
+    asm_total: "total",
+    asm_all: "All",
+    asm_stock: "Stock",
+    asm_hint: "toggle a part — the build updates live",
+    asm_base: "base",
+    asm_paint: "PAINT",
+    asm_paint_stock: "stock",
+    asm_full: "Final build — all parts mounted",
+    asm_partial: "removed",
+    asm_tri: counted("tri", "tri"),
     matrix: "Unit matrix (4×4)",
+    f_derived: "derived",
+    f_const: "const",
+    f_suspect: "suspect",
     bbox: "bbox",
     drag_hint: "drag to orbit · scroll to zoom",
     stock_car: "showroom car",
+    wire: "Wireframe",
+    rotate: "Rotate",
+    reset: "Reset",
+    no_gpu: "no wgpu backend",
+    hx_region: "chunk region",
+    hx_field: "counter field",
     no_textures: "No textures in this file — and no TEXTURES.BIN beside it",
     decoding: "Decoding textures…",
     pick_texture: "Pick a texture from the grid",
-    textures_count: "textures",
+    textures_count: counted("texture", "textures"),
     textures_undecoded: "could not be decoded",
+    tx_hash: "hash",
+    tx_size: "size",
+    tx_format: "format",
+    tx_opaque: "opaque",
     export_hint: "writes whatever is on screen under pryhub-export/",
     exported: "written",
     export_failed: "export failed",
-    ex_parts: "parts",
-    ex_materials: "materials",
-    ex_triangles: "triangles",
+    ex_parts: counted("part", "parts"),
+    ex_materials: counted("material", "materials"),
+    ex_triangles: counted("triangle", "triangles"),
+    exp_title: "Export",
+    exp_scope: "Scope",
+    exp_scope_selection: "Selection",
+    exp_scope_all: "Whole file",
+    exp_scope_build: "Build",
+    exp_model: "Model format",
+    exp_tex: "Texture format",
+    exp_both: "Both",
+    exp_target: "Target folder",
+    exp_cancel: "Cancel",
+    exp_go: "Export",
+    exp_note: "glTF carries materials + hierarchy — OBJ does not.",
+    exp_png_only: "PNG is the only decoded texture format",
+    no_parts: "this file holds no parts",
     n_decompressed: "decompressed",
     n_decompress_failed: "could not decompress — reading the raw bytes",
     n_tree_failed: "could not read the chunk tree",
@@ -350,8 +586,17 @@ static EN: Strings = Strings {
     d_cycle: "click to change the type",
     d_add: "add a column",
     d_remove: "drop the last column",
-    df_left: "left",
-    df_right: "right",
+    d_sub: "Pick an unknown chunk, define fields/stride, table refreshes live — embedded ImHex.",
+    d_pattern: "Pattern",
+    d_add_field: "Add field",
+    d_name: "field name",
+    d_preview: "Live preview",
+    d_hint: "Principle: never hardcode an offset. Everything derives from stride and counters.",
+    d_tag: "MOST DIFFERENTIATING",
+    d_rows: counted("row", "rows"),
+    d_bytes_row: "bytes/row",
+    df_left: "File A",
+    df_right: "File B",
     df_pick: "Pick a second file to compare — type a path, or drop one on the window",
     df_identical: "The two files are identical: same chunks, same sizes, same bytes",
     df_changed: "changed",
@@ -363,6 +608,7 @@ static EN: Strings = Strings {
     df_first: "first difference",
     df_go: "click to go to this chunk in the left file",
     dc_hint: "Every hash the file points at. A name that hashes back to the number gets a tick — the only way a truncated name's tail comes back.",
+    dc_hashes: counted("hash", "hashes"),
     dc_named: "named",
     dc_in_dictionary: "in the dictionary",
     dc_verified: "verified",
@@ -378,7 +624,17 @@ static EN: Strings = Strings {
     dc_src_material: "material",
     dc_src_shader: "shader",
     dc_src_part: "part",
-    st_chunks: "chunks",
+    h_sub: "Textures store only a hash — name mapping lives here.",
+    h_name: "name",
+    h_source: "source",
+    h_unknown: "unknown",
+    h_add: "Add",
+    h_src_user: "user",
+    job_open: "opening",
+    job_decode: "decoding",
+    job_export: "exporting",
+    job_palette: "reading palette",
+    st_chunks: counted("chunk", "chunks"),
     st_sel: "sel",
     st_scale: "1u = 1m · Z↑",
     log_all: "All",
@@ -388,21 +644,25 @@ static EN: Strings = Strings {
     w_open_source: "open source",
     w_validates: "validates",
     w_discovers: "discovers",
-    w_open_file: "OPEN FILE",
-    w_drop: "Drop a file here, or click",
-    w_recent: "RECENT",
-    w_modes: "MODES",
-    w_card_validation: "A health check the moment a file opens: stride, bbox, normals, indices.",
-    w_card_discovery: "Reinterpret an unknown chunk live: try a stride and a set of fields.",
-    w_card_diff: "Put two files side by side and see the chunk-level differences.",
-    w_card_dict: "Give texture hashes names; manage the name ↔ hash table.",
+    w_open_file: "Open a file",
+    w_drop: "Drop a file or click",
+    w_recent: "Recent",
+    w_modes: "Modes",
+    w_card_validation: "Open, browse, see, warn. Automatic health check.",
+    w_card_discovery: "Solve unknown chunks with live stride/fields.",
+    w_card_diff: "Two files side by side, chunk diff.",
+    w_card_dict: "Name texture hashes yourself.",
+    w_strategy: "Positioning: not imitation but surpassing on four axes — Linux-native + open source + validating + discovering.",
     no_file: "Open a file",
     open_failed: "Could not open the file",
     nothing_selected: "Select a chunk in the tree",
     val_no_findings: "No findings — the file looks clean",
-    val_examined: "chunks read",
-    val_findings: "findings",
+    val_examined: counted("chunk read", "chunks read"),
+    val_findings: counted("finding", "findings"),
     val_unread: "nothing here for this rule to read — which is not a pass",
+    v_warns: counted("warning", "warnings"),
+    v_pass: "passed",
+    v_auto: "automatic health check",
 };
 
 #[cfg(test)]
@@ -429,5 +689,19 @@ mod tests {
     #[test]
     fn the_default_language_is_english() {
         assert_eq!(Lang::default(), Lang::En);
+    }
+
+    /// English agrees a noun with its number and Turkish does not. The bug this pins down is an
+    /// English window — the default one — saying `1 warnings`, which it did in three places.
+    #[test]
+    fn a_counted_noun_agrees_in_english_and_stands_still_in_turkish() {
+        let en = Lang::En.strings();
+        assert_eq!(en.val_findings.of(1), "finding");
+        assert_eq!(en.val_findings.of(2), "findings");
+        // Zero takes the plural: "0 findings", not "0 finding".
+        assert_eq!(en.val_findings.of(0), "findings");
+
+        let tr = Lang::Tr.strings();
+        assert_eq!(tr.val_findings.of(1), tr.val_findings.of(4));
     }
 }

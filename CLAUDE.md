@@ -77,13 +77,56 @@ cargo run -p pryhub -- "$NFSU2_ROOT/CARS/240SX/TEXTURES.BIN" --tab texture
 The 3D tab renders through eframe's own wgpu device into an offscreen target (egui's pass has no
 depth attachment, and a solid drawn without one shows its far side through its near side). It
 keeps the file's frame — Z-up, 1 unit = 1 m — and shows the selected solid, or the showroom car
-when the selection is not inside one.
+when the selection is not inside one. Under it is the design's ground grid: 1 m cells over ±8 m at
+`z = 0`, fixed rather than fitted to the model, because it is a *scale* — a grid that resized itself
+with the selection would show a wheel and a whole car on the same ten squares. `Wireframe` swaps the
+surfaces for their edges. Both are one extra pipeline: the same vertex layout at `LineList`
+topology, with the line's ink carried in the slot a surface uses for its normal, so a grid line and a
+wire edge can be different colours in one pass without a second uniform.
 
-`Dışa Aktar` writes **what is on screen**, under `pryhub-export/<car>_<file>/` in the working
-directory (there is no file dialog on purpose — see `crates/pryhub/Cargo.toml`), and the log says
-the path: the texture tab gives every decoded PNG, any other tab gives the shown model as a
-self-contained `.glb` plus OBJ + MTL + the textures it references. The preview pane's `PNG`
-button writes just that one image. The writers themselves are `gizmo_nfs::export`, so PryHUB and `ug2 export` cannot drift.
+The tab's **paint row** is the game's own palette, read from `GLOBALB.BUN` by
+`globalb::carparts` — 123 colours, and the only place a car's colour is written down at all. Picking
+one replaces the `Grp::Paint` runs' group colour and **nothing else**, so the glass stays glass and
+the tail lights stay red; the mesh is rebuilt when the choice changes, the same way it is when the
+texture pack lands. The bundle is 8 MB, so reading it is a job (`jobs::Request::Palette`) asked for
+only while that tab is open, found from the file's own path (two levels up to `GLOBAL/`) or from
+`NFSU2_ROOT`. A file opened from outside an install simply gets no paint row.
+
+`Scope::Build` writes exactly what the assembly tab has mounted — the car on screen, minus whatever
+was taken off it, as a self-contained `.glb` with its textures embedded. The mounted set is resolved
+into part indices **when the button is pressed**, not read on the worker: the export is about the
+build the user was looking at, and they may go on toggling while it writes.
+
+The **assembly tab** (`--tab assembly`) is the build: `select_stock_car`'s parts as a checklist,
+each row a component with its triangle count, and the viewport re-uploading as they are switched off
+and on. The *selection* logic is not written twice — the list is `gizmo_nfs::parts`' answer, and this
+screen only offers to take things out of it. Two things the design draws that this does not: it
+groups `_LEFT`/`_RIGHT` into one `×2` row because those are genuinely two parts, and it does **not**
+write `×4` on a wheel — a `GEOMETRY.BIN` carries one wheel mesh and the four corners come from
+`GLOBALB.BUN`, so counting four here would be counting something the file does not contain.
+
+The preview is **skinned**, and by the same rules the exporter uses. Each part's `0x00134B02`
+material runs become one draw apiece; a run whose hash resolves in the TPK gets that texture, and one
+that does not gets its material group's colour from `gizmo_nfs::export::material::group_colour` — the
+same value `ug2 export` writes into the MTL, so the viewport and the exported car are the same car.
+Both arrive as a bound texture (the colour as a 1×1), so there is no branch in the shader and no
+second pipeline. Two things worth knowing before reading a car's paint off the screen: only 3 of the
+240SX's 30 materials resolve to a texture — **NFSU2 does not texture a car's body**, it paints it with
+a colour chosen in-game — and `group_colour` hands out shading *coefficients*, so they are encoded
+into the sRGB texture rather than stored raw, or the sampler linearises them a second time and a
+silver car comes out navy.
+
+`Dışa Aktar` opens the export dialog (`screens/export_dialog.rs`, `--screen export`): scope
+(selection / **build** / whole file), model format (glTF · OBJ · both) and target folder, with the primary
+button stating what it is about to write. It used to fire on the spot and decide what it meant by
+looking at which tab was in front — a file whose contents depend on something the user was not
+thinking about is not an answer. Only what the tool can keep is offered: there is no DDS writer in
+`gizmo-nfs`, so that row is drawn in the design's disabled treatment rather than dropped or, worse,
+silently ignored. Files land under `pryhub-export/<car>_<file>/` in the working directory (there is
+no file dialog on purpose — see `crates/pryhub/Cargo.toml`) and the log says the path. The preview
+pane's `PNG` button still writes just that one image, with no dialog — it is a one-click action on a
+thing already on screen. The writers themselves are `gizmo_nfs::export`, so PryHUB and `ug2 export`
+cannot drift.
 
 The texture tab is a contact sheet over the car's TPK: the open file when it is itself a
 `TEXTURES.BIN`, else the `TEXTURES.BIN` beside it, decoded on first use because `Tpk::parse`
@@ -110,6 +153,115 @@ that does not keeps a hollow ring and is stored as a note. Names live in
 `$XDG_CONFIG_HOME/pryhub/names.tsv` (`hash<TAB>name`, hand-editable, written on each edit) and the
 texture tab prefers them over the file's truncated ones.
 
+The file's health is **one tally** (`Doc::health`), drawn twice: as the top bar's `⚠ n ✓ n` pill and
+as the validation screen's two chips. Both count *rules* — a rule that found something is a warning,
+a rule that read something and found nothing is a pass, a rule that read nothing is neither, because
+"I did not look" is not a result. It was counted at each of the two, and they disagreed: the corner
+counted rules while the screen counted **findings**, so one unhappy rule with forty findings read
+`⚠ 1` in the corner and `40 warnings` on the screen that corner is a link to. The finding count
+belongs on the rule's own card, which is where it now stays.
+
+### Checking the port against the design
+
+The design is in this repo: `game/STRUKT.dc.html` is the working prototype and
+`game/_ds/modernist-…/styles.css` its token sheet. It renders in any browser, so a screen can be
+compared side by side with the real thing rather than from memory:
+
+```bash
+(cd game && python3 -m http.server 8731 &)
+google-chrome --headless --window-size=1360,840 --virtual-time-budget=5000 \
+  --screenshot=design.png http://127.0.0.1:8731/STRUKT.dc.html
+```
+
+Its initial state is one literal (`this.state = { screen:'workspace', lang:'tr', density:'compact', … }`)
+and the `data-props` defaults override it on mount, so a copy with both edited gives any screen at any
+language and density — which is how every measure below was checked rather than guessed.
+
+Two things that cost real fidelity when read carelessly:
+
+* **`box-sizing: border-box`.** A page's `max-width:880px` with `padding:34px` is **812 px of
+  content**. Passing the CSS number straight through as a content width made four of the five pages
+  68 px too wide. [`widget::page`] now takes the design's own number and its padding and does the
+  subtraction itself.
+* **The `D` table is the density scale**, and it matches `theme::Density` exactly — row height
+  22/27/33, tree 242/266/290, inspector 288/314/342, log 150/176/202. Anything that does not move
+  with it is a bug, not a choice.
+
+Deliberate departures, all of them because the port is a program and the prototype is a picture:
+the settings menu instead of bare `TR`/`EN` + `S`/`M`/`L` (a setting nobody can find is not a
+setting), the path field on the welcome screen (there is no file dialog — see `Cargo.toml`), the
+export dialog's disabled DDS row (no writer exists), the validation card's "n chunks read" line
+(a rule that read nothing is not a pass), and the discovery screen's stride candidates and
+left-over byte count (the numbers that say a guess is wrong).
+
+### The mark
+
+`crates/pryhub/assets/logo.png` — the project's own logo, 506 × 165 with its own alpha, embedded with
+`include_bytes!` (`logo.rs`) so a single copied binary keeps its face. It leads the wordmark in the top
+bar at 22 px and on the welcome screen at 52 px, in its own blue: it predates the design system, and
+recolouring someone's mark to fit a palette is not a port decision to take quietly.
+
+### Things the port promised and did not do
+
+Found by using it rather than by reading it, which is the only way these ever turn up:
+
+* **The tree's caret was decorative.** `app.collapsed` was declared, cleared on open, and read in two
+  places — and written by *nothing in the whole crate*. The triangle was painted, so the tree looked
+  foldable and was not. The caret column is now its own hit target (a double-click on a container
+  folds it too), and `tree::visible_rows` is a pure function with tests, because "a fold hides its
+  subtree and stops at the next sibling" is the behaviour, not the painting.
+* **"Drop a file or click" did not answer a click.** There is still no file-dialog crate here and
+  `Cargo.toml` still says why; `picker.rs` runs whatever chooser the desktop already has
+  (`zenity`/`kdialog`/`qarma`/`yad`) as a subprocess, on its own thread because it does not return
+  until the user decides. With none installed the click puts the caret in the path field — which is
+  then the only way in and should at least be pointed at.
+* **Three full pages could not scroll.** Every screen in the design is `position:absolute; inset:0;
+  overflow:auto`; discovery, compare and the dictionary had no page-level scroller at all, so
+  whatever sat under a long table — `+ Add field`, the legend, the whole add-a-hash row — was cut off
+  by the panel with no way to reach it. They scroll now, and each inner table takes a bounded height
+  that leaves room for what follows it **and for the page's own bottom padding**, which is the 40 px
+  that was putting the dictionary's add row under the status bar.
+* **The compare screen's file row never opened a chooser.** The picker was wired into the welcome
+  screen and nowhere else, while this row's own hint still read "drop a file or click". It has a
+  `Browse` button beside `Open` now — drawn only where `picker::available()`, because a button that
+  reaches for a chooser the machine does not have is worse than no button — and `app.picking` carries
+  the `Side` that asked, so the answer lands on file B rather than replacing file A.
+* **The discovery table escaped its page.** The design puts the whole table in an `overflow:auto`
+  box; here the header's cells were laid out one after another with nothing to stop them, so a
+  stride with a dozen lanes grew the box through the page's right edge and out of the window. The
+  box is capped at the column now and scrolls inside it — and the header is drawn *after* the body
+  so it can be offset by what the body is showing, which is why it is reserved first and filled last.
+
+### The design system, in two files
+
+`theme.rs` holds the design's **values** and `widget.rs` the **shapes** built from them. The split
+matters because a screen that hand-rolls its own version of either drifts from the rest by a pixel or
+a shade, and twelve screens drifting is what a port looks like when it is not one.
+
+* `theme::token` — the palette verbatim from `styles.css`, plus the two widths the whole system's
+  rhythm rests on: `RULE` (2 px, where a *region* ends) and `HAIRLINE` (1 px, where a *control* is
+  outlined). `theme::muted(n)` is the design's `color-mix(text n%, transparent)`; `shadow::{SM,MD,LG}`
+  its elevation scale, tinted with the palette's darkest neutral rather than egui's black.
+* `theme::font` — the `h1`…`h6` ladder (42/32/25/20/16/13) and the mono/body roles, so a screen asks
+  for a *step* rather than for a number it picked. `theme::tracked()` reproduces letter-spacing, which
+  egui's styles cannot express but `epaint` carries per text **section**: `extra_letter_spacing` is
+  added before every glyph that has a predecessor *in its own section*. So it is **one section for the
+  whole label** — written as one section per glyph, as it first was, no glyph ever has a predecessor
+  and the spacing is applied exactly zero times, which set every tracked label in the interface flush
+  while the code said otherwise. A test asserts the section count, because that is the whole mechanism.
+* `theme::Density` — the design's own `D` table: row height, the three text sizes, and the panel
+  measures (tree 242/266/290, inspector 288/314/342, log 150/176/202). `apply()` leaves the current
+  setting in the context and `theme::density_of(ctx)` hands it back, so a *widget* can ask for a
+  measure egui's `Style` has no field for: `widget::input` took its height from `interact_size`
+  (the **control** height, 22/24/28) clamped to 28, which came out a constant 28 px at all three
+  settings — the one control the size switch left standing still.
+* `theme::mark` / `theme::icon` / `theme::draw` — everything the design draws rather than types:
+  the validation marks, the two toolbar icons transcribed from its Lucide paths, the dashed drop
+  outline, the accent edge, the 2 px rule, the transparency checkerboard.
+* `widget` — the controls: `segmented` (the bordered box of touching buttons, with the accent block
+  *sliding* to the selection), `action` (a `.btn` with a drawn icon), `tag`, `card`, `caption_strip`,
+  `screen_header`, `page`, `input`, `note_box`, `button_primary`/`_secondary`, `swatch`.
+
 ### Settings
 
 Top right, in a menu rather than as bare `TR` / `S` buttons in the corner — those were legible to
@@ -130,6 +282,13 @@ time. A `Note` now carries a `NoteKind` — what happened, plus its numbers — 
 in whichever language is on, so switching language switches the log too. The parser's own findings
 stay in its words (English): a dependency-free library about byte-level facts speaks one language, and
 the log shows both.
+
+It exposed something else, in every screen that counts something: **English agrees a noun with its
+number and Turkish does not.** A fresh install's first window said `1 warnings`, `1 findings`,
+`1 chunks read`, `4 hash`. A counted noun is now two strings (`i18n::Counted`, reached as
+`t.val_findings.of(n)`) and the count picks the form; Turkish answers with the same word twice
+(`same("bulgu")`) rather than the code branching on which language it is in — a rule that lives in one
+language's table does not have to be remembered by the ten screens that draw numbers.
 
 ### Two logs, and why they are not one
 
@@ -253,7 +412,24 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
 14. **`diff`** — two files, chunk by chunk: `Same` / `Changed` (same size, different bytes, with the first differing offset) / `Resized` / `OnlyLeft` / `OnlyRight`, and a container is `Changed` exactly when something inside it is. Chunks are paired **by position among siblings of the same id** — this format's trees are ordered, and any cleverer pairing would silently re-order parts and invent differences. Not a byte diff: after one edit every later offset has shifted, so bytes would be a wall of noise.
 15. **`export`** — parsed data back out as files other tools read: `obj` (OBJ + MTL text), `gltf` (a self-contained `.glb`, images embedded — behind the `png` feature), `material` (`MaterialPlan`: which `newmtl`/glTF material a run resolves to, and the textures that implies), `png_name`/`png_bytes`. Pure — it returns text and bytes and never touches the filesystem, so `ug2` and PryHUB write the same car from the same code. **glTF is the one place a frame is converted**: the format *defines* +Y up / −Z forward, so `gltf` rotates `(x,y,z) → (−y,z,−x)` (a rotation, not a mirror) and leaves UVs alone, since glTF's UV origin is DirectX's. OBJ keeps the file's own frame and flips V.
 16. **`repack`** — the write path: `rebuild(bytes, edits)` reassembles a chunk stream, recomputing container sizes and alignment padding, replacing named leaf payloads. **Measured, not assumed**: every chunk size and offset in a real install is a multiple of 4; `0x80134010` (SolidObject) starts on a **128**-byte boundary 18,230 times out of 18,230, padded with an `id == 0` chunk only when needed; a 4-byte alignment debt is unpayable (a header is 8) so the files pay 132; `0x80034020` aligns to 64. An `id == 0` chunk is *not* always padding — BUS carries one of 1,332 bytes with a non-zero byte inside — so a gap is only re-derived when it is exactly what the rule would produce, and copied otherwise. A golden test rebuilds 113 files byte-for-byte.
-17. **`types`** — the engine-agnostic output contract (see below).
+17. **`globalb::carparts`** — the `CarParts` tables in `GLOBAL/GLOBALB.BUN`: 12,167 parts, 4,636
+    attributes and the game's **paint palette**, which is the only place a car's colour is written
+    down (`GEOMETRY.BIN` has none — NFSU2 does not texture a body, it paints it). Locked the way this
+    crate locks everything: `0x00034603` is a header of *counts*, and three of its four multiply out
+    to their chunk's size exactly (4636 × 8, 75 × 4, 1580 × 36); the fourth is 12,167 × 14 against a
+    170,340-byte chunk, two bytes of the usual alignment. `parse` **checks every count against its
+    chunk** rather than trusting it, so a differently-built bundle is refused instead of mis-read.
+    Two fields of the 14-byte part record are claimed and no more: `+8` **× 4** is a string offset
+    (all 12,167 land on a string start, and the raw value tops out at 9,213 where the blob is 36,860
+    bytes) and `+12` indexes the attribute blocks with `0xFFFF` for none (exactly 1,580 distinct
+    values, max 1,579 — that chunk's count). The 36-byte block is *not* decoded, so what links a part
+    to its attributes is still unknown and `CarPart::block` hands over the raw index. Attribute keys
+    are `hash::string_hash` of their names, which is how six of the fifty-one were confirmed —
+    `TEXTURE`, `NAME`, `RED`, `GREEN`, `BLUE`, `CARBONFIBRE` — and a test asserts each constant is
+    the hash of the word beside it. `palette()` reads colours as three *adjacent* attributes rather
+    than through a part, because that link is missing and this does not need it: 123 colours, no
+    component over 255. `ug2 globalb --parts` shows the lot.
+18. **`types`** — the engine-agnostic output contract (see below).
 
 The top-level `decompress_file()` is one of the few functions that touch the filesystem; everything downstream is pure `&[u8]`.
 

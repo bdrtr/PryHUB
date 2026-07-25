@@ -2152,6 +2152,7 @@ dependencies = [
  "egui",
  "gizmo-nfs",
  "log",
+ "png 0.17.16",
  "wgpu",
 ]
 

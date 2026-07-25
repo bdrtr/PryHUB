@@ -15,12 +15,15 @@ mod gpu;
 mod i18n;
 mod jobs;
 mod logging;
+mod logo;
 mod names;
 mod panels;
+mod picker;
 mod screens;
 mod settings;
 mod shot;
 mod theme;
+mod widget;
 
 fn main() -> eframe::Result {
     // Before anything else, so a failure during setup has somewhere to go.
@@ -70,6 +73,7 @@ fn main() -> eframe::Result {
                 app.tab = match tab.as_str() {
                     "3d" => app::Tab::ThreeD,
                     "tex" | "texture" | "doku" => app::Tab::Texture,
+                    "asm" | "assembly" | "montaj" => app::Tab::Assembly,
                     _ => app::Tab::Hex,
                 };
             }

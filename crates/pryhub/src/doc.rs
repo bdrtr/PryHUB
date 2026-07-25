@@ -7,6 +7,7 @@
 //! whatever went wrong is kept as a [`Note`] for the log panel.
 
 use gizmo_nfs::chunk::{ChunkKind, ChunkNode, WalkOptions};
+use gizmo_nfs::validate::Severity;
 use gizmo_nfs::NfsMeshPart;
 use std::path::{Path, PathBuf};
 
@@ -16,18 +17,6 @@ pub enum Level {
     Info,
     Warn,
     Error,
-}
-
-impl Level {
-    /// The glyph the design shows in the log's leading column.
-    #[must_use]
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::Info => "·",
-            Self::Warn => "⚠",
-            Self::Error => "✕",
-        }
-    }
 }
 
 /// One line in the log panel: what happened, and which chunk it happened to.
@@ -84,7 +73,7 @@ impl NoteKind {
             }
             Self::GeometryFailed { error } => format!("{}: {error}", t.n_geometry_failed),
             Self::Opened { chunks, parts } => {
-                format!("{chunks} {} · {parts} {}", t.st_chunks, t.ex_parts)
+                format!("{chunks} {} · {parts} {}", t.st_chunks.of(*chunks), t.ex_parts.of(*parts))
             }
             Self::Finding { subject, message } => format!("{subject}: {message}"),
             Self::Exported { summary, into } => format!("{} — {summary} → {into}", t.exported),
@@ -271,6 +260,37 @@ impl Doc {
     pub fn file_name(&self) -> String {
         self.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
     }
+
+    /// How many of the checks are unhappy, and how many are satisfied.
+    ///
+    /// Both numbers count **rules**: a rule that found something is a warning, a rule that read
+    /// something and found nothing is a pass, and a rule that read *nothing* is neither — because
+    /// "I did not look" is not a result. Two views draw this, the top bar's pill and the validation
+    /// screen's chips, and the pill is a link to the screen; so it is counted once, here, rather
+    /// than at each of them. It was counted at each of them, and they disagreed: the corner tallied
+    /// rules while the screen tallied *findings*, so one bad normals rule with forty findings said
+    /// `⚠ 1` in the corner and `40 warnings` on the screen it led to.
+    #[must_use]
+    pub fn health(&self) -> (usize, usize) {
+        tally(self.report.results.iter().map(|r| (r.status(), r.examined)))
+    }
+}
+
+/// The counting itself, over what each rule *concluded* rather than over the parser's own
+/// `RuleResult` — which is `#[non_exhaustive]`, so only the parser can build one and [`Doc::health`]
+/// would otherwise be untestable without a file on disk. The library is a published contract; it
+/// should not grow a constructor so that this window can check its own arithmetic.
+fn tally(rules: impl Iterator<Item = (Option<Severity>, usize)>) -> (usize, usize) {
+    let mut warn = 0;
+    let mut ok = 0;
+    for (status, examined) in rules {
+        match status {
+            Some(_) => warn += 1,
+            None if examined > 0 => ok += 1,
+            None => {}
+        }
+    }
+    (warn, ok)
 }
 
 /// Decode a whole pack, spreading the textures over threads.
@@ -455,6 +475,48 @@ mod tests {
         v.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         v.extend_from_slice(payload);
         v
+    }
+
+    /// One rule's conclusion, as [`Doc::health`] hands it to [`tally`]: what it found, and how much
+    /// it read to find it.
+    fn rule(examined: usize, worst: Option<Severity>) -> (Option<Severity>, usize) {
+        (worst, examined)
+    }
+
+    /// The pill in the corner is a tally of the marks the validation screen draws, so the two can
+    /// never disagree about how the file is doing.
+    #[test]
+    fn a_rule_that_found_something_counts_as_a_warning() {
+        assert_eq!(tally([rule(4, Some(Severity::Warn))].into_iter()), (1, 0));
+        assert_eq!(tally([rule(4, Some(Severity::Error))].into_iter()), (1, 0));
+    }
+
+    #[test]
+    fn a_rule_that_looked_and_found_nothing_counts_as_a_pass() {
+        assert_eq!(tally([rule(9, None)].into_iter()), (0, 1));
+    }
+
+    /// The one case worth a test of its own: "I did not look" is not a pass, and counting it as one
+    /// is exactly how a health indicator starts lying.
+    #[test]
+    fn a_rule_that_read_nothing_counts_as_neither() {
+        assert_eq!(tally([rule(0, None)].into_iter()), (0, 0));
+    }
+
+    /// The two numbers partition the rules that looked — which is the property that lets the corner
+    /// and the screen it links to be read against each other.
+    #[test]
+    fn every_rule_that_looked_lands_in_exactly_one_of_the_two() {
+        let rules = [
+            rule(4, Some(Severity::Warn)),
+            rule(9, None),
+            rule(0, None),
+            rule(2, Some(Severity::Error)),
+            rule(7, None),
+        ];
+        let (warn, ok) = tally(rules.into_iter());
+        assert_eq!((warn, ok), (2, 2));
+        assert_eq!(warn + ok, rules.iter().filter(|(_, examined)| *examined > 0).count());
     }
 
     /// `Doc::open` reads from disk, so a test needs a file. The name carries the test's own name

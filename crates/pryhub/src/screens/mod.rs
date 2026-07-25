@@ -3,6 +3,7 @@
 pub mod dictionary;
 pub mod diff;
 pub mod discovery;
+pub mod export_dialog;
 pub mod validation;
 pub mod welcome;
 pub mod workspace;

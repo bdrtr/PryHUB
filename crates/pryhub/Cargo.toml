@@ -31,6 +31,9 @@ log = "0.4"
 # structs reach it without unsafe.
 wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
+# Marka PNG'sini çözmek için — kodlayıcısı `gizmo-nfs`'in `png` özelliğiyle zaten ağaçta,
+# yani bu satır derlemeye yeni bir şey eklemiyor, sadece var olanı adıyla istiyor.
+png = { workspace = true }
 
 # No file-dialog crate: on Linux `rfd` drags in either GTK dev libraries or the xdg-portal +
 # tokio stack, which is a heavy price for one button. A file arrives by drag-and-drop, by the

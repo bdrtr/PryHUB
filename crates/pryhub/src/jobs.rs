@@ -42,6 +42,11 @@ pub enum Request {
     /// Decode a document's textures — its own `TEXTURES.BIN`, or the one beside it.
     Decode(Arc<Doc>),
     Export { doc: Arc<Doc>, spec: ExportSpec },
+    /// Read the game's paint palette out of `GLOBAL/GLOBALB.BUN`, found from the open file.
+    ///
+    /// A job because that bundle is 8 MB and holds 12,167 parts: the palette is worth a swatch row,
+    /// not a stutter.
+    Palette { beside: PathBuf },
 }
 
 /// What came back.
@@ -54,18 +59,55 @@ pub enum Outcome {
     /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
     /// a fact about the *worker*, not about the document.
     Progress { done: usize, total: usize },
+    /// The game's paint palette. Empty when no bundle was found, which is an answer: the swatch
+    /// row then says the file is not in an install rather than showing nothing.
+    Palette(Vec<gizmo_nfs::Colour>),
     /// A job panicked. The parser is panic-free by contract, but this layer is not the place to
     /// find out the hard way: the worker survives and says so.
     Failed(String),
 }
 
+/// What kind of work is in flight.
+///
+/// A *kind* rather than a word, because two very different readers want it: the status bar, which
+/// must say it in whichever language the interface is in, and `PRYHUB_LOG`, which is the program's
+/// own stream and speaks one. Handing out `"open"` served the second and quietly made the first
+/// untranslatable — an English word in the corner of an otherwise Turkish window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Open,
+    Decode,
+    Export,
+    Palette,
+}
+
+impl Kind {
+    /// For the program log, which is English by the same rule the parser is.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Decode => "decode",
+            Self::Export => "export",
+            Self::Palette => "palette",
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Outcome {
-    /// A short word for the status bar while this kind of work is in flight.
-    fn label(request: &Request) -> &'static str {
+    /// Which kind of work a request is.
+    fn label(request: &Request) -> Kind {
         match request {
-            Request::Open { .. } => "open",
-            Request::Decode(_) => "decode",
-            Request::Export { .. } => "export",
+            Request::Open { .. } => Kind::Open,
+            Request::Decode(_) => Kind::Decode,
+            Request::Export { .. } => Kind::Export,
+            Request::Palette { .. } => Kind::Palette,
+
         }
     }
 }
@@ -73,12 +115,12 @@ impl Outcome {
 /// The worker, its channels, and what is currently in flight.
 pub struct Jobs {
     to_worker: Sender<Request>,
-    from_worker: Receiver<(&'static str, Outcome)>,
+    from_worker: Receiver<(Kind, Outcome)>,
     /// How far the running job says it has got, when it can say.
     progress: Option<(usize, usize)>,
-    /// Labels of the jobs sent but not yet collected, so the interface can say what it is waiting
+    /// Kinds of the jobs sent but not yet collected, so the interface can say what it is waiting
     /// for rather than only that it is waiting.
-    in_flight: Vec<&'static str>,
+    in_flight: Vec<Kind>,
 }
 
 impl Jobs {
@@ -87,7 +129,7 @@ impl Jobs {
     #[must_use]
     pub fn start(ctx: egui::Context) -> Self {
         let (to_worker, requests) = std::sync::mpsc::channel::<Request>();
-        let (results, from_worker) = std::sync::mpsc::channel::<(&'static str, Outcome)>();
+        let (results, from_worker) = std::sync::mpsc::channel::<(Kind, Outcome)>();
         std::thread::Builder::new()
             .name("pryhub-worker".into())
             .spawn(move || {
@@ -149,7 +191,7 @@ impl Jobs {
 
     /// Whether anything is running, and what.
     #[must_use]
-    pub fn busy(&self) -> Option<&'static str> {
+    pub fn busy(&self) -> Option<Kind> {
         self.in_flight.first().copied()
     }
 
@@ -170,6 +212,7 @@ fn describe(request: &Request) -> String {
         Request::Open { path, side } => format!("{} ({side:?})", path.display()),
         Request::Decode(doc) => doc.path.display().to_string(),
         Request::Export { doc, spec } => format!("{} as {}", doc.path.display(), spec.kind.name()),
+        Request::Palette { beside } => format!("palette beside {}", beside.display()),
     }
 }
 
@@ -188,5 +231,39 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
         Request::Export { doc, spec } => {
             Outcome::Exported(crate::export::run(&doc, &spec, tell))
         }
+        Request::Palette { beside } => Outcome::Palette(palette(&beside)),
     }
+}
+
+/// `GLOBAL/GLOBALB.BUN` for a file inside a game install, and the palette in it.
+///
+/// Found from the open file rather than configured: a car's directory is two levels under the root,
+/// which is the same walk `ug2` does. Anything that does not resolve returns an empty palette — a
+/// `GEOMETRY.BIN` copied out of an install is a perfectly ordinary thing to open.
+fn palette(beside: &std::path::Path) -> Vec<gizmo_nfs::Colour> {
+    let Some(dir) = beside.parent() else { return Vec::new() };
+    let candidates = [
+        dir.parent().and_then(|p| p.parent()).map(|r| r.join("GLOBAL").join("GLOBALB.BUN")),
+        std::env::var_os("NFSU2_ROOT")
+            .map(|r| std::path::PathBuf::from(r).join("GLOBAL").join("GLOBALB.BUN")),
+    ];
+    for path in candidates.into_iter().flatten() {
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(&path) else { continue };
+        // The bundle ships uncompressed beside a `.lzc` twin, but detect anyway rather than assume.
+        let bytes = match gizmo_nfs::compression::detect(&raw) {
+            gizmo_nfs::compression::Codec::None => raw,
+            _ => match gizmo_nfs::compression::decompress(&raw) {
+                Ok(b) => b,
+                Err(_) => continue,
+            },
+        };
+        if let Ok(cp) = gizmo_nfs::CarParts::parse(&bytes) {
+            log::debug!(target: "jobs", "palette: {} colours from {}", cp.palette().len(), path.display());
+            return cp.palette();
+        }
+    }
+    Vec::new()
 }
