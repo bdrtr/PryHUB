@@ -103,15 +103,23 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
                 });
             }
             let start = out.len() - dist;
-            for i in 0..length {
-                if out.len() >= out_len {
-                    break;
+            let room = out_len - out.len();
+            let take = length.min(room);
+            if dist >= take {
+                // The source does not overlap what is being written, so this is a memcpy rather than
+                // a byte loop — and most copies in a real stream are this kind. `extend_from_within`
+                // is the safe way to say it.
+                out.extend_from_within(start..start + take);
+            } else {
+                // An overlapping run (`dist` of 1 means "repeat this byte"), which has to be copied
+                // one byte at a time because each byte reads one just written.
+                for i in 0..take {
+                    let byte = *out.get(start + i).ok_or(NfsError::Decompression {
+                        codec: "jdlz",
+                        detail: "internal copy index out of range",
+                    })?;
+                    out.push(byte);
                 }
-                let byte = *out.get(start + i).ok_or(NfsError::Decompression {
-                    codec: "jdlz",
-                    detail: "internal copy index out of range",
-                })?;
-                out.push(byte);
             }
             flags2 >>= 1;
         } else {
@@ -311,7 +319,22 @@ fn longest_match(input: &[u8], pos: usize, head: &[u32], prev: &[u32]) -> (usize
 /// distance of 1 legitimately means "repeat this byte".
 fn match_len(input: &[u8], a: usize, b: usize, cap: usize) -> usize {
     let limit = cap.min(input.len() - b);
+    // Eight bytes at a time while there is room for eight. This is the innermost loop of the
+    // compressor — every candidate in every chain runs it — and comparing words instead of bytes is
+    // most of the difference between 27 MB/s and something usable. The tail finishes byte-wise.
     let mut n = 0;
+    while n + 8 <= limit {
+        let (x, y) = (input.get(a + n..a + n + 8), input.get(b + n..b + n + 8));
+        let (Some(x), Some(y)) = (x, y) else { break };
+        let (Ok(x), Ok(y)) = (<[u8; 8]>::try_from(x), <[u8; 8]>::try_from(y)) else { break };
+        let (x, y) = (u64::from_le_bytes(x), u64::from_le_bytes(y));
+        if x != y {
+            // The first differing byte is where the low-order bits diverge; on little-endian that is
+            // the trailing-zero count of the difference, rounded down to a byte.
+            return n + ((x ^ y).trailing_zeros() / 8) as usize;
+        }
+        n += 8;
+    }
     while n < limit && input[a + n] == input[b + n] {
         n += 1;
     }

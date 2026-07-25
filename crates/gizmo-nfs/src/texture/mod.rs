@@ -77,18 +77,49 @@ impl Tpk {
         // Texture Compiler) pack raw compressed blocks after the directory with no wrapping
         // chunk, so a strict full-file walk misreads them and overruns; walk tolerantly so the
         // clean directory still yields the descriptor table.
+        let entries = Self::directory(bytes)?;
+        let mut textures = HashMap::new();
+        for e in &entries {
+            if let Ok(tex) = Self::decode_one(bytes, e) {
+                textures.insert(e.hash, tex);
+            }
+        }
+        Ok(Self::from_decoded(entries, textures))
+    }
+
+    /// The descriptor table alone, without decoding anything.
+    ///
+    /// The pair with [`Tpk::decode_one`] and [`Tpk::from_decoded`]: decoding a pack is 8 MB of
+    /// output and 20 ms, and every texture is independent, so a caller with threads to spare can do
+    /// it in parallel. This crate does not spawn any — a library that starts threads behind a
+    /// function call takes a decision that belongs to whoever called it.
+    ///
+    /// # Errors
+    /// When the descriptor chunk is missing or unreadable.
+    pub fn directory(bytes: &[u8]) -> NfsResult<Vec<TpkEntry>> {
         let opts = WalkOptions { stop_on_overrun: true, ..Default::default() };
         let roots = ChunkNode::parse_with(bytes, opts)?;
         let desc = directory::find_leaf(&roots, DESCRIPTORS, bytes)
             .ok_or(NfsError::CorruptArchive { detail: "TPK missing descriptor chunk 0x33310003" })?;
-        let entries = directory::parse_descriptors(desc);
-        let mut textures = HashMap::new();
-        for e in &entries {
-            if let Ok(tex) = decode::decode_texture(bytes, e) {
-                textures.insert(e.hash, tex);
-            }
-        }
-        Ok(Tpk { entries, textures })
+        Ok(directory::parse_descriptors(desc))
+    }
+
+    /// Decode one descriptor's texture.
+    ///
+    /// # Errors
+    /// Unsupported codec (HUFF), a malformed embedded header, or dimensions out of range — all of
+    /// which mean "skip this texture", not "the file is broken".
+    pub fn decode_one(bytes: &[u8], entry: &TpkEntry) -> NfsResult<NfsTexture> {
+        decode::decode_texture(bytes, entry)
+    }
+
+    /// Assemble a pack from a directory and textures decoded by the caller.
+    #[must_use]
+    pub fn from_decoded(
+        entries: Vec<TpkEntry>,
+        textures: HashMap<AssetHash, NfsTexture>,
+    ) -> Self {
+        Self { entries, textures }
     }
 
     /// Look up a decoded texture by asset hash.

@@ -90,21 +90,42 @@ impl Doc {
     /// tree, parse the geometry, run the checks. Every failure is a note rather than an error
     /// return, because a half-readable file is exactly what someone opens this tool for.
     pub fn open(path: &Path) -> Result<Self, String> {
+        // Timed per phase at debug: this is the wait between asking for a file and seeing it, and
+        // the only way to know which of the four passes owns it.
+        let t = std::time::Instant::now();
         let raw = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut notes = Vec::new();
         let codec = gizmo_nfs::compression::detect(&raw);
         let bytes = decompressed(raw, codec, &mut notes);
+        let t_read = t.elapsed();
+
         let roots = chunk_tree(&bytes, &mut notes);
+        let t_tree = t.elapsed();
 
         let mut rows = Vec::new();
         for r in &roots {
             flatten(r, &bytes, 0, &mut rows);
         }
+        let t_rows = t.elapsed();
 
         let parts = geometry(&bytes, &mut notes);
+        let t_geom = t.elapsed();
+
         // The checks run once, here — never per frame.
         let report = gizmo_nfs::validate::validate(&roots, &bytes);
         note_findings(&report, &mut notes);
+        let t_valid = t.elapsed();
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        log::debug!(
+            target: "doc",
+            "open {:.1} ms = read {:.1} + tree {:.1} + rows {:.1} + geometry {:.1} + validate {:.1}",
+            ms(t_valid),
+            ms(t_read),
+            ms(t_tree - t_read),
+            ms(t_rows - t_tree),
+            ms(t_geom - t_rows),
+            ms(t_valid - t_geom),
+        );
 
         notes.push(Note {
             level: Level::Info,
@@ -162,11 +183,11 @@ impl Doc {
     /// mutability and can be shared by an `Arc` instead of borrowed mutably.
     #[must_use]
     pub fn decode_textures(&self) -> Option<gizmo_nfs::Tpk> {
-        let own = gizmo_nfs::Tpk::parse(&self.bytes).ok().filter(|t| !t.entries.is_empty());
+        let own = decode_pack(&self.bytes).filter(|t| !t.entries.is_empty());
         own.or_else(|| {
             let beside = self.path.parent()?.join("TEXTURES.BIN");
             let bytes = std::fs::read(beside).ok()?;
-            gizmo_nfs::Tpk::parse(&bytes).ok()
+            decode_pack(&bytes)
         })
     }
 
@@ -197,6 +218,42 @@ impl Doc {
     pub fn file_name(&self) -> String {
         self.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
     }
+}
+
+/// Decode a whole pack, spreading the textures over threads.
+///
+/// Every texture is an independent blob, and decoding one is a decompress plus a DXT pass — 20 ms
+/// for a car on one thread, and the parser deliberately spawns none of its own. So the decision is
+/// taken here, where it belongs: `directory` once, then the entries split between workers, then
+/// `from_decoded`. Capped at eight because a car's images are 8 MB and there is nothing to gain from
+/// more threads than the memory bus.
+fn decode_pack(bytes: &[u8]) -> Option<gizmo_nfs::Tpk> {
+    let entries = gizmo_nfs::Tpk::directory(bytes).ok()?;
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let decoded = std::sync::Mutex::new(std::collections::HashMap::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (next, decoded, entries) = (&next, &decoded, &entries);
+            scope.spawn(move || {
+                // Decode into a local batch and merge once: a lock per texture would serialise the
+                // very thing being parallelised.
+                let mut mine = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(entry) = entries.get(i) else { break };
+                    if let Ok(tex) = gizmo_nfs::Tpk::decode_one(bytes, entry) {
+                        mine.push((entry.hash, tex));
+                    }
+                }
+                if let Ok(mut all) = decoded.lock() {
+                    all.extend(mine);
+                }
+            });
+        }
+    });
+    let textures = decoded.into_inner().unwrap_or_default();
+    Some(gizmo_nfs::Tpk::from_decoded(entries, textures))
 }
 
 /// Decompress when the magic says so, and say what happened either way. A codec that fails leaves

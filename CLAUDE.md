@@ -127,6 +127,24 @@ no logging dependency at all** — it *returns* its findings (`NfsError`, `valid
 `Skipped`), so it stays usable from anywhere and testable without a logger. `ug2` likewise has none:
 its output *is* its report, and it has no interactive loop to instrument.
 
+### Performance, as measured
+
+The hot paths and what they cost on a 240SX (7.6 MB, 609 parts, 73 textures):
+
+| | before | after | how |
+|---|---|---|---|
+| `parse_geometry` | 9.2 ms | **1.8 ms** | vertices and indices read out of a fixed-size `[u8; 36]` / `chunks_exact(2)` instead of a bounds-checking cursor — the range is validated once, so nine checks per vertex bought nothing (and the array indices are provably in range, so there is no panic path either) |
+| `jdlz::compress` | 27 MB/s | **68 MB/s** | `match_len` compares eight bytes at a time, with the first differing byte found from the XOR's trailing zeros. Output is byte-identical: same 463 KB |
+| `jdlz::decompress` | 375 MB/s | **565 MB/s** | a non-overlapping back-reference is `extend_from_within` (a memcpy) rather than a byte loop; overlapping ones still go byte by byte, because each byte reads one just written |
+| pack decode (app) | 22.7 ms | **5.8 ms** | `Tpk::directory` + `decode_one` + `from_decoded` let the *caller* spread the textures over threads. The library still spawns none — that decision belongs to whoever called it |
+| file open (app) | 23.8 ms | **17.5 ms** | the geometry pass above; the remaining 7 ms is reading 7.6 MB off disk |
+| golden suite | 10.5 s | **4.1 s** | the compressor, mostly: it runs over 2,123 blobs |
+
+None of it changed a byte of output, and that is checked rather than asserted: fingerprints over every
+decoded pixel (2,123 textures) and every parsed vertex, normal, UV and index (4,058,782 vertices
+across 18,225 parts) are identical before and after, and all 80 exported models stay byte-for-byte
+the same.
+
 **Smoothness is measured, not felt.** `PRYHUB_LOG=frame=trace` prints each frame's cost split into
 jobs / bars / screen. It is how the interface went from 7–9 ms a frame to under 0.5: the tree panel was
 drawing all 7,246 rows every frame (egui clipped the pixels but did the work), the discovery screen

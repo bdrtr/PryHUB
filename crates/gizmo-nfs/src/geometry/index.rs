@@ -2,7 +2,6 @@
 
 use super::format::FILLER_BYTE;
 use crate::error::{NfsError, NfsResult};
-use crate::reader::ByteReader;
 
 /// The indices are `tri_count * 3` little-endian u16s that follow the buffer's leading `0x11`
 /// alignment filler (the game aligns the index stream to 0x10). They must be read **forward
@@ -22,10 +21,12 @@ pub(super) fn parse_indices(ibuf: &[u8], tri_count: usize, vert_count: usize) ->
     if start.checked_add(needed).is_none_or(|end| end > ibuf.len()) {
         return Err(NfsError::BufferSizeMismatch { detail: "index buffer smaller than tri_count*6" });
     }
-    let mut r = ByteReader::at(ibuf, start)?;
+    // The range is checked once above, so the pairs are read straight out of it — a cursor would
+    // bounds-check each of the 320,000 indices in a car again for nothing.
+    let bytes = ibuf.get(start..start + needed).unwrap_or_default();
     let mut indices = Vec::with_capacity(index_count);
-    for _ in 0..index_count {
-        let i = r.u16_le()? as u32;
+    for pair in bytes.chunks_exact(2) {
+        let i = u32::from(u16::from_le_bytes([pair[0], pair[1]]));
         if i as usize >= vert_count {
             return Err(NfsError::IndexOutOfRange { index: i, vertex_count: vert_count as u32 });
         }
