@@ -94,6 +94,7 @@ impl Names {
         }
         self.dirty = false;
         let path = Self::path()?;
+        log::debug!(target: "names", "writing {} names to {}", self.entries.len(), path.display());
         Some(self.write(&path).map(|()| path.clone()).map_err(|e| format!("{}: {e}", path.display())))
     }
 

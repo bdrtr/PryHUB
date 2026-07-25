@@ -93,6 +93,8 @@ impl Jobs {
             .spawn(move || {
                 for request in requests {
                     let label = Outcome::label(&request);
+                    let started = std::time::Instant::now();
+                    log::debug!(target: "jobs", "{label} started: {}", describe(&request));
                     let tell = |done: usize, total: usize| {
                         let _ = results.send((label, Outcome::Progress { done, total }));
                         ctx.request_repaint();
@@ -101,8 +103,14 @@ impl Jobs {
                         run(request, &tell)
                     }))
                     .unwrap_or_else(|_| {
+                        log::error!(target: "jobs", "{label} panicked; the worker is still up");
                         Outcome::Failed("a background job panicked; the worker is still up".into())
                     });
+                    log::debug!(
+                        target: "jobs",
+                        "{label} finished in {:.1} ms",
+                        started.elapsed().as_secs_f64() * 1000.0
+                    );
                     if results.send((label, outcome)).is_err() {
                         break; // the app is gone
                     }
@@ -154,6 +162,15 @@ impl Jobs {
             .map(|(done, total)| done as f32 / total as f32)
     }
 
+}
+
+/// What a request is about, for the log. Enough to tell two runs apart, not the whole document.
+fn describe(request: &Request) -> String {
+    match request {
+        Request::Open { path, side } => format!("{} ({side:?})", path.display()),
+        Request::Decode(doc) => doc.path.display().to_string(),
+        Request::Export { doc, spec } => format!("{} as {}", doc.path.display(), spec.kind.name()),
+    }
 }
 
 /// Do the work. Runs on the worker thread; nothing here touches the interface except by saying how

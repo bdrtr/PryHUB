@@ -40,102 +40,122 @@ pub fn show(app: &PryHub, ui: &mut egui::Ui) -> Option<usize> {
     // three pixels taller than it is, so it handed out too short a range and the tree stopped
     // seven rows above the bottom of the panel.
     ui.spacing_mut().item_spacing.y = 0.0;
-    egui::ScrollArea::both().auto_shrink([false, false]).show_rows(ui, row_h, visible.len(), |ui, range| {
-        for row in &visible[range] {
-            let selected = app.selection == Some(row.offset);
-            let collapsed = app.collapsed.contains(&row.offset);
-
-            let (rect, resp) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), row_h),
-                Sense::click(),
-            );
-            if resp.clicked() {
-                clicked = Some(row.offset);
-            }
-            // A fade rather than a snap: with 7,000 rows the eye needs a moment to see *which* row
-            // took the selection, and the same wash is what the hover uses one step lighter.
-            let lit = ui.ctx().animate_bool_with_time(
-                ui.id().with(row.offset),
-                selected,
-                crate::chrome::MOVE_TIME,
-            );
-            if lit > 0.0 {
-                ui.painter().rect_filled(rect, 0.0, token::ACCENT.gamma_multiply(0.18 * lit));
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, token::SURFACE);
-            }
-
-            let p = ui.painter().clone();
-            let indent = 6.0 + row.depth as f32 * 11.0;
-            let mid = rect.center().y;
-            let mono = theme::font::mono(app.density.body_size() - 1.5);
-
-            // Caret — only containers have one, and it says whether it is open.
-            if row.has_children {
-                p.text(
-                    egui::pos2(rect.left() + indent - 9.0, mid),
-                    egui::Align2::LEFT_CENTER,
-                    if collapsed { "▸" } else { "▾" },
-                    mono.clone(),
-                    theme::muted(55),
-                );
-            }
-            // Status dot — the design's at-a-glance "is there something wrong here". An unchecked
-            // chunk deliberately gets the neutral dot rather than a tick: a green mark on
-            // something no rule read would be the tool vouching for what it does not know.
-            let status = doc.report.status_of(row.offset);
-            p.circle_filled(egui::pos2(rect.left() + indent + 4.0, mid), 2.5, dot_colour(status, row.container));
-            if matches!(status, ChunkStatus::Warn | ChunkStatus::Error) {
-                p.text(
-                    egui::pos2(rect.left() + indent - 3.0, mid),
-                    egui::Align2::RIGHT_CENTER,
-                    "⚠",
-                    theme::font::mono(app.density.body_size() - 2.5),
-                    if status == ChunkStatus::Error { token::ACCENT } else { token::ACCENT_2 },
-                );
-            }
-            let label = crate::panels::inspector::chunk_label(row.id);
-            let x = rect.left() + indent + 13.0;
-            let w = p.text(
-                egui::pos2(x, mid),
-                egui::Align2::LEFT_CENTER,
-                label,
-                mono.clone(),
-                if selected { token::ACCENT_800 } else { token::TEXT },
-            )
-            .width();
-            // The id, right-aligned, always monospace — this is what you match against a spec.
-            let id_font = theme::font::mono(app.density.body_size() - 2.5);
-            let id_w = p
-                .text(
-                    egui::pos2(rect.right() - 6.0, mid),
-                    egui::Align2::RIGHT_CENTER,
-                    format!("{:#010x}", row.id),
-                    id_font.clone(),
-                    theme::muted(42),
-                )
-                .width();
-            // The part's own name, which is what makes 610 solids navigable. It is elided rather
-            // than allowed to run under the id column — two strings on top of each other read as
-            // neither.
-            if let Some(name) = &row.name {
-                let name_font = theme::font::mono(app.density.body_size() - 2.0);
-                let start = x + w + 8.0;
-                let room = rect.right() - 12.0 - id_w - start;
-                if room > 20.0 {
-                    p.text(
-                        egui::pos2(start, mid),
-                        egui::Align2::LEFT_CENTER,
-                        elide(ui, name, &name_font, room),
-                        name_font,
-                        theme::muted(58),
-                    );
+    egui::ScrollArea::both().auto_shrink([false, false]).show_rows(
+        ui,
+        row_h,
+        visible.len(),
+        |ui, range| {
+            for row in &visible[range] {
+                if draw_row(app, doc, ui, row, row_h) {
+                    clicked = Some(row.offset);
                 }
             }
-        }
-    });
+        },
+    );
     clicked
 }
+
+/// One row: its wash, its caret, its status dot, and the three strings that make 610 identical
+/// "SolidObject" rows navigable. Returns whether it was clicked.
+fn draw_row(
+    app: &PryHub,
+    doc: &crate::doc::Doc,
+    ui: &mut egui::Ui,
+    row: &crate::doc::Row,
+    row_h: f32,
+) -> bool {
+    let selected = app.selection == Some(row.offset);
+    let collapsed = app.collapsed.contains(&row.offset);
+
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
+    // A fade rather than a snap: with 7,000 rows the eye needs a moment to see *which* row took the
+    // selection, and the same wash is what the hover uses one step lighter.
+    let lit = ui.ctx().animate_bool_with_time(
+        ui.id().with(row.offset),
+        selected,
+        crate::chrome::MOVE_TIME,
+    );
+    if lit > 0.0 {
+        ui.painter().rect_filled(rect, 0.0, token::ACCENT.gamma_multiply(0.18 * lit));
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, token::SURFACE);
+    }
+
+    let p = ui.painter().clone();
+    let indent = 6.0 + row.depth as f32 * 11.0;
+    let mid = rect.center().y;
+    let mono = theme::font::mono(app.density.body_size() - 1.5);
+
+    // Caret — only containers have one, and it says whether it is open.
+    if row.has_children {
+        p.text(
+            egui::pos2(rect.left() + indent - 9.0, mid),
+            egui::Align2::LEFT_CENTER,
+            if collapsed { "▸" } else { "▾" },
+            mono.clone(),
+            theme::muted(55),
+        );
+    }
+    // Status dot — the design's at-a-glance "is there something wrong here". An unchecked chunk
+    // deliberately gets the neutral dot rather than a tick: a green mark on something no rule read
+    // would be the tool vouching for what it does not know.
+    let status = doc.report.status_of(row.offset);
+    p.circle_filled(
+        egui::pos2(rect.left() + indent + 4.0, mid),
+        2.5,
+        dot_colour(status, row.container),
+    );
+    if matches!(status, ChunkStatus::Warn | ChunkStatus::Error) {
+        p.text(
+            egui::pos2(rect.left() + indent - 3.0, mid),
+            egui::Align2::RIGHT_CENTER,
+            "⚠",
+            theme::font::mono(app.density.body_size() - 2.5),
+            if status == ChunkStatus::Error { token::ACCENT } else { token::ACCENT_2 },
+        );
+    }
+    let label = crate::panels::inspector::chunk_label(row.id);
+    let x = rect.left() + indent + 13.0;
+    let w = p
+        .text(
+            egui::pos2(x, mid),
+            egui::Align2::LEFT_CENTER,
+            label,
+            mono.clone(),
+            if selected { token::ACCENT_800 } else { token::TEXT },
+        )
+        .width();
+    // The id, right-aligned, always monospace — this is what you match against a spec.
+    let id_font = theme::font::mono(app.density.body_size() - 2.5);
+    let id_w = p
+        .text(
+            egui::pos2(rect.right() - 6.0, mid),
+            egui::Align2::RIGHT_CENTER,
+            format!("{:#010x}", row.id),
+            id_font,
+            theme::muted(42),
+        )
+        .width();
+    // The part's own name. Elided rather than allowed to run under the id column — two strings on
+    // top of each other read as neither.
+    if let Some(name) = &row.name {
+        let name_font = theme::font::mono(app.density.body_size() - 2.0);
+        let start = x + w + 8.0;
+        let room = rect.right() - 12.0 - id_w - start;
+        if room > 20.0 {
+            p.text(
+                egui::pos2(start, mid),
+                egui::Align2::LEFT_CENTER,
+                elide(ui, name, &name_font, room),
+                name_font,
+                theme::muted(58),
+            );
+        }
+    }
+    resp.clicked()
+}
+
 
 /// Shorten `text` until it fits `room`, ending in an ellipsis.
 fn elide(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> String {

@@ -40,6 +40,7 @@ pub struct ExportSpec {
 }
 
 /// The three things the button can mean.
+#[derive(Clone, Copy)]
 pub enum Kind {
     /// Every decoded texture in the pack.
     Textures,
@@ -47,6 +48,18 @@ pub enum Kind {
     Model,
     /// Just the one image the preview pane has up.
     OneTexture(gizmo_nfs::AssetHash),
+}
+
+impl Kind {
+    /// A word for the diagnostics log.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Textures => "textures",
+            Kind::Model => "model",
+            Kind::OneTexture(_) => "one texture",
+        }
+    }
 }
 
 /// Write what the centre area was showing when the button was pressed.
@@ -234,5 +247,6 @@ fn create_dir(dir: &Path) -> Result<(), String> {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    log::trace!(target: "export", "{} ({} bytes)", path.display(), bytes.len());
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }

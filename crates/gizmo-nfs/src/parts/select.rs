@@ -6,6 +6,82 @@ use super::group::{group_of, Grp};
 use super::name::{component_key, namespace, slot_of, Ns, Slot};
 use crate::types::NfsMeshPart;
 
+/// The configuration as the car can actually honour it, plus whether it has variants at all.
+///
+/// A requested variant with no part for its slots falls back to stock, and that is resolved here —
+/// once, rather than inside the question asked of every part.
+struct Wanted {
+    kit: u8,
+    hood: u8,
+    light: u8,
+    wide: u8,
+    /// Traffic cars (TAXI, BUS, SUV, …) and the shared prop bundles (WHEELS, SPOILER, …) carry no
+    /// customization token at all: every part is `NAME_BODY_A`. They have exactly one configuration,
+    /// so with nothing to choose between everything is admitted — otherwise they would render empty.
+    customizable: bool,
+}
+
+impl Wanted {
+    fn resolve(all: &[NfsMeshPart], cfg: &CarConfig) -> Self {
+        let has = |ns: Ns, slots: &[Slot]| {
+            all.iter().any(|p| namespace(&p.name) == ns && slots.contains(&slot_of(&p.name)))
+        };
+        let offered = |wanted: u8, ns: Ns, slots: &[Slot]| {
+            if wanted != 0 && has(ns, slots) {
+                wanted
+            } else {
+                0
+            }
+        };
+        let bumpers = [Slot::FrontBumper, Slot::RearBumper, Slot::Skirt];
+        let lights = [Slot::Headlight, Slot::Brakelight];
+        let body = [Slot::Body, Slot::Door];
+        Self {
+            kit: offered(cfg.body_kit, Ns::Kit(cfg.body_kit), &bumpers),
+            hood: offered(cfg.hood_style, Ns::Style(cfg.hood_style), &[Slot::Hood]),
+            light: offered(cfg.light_style, Ns::Style(cfg.light_style), &lights),
+            wide: offered(cfg.widebody, Ns::Wide(cfg.widebody), &body),
+            customizable: all.iter().any(|p| matches!(namespace(&p.name), Ns::Kit(_) | Ns::Base)),
+        }
+    }
+
+    /// Whether a part belongs to this configuration (before LOD dedup).
+    fn admits(&self, name: &str) -> bool {
+        if !self.customizable {
+            return true;
+        }
+        // The BASE greenhouse (glass/interior/trim) is always kept; window decals are the glass
+        // panels; any other decal is texture-only livery, dropped until textured.
+        if name.contains("_BASE") {
+            return true;
+        }
+        if name.contains("DECAL") {
+            return name.contains("WINDOW");
+        }
+        match namespace(name) {
+            Ns::Kit(n) => match slot_of(name) {
+                Slot::FrontBumper | Slot::RearBumper | Slot::Skirt => n == self.kit,
+                Slot::Hood => n == 0 && self.hood == 0,
+                Slot::Headlight | Slot::Brakelight => n == 0 && self.light == 0,
+                Slot::Body | Slot::Door => n == 0 && self.wide == 0,
+                Slot::Fixed => n == 0,
+            },
+            Ns::Style(n) => match slot_of(name) {
+                Slot::Hood => self.hood != 0 && n == self.hood,
+                Slot::Headlight | Slot::Brakelight => self.light != 0 && n == self.light,
+                _ => false,
+            },
+            Ns::Wide(n) => match slot_of(name) {
+                Slot::Body | Slot::Door => self.wide != 0 && n == self.wide,
+                _ => false,
+            },
+            Ns::Base => true,
+            Ns::Other => false,
+        }
+    }
+}
+
+
 /// CARSKIN shader hash (`0x00134013`, a painted body run). Mirrors `car::shader::CARSKIN`;
 /// duplicated here so part selection can tell a paintable door skin from a glass-only door
 /// without reaching into the engine layer.
@@ -65,56 +141,7 @@ fn door_zone_verts(p: &NfsMeshPart) -> usize {
 pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMeshPart> {
     use std::collections::BTreeMap;
 
-    // A requested variant that has no part for its target slots falls back to stock (0).
-    let has = |ns: Ns, slots: &[Slot]| {
-        all.iter().any(|p| namespace(&p.name) == ns && slots.contains(&slot_of(&p.name)))
-    };
-    let bumper_slots = [Slot::FrontBumper, Slot::RearBumper, Slot::Skirt];
-    let eff_kit = if cfg.body_kit != 0 && has(Ns::Kit(cfg.body_kit), &bumper_slots) { cfg.body_kit } else { 0 };
-    let eff_hood = if cfg.hood_style != 0 && has(Ns::Style(cfg.hood_style), &[Slot::Hood]) { cfg.hood_style } else { 0 };
-    let light_slots = [Slot::Headlight, Slot::Brakelight];
-    let eff_light = if cfg.light_style != 0 && has(Ns::Style(cfg.light_style), &light_slots) { cfg.light_style } else { 0 };
-    let eff_wide = if cfg.widebody != 0 && has(Ns::Wide(cfg.widebody), &[Slot::Body, Slot::Door]) { cfg.widebody } else { 0 };
-
-    // Traffic cars (TAXI, BUS, SUV, …) and the shared prop bundles (WHEELS, SPOILER, …) carry no
-    // customization token at all: every part is `NAME_BODY_A`. They have exactly one configuration,
-    // so with nothing to choose between, everything is admitted — otherwise they'd render empty.
-    let customizable = all.iter().any(|p| matches!(namespace(&p.name), Ns::Kit(_) | Ns::Base));
-
-    // Whether a part is part of the configured car (before LOD dedup).
-    let admit = |name: &str| -> bool {
-        if !customizable {
-            return true;
-        }
-        // The BASE greenhouse (glass/interior/trim) is always kept; window decals are the glass
-        // panels; any other decal is texture-only livery, dropped until textured.
-        if name.contains("_BASE") {
-            return true;
-        }
-        if name.contains("DECAL") {
-            return name.contains("WINDOW");
-        }
-        match namespace(name) {
-            Ns::Kit(n) => match slot_of(name) {
-                Slot::FrontBumper | Slot::RearBumper | Slot::Skirt => n == eff_kit,
-                Slot::Hood => n == 0 && eff_hood == 0,
-                Slot::Headlight | Slot::Brakelight => n == 0 && eff_light == 0,
-                Slot::Body | Slot::Door => n == 0 && eff_wide == 0,
-                Slot::Fixed => n == 0,
-            },
-            Ns::Style(n) => match slot_of(name) {
-                Slot::Hood => eff_hood != 0 && n == eff_hood,
-                Slot::Headlight | Slot::Brakelight => eff_light != 0 && n == eff_light,
-                _ => false,
-            },
-            Ns::Wide(n) => match slot_of(name) {
-                Slot::Body | Slot::Door => eff_wide != 0 && n == eff_wide,
-                _ => false,
-            },
-            Ns::Base => true,
-            Ns::Other => false,
-        }
-    };
+    let wanted = Wanted::resolve(all, cfg);
 
     let fill_body_door = !has_paintable_door_skin(all);
     // Keyed by component, holding an *index* into `all` — so the winners can be emitted in file
@@ -125,7 +152,7 @@ pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMes
     let mut best: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, p) in all.iter().enumerate() {
         // Drop the TRUNK_AUDIO second shell (z-fights the TRUNK) and any hidden/decal Skip parts.
-        if !admit(&p.name) || p.name.contains("TRUNK_AUDIO") || group_of(&p.name) == Grp::Skip {
+        if !wanted.admits(&p.name) || p.name.contains("TRUNK_AUDIO") || group_of(&p.name) == Grp::Skip {
             continue;
         }
         let prefer_door_fill = fill_body_door && p.name.contains("_BODY");

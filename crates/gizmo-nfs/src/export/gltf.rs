@@ -44,9 +44,23 @@ const ELEMENT_ARRAY_BUFFER: u32 = 34963;
 pub fn write_glb(parts: &[&NfsMeshPart], tpk: Option<&Tpk>) -> NfsResult<Vec<u8>> {
     let plan = MaterialPlan::build(parts, tpk);
     let mut b = Builder::default();
+    // In this order because each step can only reference what the previous one has already given an
+    // index to: a material names an image, a primitive names a material.
+    let images = embed_images(&mut b, &plan, tpk)?;
+    add_materials(&mut b, &plan, tpk, &images);
+    for part in parts {
+        add_mesh(&mut b, part, &plan);
+    }
+    Ok(b.finish())
+}
 
-    // ── Images first: a material can only reference a texture that already has an index ──
-    let mut texture_index: BTreeMap<u32, usize> = BTreeMap::new();
+/// Embed every image the materials reference, and remember which glTF image index each hash got.
+fn embed_images(
+    b: &mut Builder,
+    plan: &MaterialPlan,
+    tpk: Option<&Tpk>,
+) -> NfsResult<BTreeMap<u32, usize>> {
+    let mut index = BTreeMap::new();
     for hash in &plan.textures {
         let Some(tex) = tpk.and_then(|t| t.texture(*hash)) else { continue };
         let png = png_bytes(tex)?;
@@ -56,85 +70,95 @@ pub fn write_glb(parts: &[&NfsMeshPart], tpk: Option<&Tpk>) -> NfsResult<Vec<u8>
             "{{\"name\":{},\"mimeType\":\"image/png\",\"bufferView\":{view}}}",
             json_string(&png_name(tex))
         ));
-        texture_index.insert(hash.0, image);
+        index.insert(hash.0, image);
     }
+    Ok(index)
+}
 
-    // ── Materials, in the plan's order so a name in the OBJ means the same thing here ──
+/// The materials, in the plan's order so a name in the OBJ means the same thing here.
+fn add_materials(
+    b: &mut Builder,
+    plan: &MaterialPlan,
+    tpk: Option<&Tpk>,
+    images: &BTreeMap<u32, usize>,
+) {
     for m in &plan.materials {
         // A material's map is `tex/<png_name>`; find the image that was written for it.
         let image = m.map.as_ref().and_then(|map| {
             plan.textures.iter().find_map(|h| {
                 let tex = tpk?.texture(*h)?;
-                (format!("tex/{}", png_name(tex)) == *map).then(|| texture_index.get(&h.0))?
+                (format!("tex/{}", png_name(tex)) == *map).then(|| images.get(&h.0))?
             })
         });
         b.materials.push(material_json(&m.name, m.diffuse, image.copied(), m.map_is_cutout));
     }
+}
 
-    // ── One mesh per part ──
-    for p in parts {
-        let apply = should_place(&p.transform, &part_centroid(p));
-        let positions: Vec<[f32; 3]> =
-            p.positions.iter().map(|v| to_gltf(place_point(&p.transform, *v, apply))).collect();
-        if positions.is_empty() {
-            continue;
-        }
-        let pos_acc = b.push_f32x3(&positions, true);
-        let normal_acc = (p.normals.len() == p.positions.len()).then(|| {
-            let n: Vec<[f32; 3]> =
-                p.normals.iter().map(|v| to_gltf(place_dir(&p.transform, *v, apply))).collect();
-            b.push_f32x3(&n, false)
-        });
-        // The UV list is trusted only when it covers every vertex — a short one would make the
-        // accessor claim vertices it does not have.
-        let uv_acc = (p.uvs.len() == p.positions.len()).then(|| b.push_f32x2(&p.uvs));
-
-        let mut primitives: Vec<String> = Vec::new();
-        let runs: Vec<(usize, &[u32])> = if p.materials.is_empty() {
-            vec![(0, p.indices.as_slice())]
-        } else {
-            p.materials
-                .iter()
-                .enumerate()
-                .filter_map(|(i, m)| {
-                    p.indices.get(m.index_offset..m.index_offset + m.index_count).map(|s| (i, s))
-                })
-                .collect()
-        };
-        for (run, indices) in runs {
-            if indices.len() < 3 {
-                continue;
-            }
-            let idx_acc = b.push_u32(indices);
-            let material = plan
-                .materials
-                .iter()
-                .position(|m| m.name == plan.name_for(p, run))
-                .unwrap_or_default();
-            let mut attrs = format!("\"POSITION\":{pos_acc}");
-            if let Some(a) = normal_acc {
-                let _ = write!(attrs, ",\"NORMAL\":{a}");
-            }
-            if let Some(a) = uv_acc {
-                let _ = write!(attrs, ",\"TEXCOORD_0\":{a}");
-            }
-            primitives.push(format!(
-                "{{\"attributes\":{{{attrs}}},\"indices\":{idx_acc},\"material\":{material}}}"
-            ));
-        }
-        if primitives.is_empty() {
-            continue;
-        }
-        let mesh = b.meshes.len();
-        b.meshes.push(format!(
-            "{{\"name\":{},\"primitives\":[{}]}}",
-            json_string(&p.name),
-            primitives.join(",")
-        ));
-        b.nodes.push(format!("{{\"name\":{},\"mesh\":{mesh}}}", json_string(&p.name)));
+/// One part as a mesh and the node that places it: vertex data once, then a primitive per material
+/// run pointing into it.
+fn add_mesh(b: &mut Builder, p: &NfsMeshPart, plan: &MaterialPlan) {
+    let apply = should_place(&p.transform, &part_centroid(p));
+    let positions: Vec<[f32; 3]> =
+        p.positions.iter().map(|v| to_gltf(place_point(&p.transform, *v, apply))).collect();
+    if positions.is_empty() {
+        return;
     }
+    let pos_acc = b.push_f32x3(&positions, true);
+    let normal_acc = (p.normals.len() == p.positions.len()).then(|| {
+        let n: Vec<[f32; 3]> =
+            p.normals.iter().map(|v| to_gltf(place_dir(&p.transform, *v, apply))).collect();
+        b.push_f32x3(&n, false)
+    });
+    // The UV list is trusted only when it covers every vertex — a short one would make the accessor
+    // claim vertices it does not have.
+    let uv_acc = (p.uvs.len() == p.positions.len()).then(|| b.push_f32x2(&p.uvs));
 
-    Ok(b.finish())
+    let mut primitives: Vec<String> = Vec::new();
+    for (run, indices) in runs_of(p) {
+        if indices.len() < 3 {
+            continue;
+        }
+        let idx_acc = b.push_u32(indices);
+        let material = plan
+            .materials
+            .iter()
+            .position(|m| m.name == plan.name_for(p, run))
+            .unwrap_or_default();
+        let mut attrs = format!("\"POSITION\":{pos_acc}");
+        if let Some(a) = normal_acc {
+            let _ = write!(attrs, ",\"NORMAL\":{a}");
+        }
+        if let Some(a) = uv_acc {
+            let _ = write!(attrs, ",\"TEXCOORD_0\":{a}");
+        }
+        primitives.push(format!(
+            "{{\"attributes\":{{{attrs}}},\"indices\":{idx_acc},\"material\":{material}}}"
+        ));
+    }
+    if primitives.is_empty() {
+        return;
+    }
+    let mesh = b.meshes.len();
+    b.meshes.push(format!(
+        "{{\"name\":{},\"primitives\":[{}]}}",
+        json_string(&p.name),
+        primitives.join(",")
+    ));
+    b.nodes.push(format!("{{\"name\":{},\"mesh\":{mesh}}}", json_string(&p.name)));
+}
+
+/// A part's index runs: its material ranges, or the whole index list when it has none.
+fn runs_of(p: &NfsMeshPart) -> Vec<(usize, &[u32])> {
+    if p.materials.is_empty() {
+        return vec![(0, p.indices.as_slice())];
+    }
+    p.materials
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            p.indices.get(m.index_offset..m.index_offset + m.index_count).map(|s| (i, s))
+        })
+        .collect()
 }
 
 /// NFSU2's frame (x = length, y = width, z = height, Z-up) in glTF's (+Y up, −Z forward).

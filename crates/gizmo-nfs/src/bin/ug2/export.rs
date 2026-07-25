@@ -120,60 +120,97 @@ fn one(
     format: &str,
 ) -> Result<String> {
     let parts = car.parts()?;
+    let selected = chosen(car, &parts, config, all)?;
+    let tpk = want_textures.then(|| car.textures()).flatten();
+
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let plan = MaterialPlan::build(&selected, tpk.as_ref());
+    let written = write_files(car, out, &selected, tpk.as_ref(), &plan, format)?;
+    Ok(report(car, out, &selected, &plan, &written))
+}
+
+/// Which parts to write: everything in the file, or the configured car with the never-drawn parts
+/// left out.
+fn chosen<'a>(
+    car: &Car,
+    parts: &'a [NfsMeshPart],
+    config: &CarConfig,
+    all: bool,
+) -> Result<Vec<&'a NfsMeshPart>> {
     let selected: Vec<&NfsMeshPart> = if all {
         parts.iter().collect()
     } else {
         // Skip the parts that are never drawn (engine bay, underbody, livery decals): they
         // would import as geometry buried inside the body.
-        select_car(&parts, config).into_iter().filter(|p| group_of(&p.name) != Grp::Skip).collect()
+        select_car(parts, config).into_iter().filter(|p| group_of(&p.name) != Grp::Skip).collect()
     };
-    if selected.is_empty() {
-        let siblings = car.siblings();
-        if siblings.is_empty() {
-            return Err(format!("{}: nothing to export", car.name));
-        }
-        return Err(format!(
-            "{}: its GEOMETRY.BIN holds no parts — this directory is a set, try one of: {}",
-            car.name,
-            siblings.join(", ")
-        ));
+    if !selected.is_empty() {
+        return Ok(selected);
     }
-    let tpk = want_textures.then(|| car.textures()).flatten();
+    let siblings = car.siblings();
+    if siblings.is_empty() {
+        return Err(format!("{}: nothing to export", car.name));
+    }
+    Err(format!(
+        "{}: its GEOMETRY.BIN holds no parts — this directory is a set, try one of: {}",
+        car.name,
+        siblings.join(", ")
+    ))
+}
 
-    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+/// What the export wrote, for the report.
+struct Written {
+    glb: bool,
+    obj: bool,
+    textures: usize,
+}
+
+/// Write the files the format asks for. The `.glb` carries its images inside it, so only the OBJ
+/// needs a `tex/` folder beside it.
+fn write_files(
+    car: &Car,
+    out: &Path,
+    selected: &[&NfsMeshPart],
+    tpk: Option<&gizmo_nfs::Tpk>,
+    plan: &MaterialPlan,
+    format: &str,
+) -> Result<Written> {
     let (want_obj, want_glb) = (format != "glb", format != "obj");
-    let mtl_name = format!("{}.mtl", car.name);
-    let obj_name = format!("{}.obj", car.name);
-    let glb_name = format!("{}.glb", car.name);
-
-    // ── Materials: one per (texture, shader) pair a run resolves to ──
-    let plan = MaterialPlan::build(&selected, tpk.as_ref());
+    let mut written = Written { glb: want_glb, obj: want_obj, textures: 0 };
 
     if want_glb {
-        let glb = export::write_glb(&selected, tpk.as_ref()).map_err(|e| format!("{glb_name}: {e}"))?;
-        write(&out.join(&glb_name), &glb)?;
+        let glb = export::write_glb(selected, tpk)
+            .map_err(|e| format!("{}.glb: {e}", car.name))?;
+        write(&out.join(format!("{}.glb", car.name)), &glb)?;
     }
-
-    let mut written = 0usize;
     if want_obj {
-        let obj_text = export::write_obj(&selected, &mtl_name, |p, run| plan.name_for(p, run));
-        let mtl_text = export::write_mtl(&plan.materials);
-        write(&out.join(&obj_name), obj_text.as_bytes())?;
-        write(&out.join(&mtl_name), mtl_text.as_bytes())?;
+        let mtl_name = format!("{}.mtl", car.name);
+        let obj_text = export::write_obj(selected, &mtl_name, |p, run| plan.name_for(p, run));
+        write(&out.join(format!("{}.obj", car.name)), obj_text.as_bytes())?;
+        write(&out.join(&mtl_name), export::write_mtl(&plan.materials).as_bytes())?;
 
-        // Only the OBJ needs the images beside it; the `.glb` carries its own.
-        if let Some(tpk) = &tpk {
+        if let Some(tpk) = tpk {
             let dir = out.join("tex");
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             for hash in &plan.textures {
                 if let Some(t) = tpk.texture(*hash) {
                     write_png(&dir.join(export::png_name(t)), t)?;
-                    written += 1;
+                    written.textures += 1;
                 }
             }
         }
     }
+    Ok(written)
+}
 
+/// The lines this car contributes to the run's output.
+fn report(
+    car: &Car,
+    out: &Path,
+    selected: &[&NfsMeshPart],
+    plan: &MaterialPlan,
+    written: &Written,
+) -> String {
     let tris: usize = selected.iter().map(|p| p.triangle_count()).sum();
     let mut report = String::new();
     let _ = writeln!(
@@ -184,17 +221,17 @@ fn one(
         plan.materials.len(),
         plan.textures.len()
     );
-    if want_glb {
-        let _ = writeln!(report, "  {}", out.join(&glb_name).display());
+    if written.glb {
+        let _ = writeln!(report, "  {}", out.join(format!("{}.glb", car.name)).display());
     }
-    if want_obj {
-        let _ = writeln!(report, "  {}", out.join(&obj_name).display());
-        let _ = writeln!(report, "  {}", out.join(&mtl_name).display());
+    if written.obj {
+        let _ = writeln!(report, "  {}", out.join(format!("{}.obj", car.name)).display());
+        let _ = writeln!(report, "  {}", out.join(format!("{}.mtl", car.name)).display());
     }
-    if written > 0 {
+    if written.textures > 0 {
         let _ = writeln!(report, "  {}/*.png", out.join("tex").display());
     }
-    Ok(report)
+    report
 }
 
 fn write_png(path: &Path, t: &NfsTexture) -> Result<()> {

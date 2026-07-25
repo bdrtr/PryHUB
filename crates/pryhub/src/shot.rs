@@ -67,8 +67,13 @@ impl PryHub {
             let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             let (w, h) = (image.width() as u32, image.height() as u32);
             match write_png(&shot.path, &rgba, w, h) {
-                Ok(()) => eprintln!("pryhub: {} ({w}x{h})", shot.path.display()),
-                Err(e) => eprintln!("pryhub: {}: {e}", shot.path.display()),
+                // On stdout as well as the log: a scripted screenshot's whole output is this line,
+                // and a caller should not have to raise a log level to find out where the file went.
+                Ok(()) => {
+                    log::info!(target: "shot", "{} ({w}x{h})", shot.path.display());
+                    println!("pryhub: {} ({w}x{h})", shot.path.display());
+                }
+                Err(e) => log::error!(target: "shot", "{}: {e}", shot.path.display()),
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

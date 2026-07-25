@@ -24,6 +24,9 @@ eframe = { version = "0.34.3", default-features = false, features = [
     "default_fonts",
 ] }
 egui = "0.34.3"
+# The logging facade — no dependencies of its own, and the one `wgpu`, `winit` and `eframe` already
+# write to, so installing a sink for it makes their diagnostics visible in the same stream.
+log = "0.4"
 # The 3D tab renders through eframe's own wgpu device; `bytemuck` is how vertex and uniform
 # structs reach it without unsafe.
 wgpu = "29"

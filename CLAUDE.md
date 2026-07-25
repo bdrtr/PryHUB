@@ -110,8 +110,25 @@ that does not keeps a hollow ring and is stored as a note. Names live in
 `$XDG_CONFIG_HOME/pryhub/names.tsv` (`hash<TAB>name`, hand-editable, written on each edit) and the
 texture tab prefers them over the file's truncated ones.
 
-**Smoothness is measured, not felt.** `PRYHUB_FRAME_LOG=1` prints each frame's cost split into jobs
-/ bars / screen. It is how the interface went from 7–9 ms a frame to under 0.5: the tree panel was
+### Two logs, and why they are not one
+
+* **The log panel** (`doc::Note`) is what the *file* said: a chunk that would not parse, a solid that
+  yielded no part, a rule's finding, where an export went. It is interface, it is in the interface's
+  language, and every line names a chunk so it can be clicked.
+* **`logging.rs`** is what the *program* did: job lifecycle and durations, frame timings, the GPU
+  backend's opinions. Nobody using the tool should have to see it. Levels come from `PRYHUB_LOG` —
+  `PRYHUB_LOG=info`, or per-target `PRYHUB_LOG=warn,jobs=debug,frame=trace` with longest-match
+  precedence — default `warn`, so it is silent unless something is wrong.
+
+It uses the `log` facade rather than an in-house macro because that is the interface `wgpu`, `winit`
+and `eframe` already speak: installing one sink makes their diagnostics arrive in the same stream at
+the same levels, which is exactly what is wanted the day a GPU refuses a surface. **The parser takes
+no logging dependency at all** — it *returns* its findings (`NfsError`, `validate::Report`,
+`Skipped`), so it stays usable from anywhere and testable without a logger. `ug2` likewise has none:
+its output *is* its report, and it has no interactive loop to instrument.
+
+**Smoothness is measured, not felt.** `PRYHUB_LOG=frame=trace` prints each frame's cost split into
+jobs / bars / screen. It is how the interface went from 7–9 ms a frame to under 0.5: the tree panel was
 drawing all 7,246 rows every frame (egui clipped the pixels but did the work), the discovery screen
 was copying the selected chunk's payload — 7.5 MB with the root selected — sixty times a second, and
 its candidate scoring reran while nothing changed. The rules that came out of it: **virtualise any

@@ -2151,6 +2151,7 @@ dependencies = [
  "eframe",
  "egui",
  "gizmo-nfs",
+ "log",
  "wgpu",
 ]
 

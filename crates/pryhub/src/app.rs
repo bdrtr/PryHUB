@@ -137,12 +137,6 @@ pub struct PryHub {
     pub texture_selection: Option<gizmo_nfs::AssetHash>,
     /// Uploaded texture handles, keyed by hash and by thumbnail-or-full-image.
     pub texture_cache: std::collections::HashMap<(u32, bool), egui::TextureHandle>,
-    /// `PRYHUB_FRAME_LOG=1`: print how long each frame took, and where it went.
-    ///
-    /// Read once at startup rather than per frame. It exists because "the interface feels slow" is
-    /// not something to fix by guessing: the tree panel was drawing all 7,246 rows every frame and
-    /// this is what said so.
-    frame_log: bool,
     /// Set when the density or language changed and the style must be rebuilt.
     pub(crate) restyle: bool,
     /// `--shot <path>`: draw a few frames, save the window as a PNG, and exit. The tool renders
@@ -189,7 +183,6 @@ impl PryHub {
             discover: crate::screens::discovery::State::default(),
             texture_selection: None,
             texture_cache: std::collections::HashMap::new(),
-            frame_log: std::env::var_os("PRYHUB_FRAME_LOG").is_some(),
             restyle: false,
             shot: shot.map(|p| crate::shot::Shot {
                 path: p.into(),
@@ -266,6 +259,15 @@ impl PryHub {
 
     /// Make a freshly parsed document the open one.
     fn adopt(&mut self, doc: Doc, path: &std::path::Path) {
+        log::info!(
+            target: "doc",
+            "{}: {} bytes, {} chunks, {} parts, {} notes",
+            path.display(),
+            doc.bytes.len(),
+            doc.rows.len(),
+            doc.parts.len(),
+            doc.notes.len()
+        );
         self.selection = self.pending_selection.take().or_else(|| doc.rows.first().map(|r| r.offset));
         self.collapsed.clear();
         self.error = None;
@@ -414,10 +416,15 @@ impl eframe::App for PryHub {
             }
         }
         self.screenshot(ui.ctx());
-        if self.frame_log {
+        // `PRYHUB_LOG=frame=trace`. Behind a level check rather than an env var of its own: the
+        // check is a load of an atomic, and one env var for every kind of diagnostic does not scale.
+        // "The interface feels slow" is not something to fix by guessing — this is what said the
+        // tree panel was drawing all 7,246 rows every frame.
+        if log::log_enabled!(target: "frame", log::Level::Trace) {
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
-            eprintln!(
-                "frame {:.2} ms · jobs {:.2} · bars {:.2} · screen {:.2}",
+            log::trace!(
+                target: "frame",
+                "{:.2} ms · jobs {:.2} · bars {:.2} · screen {:.2}",
                 ms(frame_start.elapsed()),
                 ms(after_jobs),
                 ms(after_bars - after_jobs),

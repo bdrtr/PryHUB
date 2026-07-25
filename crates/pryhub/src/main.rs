@@ -14,6 +14,7 @@ mod export;
 mod gpu;
 mod i18n;
 mod jobs;
+mod logging;
 mod names;
 mod panels;
 mod screens;
@@ -21,6 +22,8 @@ mod shot;
 mod theme;
 
 fn main() -> eframe::Result {
+    // Before anything else, so a failure during setup has somewhere to go.
+    logging::install();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1360.0, 840.0])
