@@ -140,6 +140,29 @@ proptest! {
         }
     }
 
+    /// The PNG reader is the newest untrusted input in the crate, and the only one whose bytes come
+    /// from outside the game entirely — a file a person chose in a chooser. Its allocation is driven
+    /// by a width and a height read out of a header, which is the shape this whole file exists to
+    /// watch. Gated with the feature that compiles it; `--features tools` and `--features png` both
+    /// turn it on.
+    #[cfg(feature = "png")]
+    #[test]
+    fn png_pixels_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _ = gizmo_nfs::export::png_pixels(&data);
+    }
+
+    /// And over bytes that begin like a PNG, so the decoder gets past its signature check and into
+    /// the header where the interesting numbers are. A uniform sample almost never does.
+    #[cfg(feature = "png")]
+    #[test]
+    fn png_pixels_never_panics_on_a_plausible_header(
+        tail in proptest::collection::vec(any::<u8>(), 0..512)
+    ) {
+        let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+        data.extend_from_slice(&tail);
+        let _ = gizmo_nfs::export::png_pixels(&data);
+    }
+
     // The compressor is the one function here that is asked to be *correct*, not merely
     // non-panicking: whatever it writes must read back as what it was given.
     #[test]

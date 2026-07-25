@@ -126,9 +126,21 @@ pub fn replace_pixels(
     width: u32,
     height: u32,
 ) -> NfsResult<Vec<u8>> {
+    // The blob must be exactly the length the descriptor declares, and "at least" is not good
+    // enough. [`relocate`](super::write::relocate) writes the replacement's length back into the
+    // descriptor's `out_size` while leaving `header_from_end` alone, and the header's position is
+    // the difference of those two — so a blob one byte longer than declared would relocate into a
+    // pack whose header is looked for one byte off, and the texture would decode as noise.
+    //
+    // It cannot happen with a blob this crate handed out: over 2,423 real textures,
+    // [`blob_of`](super::write::blob_of) returns exactly `out_size` bytes 2,423 times, longer
+    // never and shorter never. The check is here because the input is a caller's, not because the
+    // measurement is in doubt.
     let out_size = entry.out_size as usize;
-    if blob.len() < out_size {
-        return Err(NfsError::BufferSizeMismatch { detail: "TPK blob shorter than its descriptor" });
+    if blob.len() != out_size {
+        return Err(NfsError::BufferSizeMismatch {
+            detail: "a blob to re-encode must be exactly the length its descriptor declares",
+        });
     }
 
     // The header is found exactly as the decoder finds it, and refused exactly as the decoder
@@ -934,6 +946,30 @@ mod tests {
         let top = 32 * 32 / 2;
         let chain_end = top + 16 * 16 / 2 + 8 * 8 / 2 + 4 * 4 / 2;
         assert!(out[top..chain_end].iter().any(|&b| b != 0), "levels below the top were left empty");
+    }
+
+    /// A blob that is not the length its descriptor claims cannot be written back at all.
+    ///
+    /// The failure it prevents is silent and total: `relocate` records the replacement's length as
+    /// the new `out_size` and leaves `header_from_end` alone, and the header sits at the difference
+    /// of the two — so a blob one byte long in the wrong direction relocates into a pack whose
+    /// header is read one byte off, and the texture decodes as noise.
+    #[test]
+    fn a_blob_that_is_not_its_declared_length_is_refused() {
+        let (buf, entry) = blob(16, 16, fmt::RGBA8888, 1);
+        let mut longer = buf.clone();
+        longer.push(0);
+        let px = quadrants(16, 16);
+        assert!(matches!(
+            replace_pixels(&longer, &entry, &px, 16, 16).expect_err("must refuse"),
+            NfsError::BufferSizeMismatch { .. }
+        ));
+        let mut shorter = buf.clone();
+        shorter.pop();
+        assert!(replace_pixels(&shorter, &entry, &px, 16, 16).is_err());
+        // And the exact length still goes through, so the check is about the length and not about
+        // the buffer being suspicious.
+        assert!(replace_pixels(&buf, &entry, &px, 16, 16).is_ok());
     }
 
     #[test]

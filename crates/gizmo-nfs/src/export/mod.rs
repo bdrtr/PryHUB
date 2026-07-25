@@ -87,6 +87,20 @@ pub fn png_pixels(bytes: &[u8]) -> crate::NfsResult<(Vec<u8>, u32, u32)> {
     // types, and the match below is exhaustive over them.
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(io)?;
+    // The output buffer's size comes from the header's width × height, and allocating from an
+    // unchecked size field is the one thing this crate does not do — the `png` crate's own 64 MiB
+    // limit covers its internal buffers and not this one, so a four-byte IHDR claiming 65535 square
+    // would ask for seventeen gigabytes here before anything looked at the pixels.
+    //
+    // The cap is twice [`crate::texture`]'s own `MAX_DIM`, so it can never be the thing that refuses
+    // a legitimate replacement: the largest texture in the game is 1024².
+    const MAX_SIDE: u32 = 8192;
+    let (w, h) = reader.info().size();
+    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+        return Err(crate::NfsError::BufferSizeMismatch {
+            detail: "PNG dimensions out of range",
+        });
+    }
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).map_err(io)?;
     let (w, h) = (info.width as usize, info.height as usize);
@@ -211,5 +225,55 @@ mod tests {
     fn bytes_that_are_not_a_png_are_an_error_rather_than_a_panic() {
         assert!(png_pixels(b"not a png at all").is_err());
         assert!(png_pixels(&[]).is_err());
+    }
+
+    /// A header claiming an enormous image is refused before the buffer it asks for is allocated.
+    ///
+    /// Built by hand rather than by the encoder, because the encoder will not write one: the point
+    /// is a file whose IHDR promises more than its data delivers, which is what a hostile or a
+    /// truncated PNG looks like.
+    #[cfg(feature = "png")]
+    #[test]
+    fn a_png_claiming_an_enormous_image_is_refused_before_it_is_allocated() {
+        fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = (data.len() as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let mut crc = crc32(kind);
+            crc = crc32_continue(crc, data);
+            out.extend_from_slice(&crc.to_be_bytes());
+            out
+        }
+        // 60000 × 60000 RGBA would be 14 GB of output buffer.
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&60_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&60_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit, RGBA, deflate, adaptive, no interlace
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&chunk(b"IHDR", &ihdr));
+        png.extend_from_slice(&chunk(b"IDAT", &[]));
+        png.extend_from_slice(&chunk(b"IEND", &[]));
+        assert!(png_pixels(&png).is_err());
+    }
+
+    /// CRC-32 of a PNG chunk's type and data, so the fixture above is a file a decoder will read
+    /// far enough to reject for the right reason rather than for a bad checksum.
+    #[cfg(feature = "png")]
+    fn crc32(data: &[u8]) -> u32 {
+        // Zero, because `crc32_continue` un-finalises what it is given and a fresh run starts from
+        // the all-ones register: `0 ^ 0xFFFF_FFFF` is that register.
+        crc32_continue(0, data)
+    }
+
+    #[cfg(feature = "png")]
+    fn crc32_continue(crc: u32, data: &[u8]) -> u32 {
+        let mut c = crc ^ 0xFFFF_FFFF;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            }
+        }
+        c ^ 0xFFFF_FFFF
     }
 }
