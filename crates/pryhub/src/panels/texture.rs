@@ -56,85 +56,13 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         .default_size(260.0)
         .frame(egui::Frame::new().fill(token::BG).inner_margin(egui::Margin::same(8)))
         .show_inside(ui, |ui| {
-            // A panel only keeps the width it was given if its contents claim it; an image and a
-            // few short rows do not, and the panel would collapse to its 96 px minimum.
-            ui.set_min_width(ui.max_rect().width());
-            let Some(tex) = selected.and_then(|h| tpk.texture(h)) else {
-                ui.label(RichText::new(t.pick_texture).color(theme::muted(50)));
-                return;
-            };
-            let handle = upload(ui.ctx(), &mut app.texture_cache, tex, None);
-            // Fill the pane, upscaling a small image rather than leaving it postage-stamp sized —
-            // the size it is drawn at is stated underneath, and the point of a preview is to see
-            // the texels. The fitted size is computed here so no `ImageFit` rule can distort it.
-            let side = ui.available_width();
-            let natural = egui::vec2(tex.width.max(1) as f32, tex.height.max(1) as f32);
-            let fitted = natural * (side / natural.x.max(natural.y));
-            ui.add(egui::Image::new(&handle).fit_to_exact_size(fitted));
-            ui.add_space(theme::token::SPACE_2);
-            // A name from the dictionary wins over the file's own: the file's is truncated, and
-            // the dictionary's has been checked against the hash.
-            let shown = app.names.get(tex.hash.0).map(str::to_string).unwrap_or_else(|| label_of(tex));
-            ui.label(RichText::new(shown).font(theme::font::mono(12.0)));
-            for (k, v) in [
-                ("hash", format!("{:#010x}", tex.hash.0)),
-                ("size", format!("{} × {}", tex.width, tex.height)),
-                ("format", format!("{:?}", tex.source_format)),
-                ("opaque", format!("{}%", opaque_percent(tex))),
-            ] {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(k).size(11.0).color(theme::muted(60)));
-                    ui.label(RichText::new(v).font(theme::font::mono(11.5)));
-                });
-            }
-            ui.add_space(theme::token::SPACE_2);
-            // Just this one image. The toolbar's export writes the whole pack; someone who came
-            // for a single texture should not have to take 73.
-            if ui.button("PNG").on_hover_text(t.export_hint).clicked() {
-                save_one = Some(tex.hash);
-            }
+            save_one = preview(app, ui, tpk, selected);
         });
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(token::BG).inner_margin(egui::Margin::same(8)))
         .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{} {}", entries.len(), t.textures_count))
-                        .size(11.0)
-                        .color(theme::muted(55)),
-                );
-                if undecoded > 0 {
-                    // Said out loud: a contact sheet that quietly omits what it could not read
-                    // would have the user believe the car has fewer textures than it does.
-                    ui.label(
-                        RichText::new(format!("· {undecoded} {}", t.textures_undecoded))
-                            .size(11.0)
-                            .color(token::ACCENT_2),
-                    );
-                }
-            });
-            ui.add_space(theme::token::SPACE_1);
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for (hash, tex) in &entries {
-                        let handle = upload(ui.ctx(), &mut app.texture_cache, tex, Some(THUMB));
-                        let label = app.names.get(hash.0).map(str::to_string);
-                        let label = label.unwrap_or_else(|| label_of(tex));
-                        let resp = cell(ui, &handle, &label, selected == Some(**hash));
-                        if resp.clicked() {
-                            pick = Some(**hash);
-                        }
-                        resp.on_hover_text(format!(
-                            "{}\n{} × {} · {:?}",
-                            label_of(tex),
-                            tex.width,
-                            tex.height,
-                            tex.source_format
-                        ));
-                    }
-                });
-            });
+            pick = sheet(app, ui, &entries, selected, undecoded);
         });
 
     if let Some(hash) = pick {
@@ -143,6 +71,107 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     if let Some(hash) = save_one {
         app.export_now(crate::export::Kind::OneTexture(hash));
     }
+}
+
+/// The right-hand pane: the selected image at size, what the file says about it, and the button that
+/// writes just that one. Returns the texture to save, if it was pressed.
+fn preview(
+    app: &mut PryHub,
+    ui: &mut egui::Ui,
+    tpk: &gizmo_nfs::Tpk,
+    selected: Option<AssetHash>,
+) -> Option<AssetHash> {
+    let t = app.lang.strings();
+    let mut save_one = None;
+    // A panel only keeps the width it was given if its contents claim it; an image and a few short
+    // rows do not, and the panel would collapse to its 96 px minimum.
+    ui.set_min_width(ui.max_rect().width());
+    let Some(tex) = selected.and_then(|h| tpk.texture(h)) else {
+        ui.label(RichText::new(t.pick_texture).color(theme::muted(50)));
+        return None;
+    };
+    let handle = upload(ui.ctx(), &mut app.texture_cache, tex, None);
+    // Fill the pane, upscaling a small image rather than leaving it postage-stamp sized —
+    // the size it is drawn at is stated underneath, and the point of a preview is to see
+    // the texels. The fitted size is computed here so no `ImageFit` rule can distort it.
+    let side = ui.available_width();
+    let natural = egui::vec2(tex.width.max(1) as f32, tex.height.max(1) as f32);
+    let fitted = natural * (side / natural.x.max(natural.y));
+    ui.add(egui::Image::new(&handle).fit_to_exact_size(fitted));
+    ui.add_space(theme::token::SPACE_2);
+    // A name from the dictionary wins over the file's own: the file's is truncated, and
+    // the dictionary's has been checked against the hash.
+    let shown = app.names.get(tex.hash.0).map(str::to_string).unwrap_or_else(|| label_of(tex));
+    ui.label(RichText::new(shown).font(theme::font::mono(12.0)));
+    for (k, v) in [
+        ("hash", format!("{:#010x}", tex.hash.0)),
+        ("size", format!("{} × {}", tex.width, tex.height)),
+        ("format", format!("{:?}", tex.source_format)),
+        ("opaque", format!("{}%", tex.opaque_permille() / 10)),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(k).size(11.0).color(theme::muted(60)));
+            ui.label(RichText::new(v).font(theme::font::mono(11.5)));
+        });
+    }
+    ui.add_space(theme::token::SPACE_2);
+    // Just this one image. The toolbar's export writes the whole pack; someone who came
+    // for a single texture should not have to take 73.
+    if ui.button("PNG").on_hover_text(t.export_hint).clicked() {
+        save_one = Some(tex.hash);
+    }
+    save_one
+}
+
+/// The contact sheet: every decoded texture as a thumbnail, and the count of the ones that could
+/// not be read. Returns the texture that was clicked.
+fn sheet(
+    app: &mut PryHub,
+    ui: &mut egui::Ui,
+    entries: &[(&AssetHash, &NfsTexture)],
+    selected: Option<AssetHash>,
+    undecoded: usize,
+) -> Option<AssetHash> {
+    let t = app.lang.strings();
+    let mut pick = None;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{} {}", entries.len(), t.textures_count))
+                .size(11.0)
+                .color(theme::muted(55)),
+        );
+        if undecoded > 0 {
+            // Said out loud: a contact sheet that quietly omits what it could not read
+            // would have the user believe the car has fewer textures than it does.
+            ui.label(
+                RichText::new(format!("· {undecoded} {}", t.textures_undecoded))
+                    .size(11.0)
+                    .color(token::ACCENT_2),
+            );
+        }
+    });
+    ui.add_space(theme::token::SPACE_1);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (hash, tex) in entries {
+                let handle = upload(ui.ctx(), &mut app.texture_cache, tex, Some(THUMB));
+                let label = app.names.get(hash.0).map(str::to_string);
+                let label = label.unwrap_or_else(|| label_of(tex));
+                let resp = cell(ui, &handle, &label, selected == Some(**hash));
+                if resp.clicked() {
+                    pick = Some(**hash);
+                }
+                resp.on_hover_text(format!(
+                    "{}\n{} × {} · {:?}",
+                    label_of(tex),
+                    tex.width,
+                    tex.height,
+                    tex.source_format
+                ));
+            }
+        });
+    });
+    pick
 }
 
 /// One cell of the contact sheet: the thumbnail in a square slot, its name beneath. The slot is
@@ -229,17 +258,6 @@ fn label_of(tex: &NfsTexture) -> String {
     } else {
         tex.name.clone()
     }
-}
-
-/// How much of the image is opaque — the number that tells an overlay from a full-coverage map.
-///
-/// Every fourth texel, not all of them: this runs once a frame while the preview is open, and a
-/// coverage figure read off a quarter of a 512×512 image is the same figure.
-fn opaque_percent(tex: &NfsTexture) -> usize {
-    let sampled = tex.rgba.chunks_exact(4).step_by(4);
-    let (opaque, total) =
-        sampled.fold((0usize, 0usize), |(o, n), px| (o + usize::from(px[3] > 200), n + 1));
-    opaque * 100 / total.max(1)
 }
 
 fn note(ui: &mut egui::Ui, message: &str) {

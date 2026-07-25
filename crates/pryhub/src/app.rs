@@ -7,9 +7,9 @@
 
 use crate::doc::{Doc, Level, Note};
 use crate::i18n::Lang;
-use crate::theme::{self, token, Density};
+use crate::theme::{self, Density};
 use crate::screens;
-use egui::{Align, Layout, RichText};
+
 
 /// Which screen the top bar has selected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -135,22 +135,14 @@ pub struct PryHub {
     /// Uploaded texture handles, keyed by hash and by thumbnail-or-full-image.
     pub texture_cache: std::collections::HashMap<(u32, bool), egui::TextureHandle>,
     /// Set when the density or language changed and the style must be rebuilt.
-    restyle: bool,
+    pub(crate) restyle: bool,
     /// `--shot <path>`: draw a few frames, save the window as a PNG, and exit. The tool renders
     /// through a GPU surface, so this is the only way to check the interface on a machine whose
     /// compositor will not hand out a screen grab — and it doubles as a way to keep a visual
     /// record of the design port.
-    shot: Option<Shot>,
+    pub(crate) shot: Option<crate::shot::Shot>,
 }
 
-/// A pending `--shot` request.
-struct Shot {
-    path: std::path::PathBuf,
-    /// Frames to draw before asking for the image: the first frame has no layout yet, and the
-    /// font atlas is built lazily.
-    warmup: u8,
-    asked: bool,
-}
 
 impl PryHub {
     /// Build the app, optionally opening a file and/or saving a screenshot.
@@ -188,7 +180,7 @@ impl PryHub {
             texture_selection: None,
             texture_cache: std::collections::HashMap::new(),
             restyle: false,
-            shot: shot.map(|p| Shot { path: p.into(), warmup: 4, asked: false }),
+            shot: shot.map(|p| crate::shot::Shot { path: p.into(), warmup: 4, asked: false }),
         };
         if let Some(path) = open {
             app.open(std::path::Path::new(&path));
@@ -399,77 +391,6 @@ impl eframe::App for PryHub {
 }
 
 impl PryHub {
-    /// Brand · screen nav · open/export · language · density.
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let t = self.lang.strings();
-        // Reported by the button, acted on after the bar is drawn — the export needs the whole
-        // app, and the bar is holding it while it draws.
-        let mut exported = false;
-        egui::Panel::top("topbar")
-            .exact_size(44.0)
-            .frame(egui::Frame::new().fill(token::SURFACE).inner_margin(egui::Margin::symmetric(12, 0)))
-            .show_inside(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let brand = ui.add(
-                        egui::Label::new(
-                            RichText::new("PryHUB").font(theme::font::heading(19.0)).color(token::TEXT),
-                        )
-                        .sense(egui::Sense::click()),
-                    );
-                    if brand.clicked() {
-                        self.screen = Screen::Welcome;
-                    }
-                    ui.label(RichText::new(t.brand_sub).size(10.0).color(theme::muted(50)));
-                    ui.add_space(theme::token::SPACE_2);
-
-                    for (screen, label) in [
-                        (Screen::Workspace, t.nav_workspace),
-                        (Screen::Validation, t.nav_validation),
-                        (Screen::Discovery, t.nav_discovery),
-                        (Screen::Diff, t.nav_diff),
-                        (Screen::Dictionary, t.nav_dict),
-                    ] {
-                        if nav_button(ui, label, self.screen == screen).clicked() {
-                            self.screen = screen;
-                        }
-                    }
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(self.density.label()).on_hover_text("yoğunluk / density").clicked() {
-                            self.density = self.density.next();
-                            self.restyle = true;
-                        }
-                        if ui.button(self.lang.label()).clicked() {
-                            self.lang = self.lang.other();
-                        }
-                        ui.separator();
-                        if ui.button(t.m_open).clicked() {
-                            self.screen = Screen::Welcome;
-                        }
-                        // Enabled only with a file open: a button that can do nothing is worse
-                        // than one that is visibly not for now.
-                        let can = self.doc.is_some();
-                        if ui
-                            .add_enabled(can, egui::Button::new(t.m_export))
-                            .on_hover_text(t.export_hint)
-                            .clicked()
-                        {
-                            exported = true;
-                        }
-                    });
-                });
-            });
-        if exported {
-            // Which of the three the button means is a question about the interface, so it is
-            // answered here rather than inside the job.
-            let kind = match self.tab {
-                Tab::Texture => crate::export::Kind::Textures,
-                _ => crate::export::Kind::Model,
-            };
-            self.export_now(kind);
-        }
-    }
-
     /// Put an export's result in the log — the design's place for "işlem çıktıları", and the only
     /// place the written paths are stated. A failure is a log line too, not a modal: the file is
     /// still open and the user has lost nothing.
@@ -499,165 +420,6 @@ impl PryHub {
         };
         self.log.push(note);
     }
-
-    /// File · size · chunk count · selection · codec · scale.
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let t = self.lang.strings();
-        let busy = self.jobs.busy();
-        egui::Panel::bottom("statusbar")
-            .exact_size(22.0)
-            .frame(egui::Frame::new().fill(token::SURFACE).inner_margin(egui::Margin::symmetric(10, 0)))
-            .show_inside(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let small = |ui: &mut egui::Ui, s: String, strong: bool| {
-                        let mut txt = RichText::new(s).font(theme::font::mono(10.5));
-                        txt = if strong { txt.color(token::TEXT) } else { txt.color(theme::muted(60)) };
-                        ui.label(txt);
-                    };
-                    match &self.doc {
-                        Some(doc) => {
-                            small(ui, doc.file_name(), true);
-                            small(ui, format!("{:.2} MB", doc.bytes.len() as f32 / (1024.0 * 1024.0)), false);
-                            small(ui, format!("{} {}", doc.rows.len(), t.st_chunks), false);
-                            if let Some(sel) = self.selection.and_then(|o| doc.node_at(o)) {
-                                small(
-                                    ui,
-                                    format!("{} {:#010x} · {} B", t.st_sel, sel.header.id, sel.header.size),
-                                    false,
-                                );
-                            }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                small(ui, t.st_scale.to_string(), false);
-                                // What the worker is doing, if anything. An immediate-mode
-                                // interface cannot show a frozen frame, so it has to show a word.
-                                if let Some(job) = busy {
-                                    ui.label(
-                                        RichText::new(format!("· {job}…"))
-                                            .font(theme::font::mono(10.5))
-                                            .color(token::ACCENT),
-                                    );
-                                }
-                                small(ui, format!("{:?}", doc.codec), false);
-                            });
-                        }
-                        None => match busy {
-                            Some(job) => small(ui, format!("{job}…"), true),
-                            None => small(ui, t.no_file.to_string(), false),
-                        },
-                    }
-                });
-            });
-    }
-
-}
-
-impl PryHub {
-    /// Drive a pending `--shot`: warm up, ask for the image, save it, quit.
-    fn screenshot(&mut self, ctx: &egui::Context) {
-        // Opening and decoding are jobs now, so a screenshot taken on frame four would catch an
-        // empty window. Wait for the worker to go quiet first — the flag exists to check the
-        // interface, and an interface that has not loaded anything yet is not the one to check.
-        let busy = self.jobs.busy().is_some();
-        let Some(shot) = &mut self.shot else { return };
-        if busy {
-            ctx.request_repaint();
-            return;
-        }
-        if shot.warmup > 0 {
-            shot.warmup -= 1;
-            ctx.request_repaint();
-            return;
-        }
-        if !shot.asked {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-            shot.asked = true;
-            ctx.request_repaint();
-            return;
-        }
-        let image = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
-        if let Some(image) = image {
-            let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
-            let (w, h) = (image.width() as u32, image.height() as u32);
-            match write_png(&shot.path, &rgba, w, h) {
-                Ok(()) => eprintln!("pryhub: {} ({w}x{h})", shot.path.display()),
-                Err(e) => eprintln!("pryhub: {}: {e}", shot.path.display()),
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        ctx.request_repaint();
-    }
-}
-
-/// Write RGBA8 as a PNG. Hand-rolled (stored deflate + CRC) so a debugging convenience does not
-/// add a dependency to the tool everyone builds.
-fn write_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) -> std::io::Result<()> {
-    use std::io::Write as _;
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc = 0xFFFF_FFFFu32;
-        for &b in data {
-            crc ^= u32::from(b);
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-            }
-        }
-        !crc
-    }
-    fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], body: &[u8]) {
-        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        let mut with_tag = tag.to_vec();
-        with_tag.extend_from_slice(body);
-        out.extend_from_slice(&with_tag);
-        out.extend_from_slice(&crc32(&with_tag).to_be_bytes());
-    }
-    // Raw scanlines: filter byte 0 per row.
-    let mut raw = Vec::with_capacity((w as usize * 4 + 1) * h as usize);
-    for y in 0..h as usize {
-        raw.push(0);
-        let row = y * w as usize * 4;
-        raw.extend_from_slice(&rgba[row..row + w as usize * 4]);
-    }
-    // zlib stream with stored (uncompressed) deflate blocks — valid, just not small.
-    let mut z = vec![0x78, 0x01];
-    let mut adler = (1u32, 0u32);
-    for &b in &raw {
-        adler.0 = (adler.0 + u32::from(b)) % 65521;
-        adler.1 = (adler.1 + adler.0) % 65521;
-    }
-    for (i, block) in raw.chunks(65535).enumerate() {
-        let last = u8::from((i + 1) * 65535 >= raw.len());
-        z.push(last);
-        z.extend_from_slice(&(block.len() as u16).to_le_bytes());
-        z.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
-        z.extend_from_slice(block);
-    }
-    z.extend_from_slice(&((adler.1 << 16) | adler.0).to_be_bytes());
-
-    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&w.to_be_bytes());
-    ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
-    chunk(&mut png, b"IHDR", &ihdr);
-    chunk(&mut png, b"IDAT", &z);
-    chunk(&mut png, b"IEND", &[]);
-    std::fs::File::create(path)?.write_all(&png)
-}
-
-/// A top-bar navigation button: flat, with the accent underline the design uses for "current".
-fn nav_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    let color = if active { token::ACCENT } else { theme::muted(65) };
-    let text = RichText::new(label).font(theme::font::heading(11.5)).color(color);
-    let resp = ui.add(egui::Button::new(text).fill(egui::Color32::TRANSPARENT).frame(false));
-    if active {
-        let r = resp.rect;
-        ui.painter().hline(r.x_range(), r.bottom() + 2.0, egui::Stroke::new(2.0_f32, token::ACCENT));
-    }
-    resp
 }
 
 #[cfg(test)]

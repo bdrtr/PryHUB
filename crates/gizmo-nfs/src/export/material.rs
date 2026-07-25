@@ -8,7 +8,7 @@
 use crate::export::{obj::Material, png_name};
 use crate::parts::{group_of, Grp};
 use crate::texture::Tpk;
-use crate::types::{AssetHash, NfsMeshPart};
+use crate::types::{AssetHash, NfsMeshPart, NfsTexture};
 use std::collections::BTreeMap;
 
 /// The material set an export needs, and the mapping from a part's run to a `newmtl` name.
@@ -46,8 +46,7 @@ impl MaterialPlan {
                 if seen.insert(name.clone(), ()).is_none() {
                     let image = tex.and_then(|h| tpk?.texture(h));
                     let map = image.map(|t| format!("tex/{}", png_name(t)));
-                    let map_is_cutout =
-                        image.is_some_and(|t| t.rgba.chunks_exact(4).any(|px| px[3] < 250));
+                    let map_is_cutout = image.is_some_and(NfsTexture::has_transparency);
                     if let Some(h) = tex {
                         plan.textures.push(h);
                     }

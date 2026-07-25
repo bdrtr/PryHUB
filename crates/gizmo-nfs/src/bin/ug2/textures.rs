@@ -17,8 +17,8 @@ pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
         // opaque% and mean luminance say whether a map is an alpha overlay (mostly transparent)
         // or a full-coverage image — the difference that decides whether it can be composited
         // over the paint as a detail layer.
+        let opaque = t.opaque_permille() / 10;
         let texels = (t.rgba.len() / 4).max(1);
-        let opaque = t.rgba.chunks_exact(4).filter(|px| px[3] > 200).count() * 100 / texels;
         let lum: usize =
             t.rgba.chunks_exact(4).map(|px| (px[0] as usize + px[1] as usize + px[2] as usize) / 3).sum();
         outln!(

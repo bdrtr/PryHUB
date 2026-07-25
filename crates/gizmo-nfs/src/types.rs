@@ -201,6 +201,36 @@ impl NfsTexture {
         !self.name.is_empty() && crate::hash::string_hash(&self.name) == self.hash.0
     }
 
+    /// How much of the image is opaque, in parts per thousand.
+    ///
+    /// One place rather than four: the CLI's readout, the app's preview, the game's overlay guard and
+    /// this crate's own material choice all used to compute it separately, with three different
+    /// thresholds between them. Every fourth texel is sampled — a coverage figure taken from a
+    /// quarter of a 512×512 image is the same figure, and this is called per frame while a preview
+    /// is open.
+    #[must_use]
+    pub fn opaque_permille(&self) -> u32 {
+        let (opaque, seen) = self
+            .rgba
+            .chunks_exact(4)
+            .step_by(4)
+            .fold((0u32, 0u32), |(o, n), px| (o + u32::from(px[3] > 200), n + 1));
+        if seen == 0 {
+            return 0;
+        }
+        opaque * 1000 / seen
+    }
+
+    /// Whether the image has any real transparency in it.
+    ///
+    /// Exact rather than sampled, and a different question from [`Self::opaque_permille`]: a single
+    /// transparent texel is enough to make an image a cutout, and binding an opaque one as an alpha
+    /// map makes a whole panel vanish in some importers.
+    #[must_use]
+    pub fn has_transparency(&self) -> bool {
+        self.rgba.chunks_exact(4).any(|px| px[3] < 250)
+    }
+
     /// Whether this texture is another one's `_MASK` companion — **seeing through truncation**.
     ///
     /// On a long car name the mask loses its tail and arrives under the same name as the map it

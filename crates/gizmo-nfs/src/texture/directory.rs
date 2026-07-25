@@ -26,17 +26,25 @@ pub struct TpkEntry {
     pub header_from_end: u32,
 }
 
-/// Find the payload of the first chunk (top-level or descendant) with `id`.
-pub(super) fn find_leaf<'a>(roots: &[ChunkNode], id: u32, root_buf: &'a [u8]) -> Option<&'a [u8]> {
+/// Find the first chunk (top-level or descendant) with `id`.
+///
+/// `ChunkNode::find` searches a node's *descendants*, so a forest needs this wrapper to also
+/// consider the roots themselves.
+pub(crate) fn find_chunk(roots: &[ChunkNode], id: u32) -> Option<&ChunkNode> {
     for r in roots {
         if r.header.id == id {
-            return Some(r.data(root_buf));
+            return Some(r);
         }
         if let Some(n) = r.find(id) {
-            return Some(n.data(root_buf));
+            return Some(n);
         }
     }
     None
+}
+
+/// The payload of that chunk.
+pub(super) fn find_leaf<'a>(roots: &[ChunkNode], id: u32, root_buf: &'a [u8]) -> Option<&'a [u8]> {
+    find_chunk(roots, id).map(|n| n.data(root_buf))
 }
 
 /// Parse the fixed-stride descriptor table (trailing partial bytes ignored).

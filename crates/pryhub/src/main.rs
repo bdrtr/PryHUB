@@ -8,6 +8,7 @@
 //! inspector · log · status bar) over one open file, with the selection shared by all of them.
 
 mod app;
+mod chrome;
 mod doc;
 mod export;
 mod gpu;
@@ -16,6 +17,7 @@ mod jobs;
 mod names;
 mod panels;
 mod screens;
+mod shot;
 mod theme;
 
 fn main() -> eframe::Result {

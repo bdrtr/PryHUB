@@ -85,99 +85,26 @@ pub struct Doc {
 impl Doc {
     /// Read and analyse a file. Only a read error is fatal — a malformed *chunk stream* still
     /// yields whatever prefix parsed, with a note saying so.
+    ///
+    /// Four passes, each allowed to fail without taking the others down: decompress, walk the chunk
+    /// tree, parse the geometry, run the checks. Every failure is a note rather than an error
+    /// return, because a half-readable file is exactly what someone opens this tool for.
     pub fn open(path: &Path) -> Result<Self, String> {
         let raw = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let codec = gizmo_nfs::compression::detect(&raw);
         let mut notes = Vec::new();
-        let bytes = match codec {
-            gizmo_nfs::compression::Codec::None => raw,
-            _ => match gizmo_nfs::compression::decompress(&raw) {
-                Ok(b) => {
-                    notes.push(Note {
-                        level: Level::Info,
-                        chunk: None,
-                        chunk_id: format!("{codec:?}"),
-                        message: format!("{} bayt → {} bayt açıldı", raw.len(), b.len()),
-                    });
-                    b
-                }
-                Err(e) => {
-                    notes.push(Note {
-                        level: Level::Error,
-                        chunk: None,
-                        chunk_id: format!("{codec:?}"),
-                        message: format!("açılamadı: {e} — ham baytlar okunuyor"),
-                    });
-                    raw
-                }
-            },
-        };
-
-        // Tolerant on purpose: a file whose tail is not a chunk stream (tool-compiled TPKs do this)
-        // still shows the part that is.
-        let opts = WalkOptions { stop_on_overrun: true, ..WalkOptions::default() };
-        let roots = match ChunkNode::parse_with(&bytes, opts) {
-            Ok(r) => r,
-            Err(e) => {
-                notes.push(Note {
-                    level: Level::Error,
-                    chunk: None,
-                    chunk_id: String::new(),
-                    message: format!("chunk ağacı okunamadı: {e}"),
-                });
-                Vec::new()
-            }
-        };
+        let codec = gizmo_nfs::compression::detect(&raw);
+        let bytes = decompressed(raw, codec, &mut notes);
+        let roots = chunk_tree(&bytes, &mut notes);
 
         let mut rows = Vec::new();
         for r in &roots {
             flatten(r, &bytes, 0, &mut rows);
         }
 
-        // The geometry pass is separate and allowed to fail: the tree above is still useful.
-        let parts = match gizmo_nfs::parse_geometry_reporting(&bytes) {
-            Ok((parts, dropped)) => {
-                // A solid that yields no part used to vanish without a word. Each one is now a log
-                // line naming the solid and the reason.
-                for s in dropped {
-                    notes.push(Note {
-                        level: Level::Warn,
-                        chunk: Some(s.offset),
-                        chunk_id: format!("{:#010x}", gizmo_nfs::geometry::format::SOLID),
-                        message: format!(
-                            "{} → parça yok: {}",
-                            if s.name.is_empty() { "(isimsiz)".to_string() } else { s.name.clone() },
-                            describe(s.reason)
-                        ),
-                    });
-                }
-                parts
-            }
-            Err(e) => {
-                notes.push(Note {
-                    level: Level::Warn,
-                    chunk: None,
-                    chunk_id: String::new(),
-                    message: format!("geometri okunamadı: {e}"),
-                });
-                Vec::new()
-            }
-        };
-
+        let parts = geometry(&bytes, &mut notes);
         // The checks run once, here — never per frame.
         let report = gizmo_nfs::validate::validate(&roots, &bytes);
-        for f in report.findings() {
-            notes.push(Note {
-                level: match f.severity {
-                    gizmo_nfs::validate::Severity::Error => Level::Error,
-                    gizmo_nfs::validate::Severity::Warn => Level::Warn,
-                    _ => Level::Info,
-                },
-                chunk: Some(f.chunk_offset),
-                chunk_id: format!("{:#010x}", f.chunk_id),
-                message: format!("{}: {}", f.subject, f.message),
-            });
-        }
+        note_findings(&report, &mut notes);
 
         notes.push(Note {
             level: Level::Info,
@@ -186,16 +113,7 @@ impl Doc {
             message: format!("{} chunk · {} parça", rows.len(), parts.len()),
         });
 
-        Ok(Self {
-            path: path.to_path_buf(),
-            bytes,
-            codec,
-            roots,
-            rows,
-            parts,
-            report,
-            notes,
-        })
+        Ok(Self { path: path.to_path_buf(), bytes, codec, roots, rows, parts, report, notes })
     }
 
     /// The node whose header sits at `offset`.
@@ -278,6 +196,105 @@ impl Doc {
     #[must_use]
     pub fn file_name(&self) -> String {
         self.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    }
+}
+
+/// Decompress when the magic says so, and say what happened either way. A codec that fails leaves
+/// the raw bytes in place: a file that will not decompress is still worth looking at as bytes.
+fn decompressed(
+    raw: Vec<u8>,
+    codec: gizmo_nfs::compression::Codec,
+    notes: &mut Vec<Note>,
+) -> Vec<u8> {
+    if matches!(codec, gizmo_nfs::compression::Codec::None) {
+        return raw;
+    }
+    match gizmo_nfs::compression::decompress(&raw) {
+        Ok(b) => {
+            notes.push(Note {
+                level: Level::Info,
+                chunk: None,
+                chunk_id: format!("{codec:?}"),
+                message: format!("{} bayt → {} bayt açıldı", raw.len(), b.len()),
+            });
+            b
+        }
+        Err(e) => {
+            notes.push(Note {
+                level: Level::Error,
+                chunk: None,
+                chunk_id: format!("{codec:?}"),
+                message: format!("açılamadı: {e} — ham baytlar okunuyor"),
+            });
+            raw
+        }
+    }
+}
+
+/// Walk the chunk tree, tolerantly: a file whose tail is not a chunk stream (tool-compiled TPKs do
+/// this) still shows the part that is.
+fn chunk_tree(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<ChunkNode> {
+    let opts = WalkOptions { stop_on_overrun: true, ..WalkOptions::default() };
+    match ChunkNode::parse_with(bytes, opts) {
+        Ok(r) => r,
+        Err(e) => {
+            notes.push(Note {
+                level: Level::Error,
+                chunk: None,
+                chunk_id: String::new(),
+                message: format!("chunk ağacı okunamadı: {e}"),
+            });
+            Vec::new()
+        }
+    }
+}
+
+/// Parse the geometry, and name every solid that yielded no part.
+///
+/// Separate from the tree and allowed to fail: the tree is useful without it. A dropped solid used
+/// to vanish without a word, which is how ~2,500 of them once went missing unnoticed.
+fn geometry(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<NfsMeshPart> {
+    match gizmo_nfs::parse_geometry_reporting(bytes) {
+        Ok((parts, dropped)) => {
+            for s in dropped {
+                notes.push(Note {
+                    level: Level::Warn,
+                    chunk: Some(s.offset),
+                    chunk_id: format!("{:#010x}", gizmo_nfs::geometry::format::SOLID),
+                    message: format!(
+                        "{} → parça yok: {}",
+                        if s.name.is_empty() { "(isimsiz)".to_string() } else { s.name.clone() },
+                        describe(s.reason)
+                    ),
+                });
+            }
+            parts
+        }
+        Err(e) => {
+            notes.push(Note {
+                level: Level::Warn,
+                chunk: None,
+                chunk_id: String::new(),
+                message: format!("geometri okunamadı: {e}"),
+            });
+            Vec::new()
+        }
+    }
+}
+
+/// Turn the validation report into log lines.
+fn note_findings(report: &gizmo_nfs::validate::Report, notes: &mut Vec<Note>) {
+    for f in report.findings() {
+        notes.push(Note {
+            level: match f.severity {
+                gizmo_nfs::validate::Severity::Error => Level::Error,
+                gizmo_nfs::validate::Severity::Warn => Level::Warn,
+                _ => Level::Info,
+            },
+            chunk: Some(f.chunk_offset),
+            chunk_id: format!("{:#010x}", f.chunk_id),
+            message: format!("{}: {}", f.subject, f.message),
+        });
     }
 }
 

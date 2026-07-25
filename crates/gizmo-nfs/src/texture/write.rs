@@ -15,7 +15,7 @@
 //! When it does not fit, that is said plainly rather than worked around. Relocation is the next
 //! piece of work, and it needs the layout question answered properly.
 
-use super::directory::{parse_descriptors, DESCRIPTORS};
+use super::directory::{find_chunk, parse_descriptors, DESCRIPTORS};
 use crate::chunk::{ChunkNode, WalkOptions};
 use crate::error::{NfsError, NfsResult};
 use crate::types::AssetHash;
@@ -102,22 +102,11 @@ fn table(file: &[u8]) -> NfsResult<(Vec<super::TpkEntry>, usize)> {
     // directory with no wrapping chunk, and a strict walk overruns on them.
     let opts = WalkOptions { stop_on_overrun: true, ..Default::default() };
     let roots = ChunkNode::parse_with(file, opts)?;
-    let node = find(&roots, DESCRIPTORS)
+    let node = find_chunk(&roots, DESCRIPTORS)
         .ok_or(NfsError::CorruptArchive { detail: "TPK missing descriptor chunk 0x33310003" })?;
     Ok((parse_descriptors(node.data(file)), node.data_offset))
 }
 
-fn find(nodes: &[ChunkNode], id: u32) -> Option<&ChunkNode> {
-    for n in nodes {
-        if n.header.id == id {
-            return Some(n);
-        }
-        if let Some(found) = find(&n.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
 
 #[cfg(test)]
 mod tests {

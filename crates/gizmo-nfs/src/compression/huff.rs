@@ -157,6 +157,11 @@ fn getnum(b: &mut Bits) -> NfsResult<i32> {
 }
 
 /// Decompress a HUFF stream into its original bytes.
+/// Decompress a HUFF stream.
+///
+/// The five phases below are the format: a prologue, a canonical code-length table, a symbol table,
+/// the decode loop, and an optional whole-buffer delta filter. Each is its own function so the
+/// shape of the format is readable here rather than buried in 160 lines of bit twiddling.
 pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     let header = parse_header(buf)?;
     let out_len = header.uncompressed_size as usize;
@@ -166,7 +171,24 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     let stream = buf.get(16..).ok_or_else(|| err("truncated header"))?;
     let mut b = Bits::new(stream);
 
-    // ── Prologue: type word, uncompressed length, clue byte ──
+    let prologue = prologue(&mut b)?;
+    let lengths = code_lengths(&mut b)?;
+    let symbols = symbol_table(&mut b, lengths.numchars)?;
+    let mut out = decode_symbols(&mut b, &lengths, &symbols, prologue.clue, prologue.ulen)?;
+    undo_delta_filter(prologue.type_, &mut out);
+    Ok(out)
+}
+
+/// The stream's type word, its declared output length, and the escape ("clue") symbol.
+struct Prologue {
+    type_: u32,
+    ulen: usize,
+    clue: u8,
+}
+
+/// Read the prologue. The type word's top bit picks between 32-bit and 24-bit length fields, and
+/// its `0x100` bit means two words of something this decoder does not need are in the way.
+fn prologue(b: &mut Bits) -> NfsResult<Prologue> {
     let mut type_ = b.getbits(16);
     let ulen: u32 = if type_ & 0x8000 != 0 {
         // "Big" variant: 32-bit sizes.
@@ -194,9 +216,20 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     if ulen > MAX_OUTPUT {
         return Err(NfsError::Allocation { requested: ulen });
     }
+    Ok(Prologue { type_, ulen, clue })
+}
 
-    // ── Canonical code-length table ──
-    let mut bitnum = [0i32; MAX_LEN + 1];
+/// The canonical Huffman table: how many codes there are of each length, and what to subtract from
+/// a code of that length to get its symbol index.
+struct Lengths {
+    delta: [u32; MAX_LEN + 1],
+    /// Upper limit per length, against which the next 16 bits are compared to find the length.
+    cmp_tbl: [u32; MAX_LEN + 2],
+    mostbits: usize,
+    numchars: usize,
+}
+
+fn code_lengths(b: &mut Bits) -> NfsResult<Lengths> {
     let mut delta = [0u32; MAX_LEN + 1];
     let mut cmp_tbl = [0u32; MAX_LEN + 2];
     let mut numchars = 0i32;
@@ -208,11 +241,10 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
         }
         basecmp <<= 1;
         delta[numbits] = basecmp.wrapping_sub(numchars as u32);
-        let bn = getnum(&mut b)?;
+        let bn = getnum(b)?;
         if !(0..=256).contains(&bn) {
             return Err(err("bad code-length count"));
         }
-        bitnum[numbits] = bn;
         numchars += bn;
         basecmp = basecmp.wrapping_add(bn as u32);
         let cmp = if bn != 0 { (basecmp << (16 - numbits.min(16))) & 0xffff } else { 0 };
@@ -228,14 +260,16 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     if numchars <= 0 || numchars > 256 {
         return Err(err("bad symbol count"));
     }
-    let numchars = numchars as usize;
+    Ok(Lengths { delta, cmp_tbl, mostbits, numchars: numchars as usize })
+}
 
-    // ── Symbol table via "leap" decode (skip over used slots) ──
+/// Which byte each code stands for, read as "leaps" over the symbols already claimed.
+fn symbol_table(b: &mut Bits, numchars: usize) -> NfsResult<[u8; 256]> {
     let mut codetbl = [0u8; 256];
     let mut used = [false; 256];
     let mut nextchar: u8 = 0xFF;
     for slot in codetbl.iter_mut().take(numchars) {
-        let mut leap = getnum(&mut b)?.saturating_add(1);
+        let mut leap = getnum(b)?.saturating_add(1);
         if leap < 1 {
             return Err(err("bad symbol leap"));
         }
@@ -251,10 +285,22 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
         used[nextchar as usize] = true;
         *slot = nextchar;
     }
+    Ok(codetbl)
+}
 
-    // ── Main decode loop (quick-table-free canonical decode) ──
+/// The decode loop: read a code, emit its byte, and treat the clue symbol as run-length, a raw
+/// literal, or end-of-stream.
+fn decode_symbols(
+    b: &mut Bits,
+    lengths: &Lengths,
+    codetbl: &[u8; 256],
+    clue: u8,
+    ulen: usize,
+) -> NfsResult<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve(ulen).map_err(|_| NfsError::Allocation { requested: ulen })?;
+    // A malformed stream must not spin: every iteration either emits a byte or ends, so a bound of
+    // four times the declared output is generous and still finite.
     let mut guard = 0usize;
     let guard_max = ulen.saturating_mul(4).saturating_add(4096);
     while out.len() < ulen {
@@ -265,12 +311,12 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
         // Determine this code's length by comparing the top 16 bits against the limits.
         let cmp16 = b.bits >> 16;
         let mut len = 1usize;
-        while len < mostbits && cmp16 >= cmp_tbl[len] {
+        while len < lengths.mostbits && cmp16 >= lengths.cmp_tbl[len] {
             len += 1;
         }
         let code_val = b.bits >> (32 - len as u32);
         b.consume(len as u32);
-        let idx = code_val.wrapping_sub(delta[len]) as usize;
+        let idx = code_val.wrapping_sub(lengths.delta[len]) as usize;
         let code = *codetbl.get(idx).ok_or_else(|| err("symbol index out of range"))?;
 
         if code != clue {
@@ -278,7 +324,7 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
             continue;
         }
         // Clue escape: run-length, raw literal, or end-of-stream.
-        let runlen = getnum(&mut b)?;
+        let runlen = getnum(b)?;
         if runlen != 0 {
             if runlen < 0 {
                 return Err(err("negative run length"));
@@ -297,28 +343,29 @@ pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
         }
     }
     out.truncate(ulen);
+    Ok(out)
+}
 
-    // ── Output post-filter (image delta), selected by the type word ──
+/// Undo the whole-buffer delta pre-filter the type word selects: one pass of running sums, or two.
+fn undo_delta_filter(type_: u32, out: &mut [u8]) {
     match type_ {
         0x32fb | 0xb2fb => {
             let mut acc = 0u32;
-            for x in &mut out {
-                acc = acc.wrapping_add(*x as u32);
+            for x in out {
+                acc = acc.wrapping_add(u32::from(*x));
                 *x = acc as u8;
             }
         }
         0x34fb | 0xb4fb => {
             let (mut acc, mut acc2) = (0u32, 0u32);
-            for x in &mut out {
-                acc = acc.wrapping_add(*x as u32);
+            for x in out {
+                acc = acc.wrapping_add(u32::from(*x));
                 acc2 = acc2.wrapping_add(acc);
                 *x = acc2 as u8;
             }
         }
         _ => {}
     }
-
-    Ok(out)
 }
 
 fn first_four(buf: &[u8]) -> [u8; 4] {
