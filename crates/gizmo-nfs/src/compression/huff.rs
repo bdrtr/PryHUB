@@ -6,10 +6,18 @@
 //! literals that have no Huffman code, and for end-of-stream. An optional whole-buffer delta
 //! pre-filter (selected by the stream's type word) is undone at the end.
 //!
-//! The algorithm is a faithful port of EA's `LZCompress` `HUFF_decompress` (the same library
-//! NFSU2 calls natively), cross-checked against `dbalatoni13/nfsmw` and `NFSTools/GlobalLib`
-//! and validated on real NFSU2 texture blobs. This uses the simple, quick-table-free decode
-//! path (correctness over speed — texture blobs are small).
+//! The algorithm is a port of EA's `LZCompress` `HUFF_decompress` (the same library NFSU2 calls
+//! natively), cross-checked against `dbalatoni13/nfsmw` and `NFSTools/GlobalLib`. It uses the
+//! simple, quick-table-free decode path (correctness over speed — texture blobs are small).
+//!
+//! **What is locked and what is only transcribed.** Every HUFF blob in a real install — 52,390 of
+//! 52,390 — is type word `0xfb30`, version 1, header size `0x10`, flags 0. So the small-size
+//! (24-bit length) branch and the plain non-delta path are the ones the install exercises, and they
+//! are the ones validated byte-for-byte. The 32-bit-size branch (`type & 0x8000`), the skip-words
+//! branch (`type & 0x100`) and both delta pre-filters have never seen a real byte here; they are
+//! transcribed from the sources above and are the first place to look if a blob from another EA
+//! title reads as noise. This crate's habit is to say which is which rather than to call all of it
+//! validated.
 
 use crate::error::{NfsError, NfsResult};
 use crate::reader::ByteReader;
@@ -27,7 +35,11 @@ const MAX_LEN: usize = 32;
 pub struct HuffHeader {
     /// Declared size of the decompressed output.
     pub uncompressed_size: u32,
-    /// Declared size of the compressed stream, including this header.
+    /// Declared size of the compressed stream, **not** counting this 16-byte header.
+    ///
+    /// The opposite of [`crate::compression::jdlz`]'s field of the same name, which is why this
+    /// says so: measured over one install, `compressed_size + 16 == blob length` for 52,390 HUFF
+    /// blobs and `compressed_size == blob length` for none of them.
     pub compressed_size: u32,
 }
 
@@ -132,7 +144,12 @@ fn getnum(b: &mut Bits) -> NfsResult<i32> {
         b.left -= (n - 1) as i32;
         b.getbits(0); // refill only
     } else {
-        // A long run of leading zeros crossing the refill boundary.
+        // A long run of leading zeros crossing the refill boundary. The top bit has already been
+        // tested as zero above, so consume it before counting: the fast path skips it by shifting
+        // *before* its first test, and counting it here instead reads the same run as one bit
+        // wider. The two branches are one code — only where the terminating 1 falls decides which
+        // of them runs — so a stream must not decode differently for having a longer zero run.
+        b.getbits(1);
         loop {
             n += 1;
             if b.getbits(1) != 0 {
@@ -157,7 +174,6 @@ fn getnum(b: &mut Bits) -> NfsResult<i32> {
 }
 
 /// Decompress a HUFF stream into its original bytes.
-/// Decompress a HUFF stream.
 ///
 /// The five phases below are the format: a prologue, a canonical code-length table, a symbol table,
 /// the decode loop, and an optional whole-buffer delta filter. Each is its own function so the
@@ -268,10 +284,17 @@ fn symbol_table(b: &mut Bits, numchars: usize) -> NfsResult<[u8; 256]> {
     let mut codetbl = [0u8; 256];
     let mut used = [false; 256];
     let mut nextchar: u8 = 0xFF;
-    for slot in codetbl.iter_mut().take(numchars) {
+    for (claimed, slot) in codetbl.iter_mut().take(numchars).enumerate() {
+        // A leap counts *free* slots, so it can never exceed how many are left: asking for the
+        // n-th free byte when only m < n remain means walking the alphabet round again and
+        // claiming one twice, which no encoder can mean. Unbounded, this is worse than merely
+        // wrong — `getnum` legitimately returns up to `i32::MAX`, and the walk below only counts
+        // down when it lands on a free slot, so 256 maximal leaps in 1,952 bytes spin for hours.
+        // Bounded, the walk is at most one lap: a full cycle of 256 meets every free slot once.
+        let free = 256 - claimed;
         let mut leap = getnum(b)?.saturating_add(1);
-        if leap < 1 {
-            return Err(err("bad symbol leap"));
+        if leap < 1 || leap as usize > free {
+            return Err(err("symbol leap past the end of the alphabet"));
         }
         loop {
             nextchar = nextchar.wrapping_add(1);
@@ -395,5 +418,54 @@ mod tests {
     fn a_truncated_header_is_an_error_not_a_panic() {
         assert!(decompress(b"HUFF").is_err());
         assert!(parse_header(&[]).is_err());
+    }
+
+    /// Append the low `n` bits of `v`, most significant first.
+    fn push_bits(bits: &mut Vec<u8>, v: u64, n: u32) {
+        for i in (0..n).rev() {
+            bits.push(((v >> i) & 1) as u8);
+        }
+    }
+
+    /// Under 2 KB that used to occupy the decoder for minutes.
+    ///
+    /// `getnum` legitimately returns values up to `i32::MAX`, and `symbol_table`'s walk counted
+    /// down once per *free* slot with no bound — so 256 maximal leaps is billions of iterations
+    /// from a file that declares a 16-byte output. The proptest in `tests/no_panic.rs` cannot
+    /// reach it: a maximal leap needs a 28-zero unary run followed by a 31-bit field, which random
+    /// bytes do not produce. And a hang is not a panic, so nothing else here would have caught it.
+    #[test]
+    fn a_maximal_symbol_leap_fails_instead_of_running_for_minutes() {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0x30fb, 16); // the type word every real blob carries
+        push_bits(&mut bits, 0, 8);
+        push_bits(&mut bits, 16, 16); // declared output length
+        push_bits(&mut bits, 0, 8); // clue
+        push_bits(&mut bits, 0, 6); // code lengths: one length holding all 256 symbols,
+        push_bits(&mut bits, 1, 1); // so the table closes immediately and the symbol
+        push_bits(&mut bits, 4, 8); // table below is reached with numchars = 256
+        for _ in 0..256 {
+            push_bits(&mut bits, 0, 28); // a 28-zero unary run …
+            push_bits(&mut bits, 1, 1); // … terminated, so the field is 31 bits wide
+            push_bits(&mut bits, 0, 31); // → getnum ≈ 2^31, i.e. a maximal leap
+        }
+        push_bits(&mut bits, 0, 64);
+
+        let body: Vec<u8> = bits
+            .chunks(8)
+            .map(|c| c.iter().fold(0u8, |b, bit| (b << 1) | bit) << (8 - c.len()))
+            .collect();
+        let mut buf = Vec::from(MAGIC.as_slice());
+        buf.extend_from_slice(&[1, 0x10, 0, 0]); // version, header size, flags
+        buf.extend_from_slice(&16u32.to_le_bytes()); // uncompressed size
+        buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&body);
+
+        let started = std::time::Instant::now();
+        let out = decompress(&buf);
+        // The bound is generous by three orders of magnitude: the fixed path answers in microseconds
+        // and the unbounded one took over fifteen seconds before it was killed.
+        assert!(started.elapsed().as_secs() < 5, "decompress took {:?}", started.elapsed());
+        assert!(matches!(out, Err(NfsError::Decompression { codec: "huff", .. })), "{out:?}");
     }
 }

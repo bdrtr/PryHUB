@@ -67,8 +67,10 @@ pub enum NfsError {
         /// The number of bytes that were requested.
         requested: usize,
     },
-    /// A code path that is deliberately not implemented yet (e.g. JDLZ decoding, which is
-    /// ported and validated against real files in a later phase).
+    /// A code path that is deliberately not implemented yet — in practice, a TPK pixel format this
+    /// crate does not decode (the palettised tags `0x08`/`0x80`/`0x81`, which are 51,871 of one
+    /// install's 54,885 declared textures). `feature` names the thing that was refused, and is the
+    /// only signal a caller gets about which.
     NotImplemented {
         /// Name of the unimplemented feature.
         feature: &'static str,

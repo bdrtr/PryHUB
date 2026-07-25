@@ -1,5 +1,5 @@
-//! Decoding one texture blob: JDLZ/RefPack decompression, the embedded `OldTextureInfo`
-//! header, and the pixel formats behind its `ImageCompressionType` code.
+//! Decoding one texture blob: JDLZ or HUFF decompression (by magic — a pack mixes both), the
+//! embedded `OldTextureInfo` header, and the pixel formats behind its `ImageCompressionType` code.
 
 use super::directory::{texture_name, TpkEntry};
 use super::dxt;
@@ -15,14 +15,22 @@ mod fmt {
     pub const DXT1: u8 = 0x22;
     pub const DXT3: u8 = 0x24;
     pub const DXT5: u8 = 0x26;
-    pub const P8: u8 = 0x08; // palettised — not decoded yet
+    pub const P8: u8 = 0x08; // palettised — sized, not decoded
 }
+
+// Palettised tags this crate does not decode, counted over one install's 54,885 descriptors:
+// `0x08` (25,960), `0x80` (24,071) and `0x81` (1,840). Together they are 94.5% of every TPK image
+// the game ships — the whole of every VINYLS.BIN — so "the formats we do not decode" is not a
+// footnote about a rare tag. Only `0x08` is named above; the other two are recorded here because a
+// number nobody wrote down is a number the next reader has to measure again.
 
 /// The largest texture dimension we will decode (guards allocation from a corrupt header).
 const MAX_DIM: usize = 4096;
 
-/// Decompress and decode a single texture into RGBA8. Errors (unsupported codec, malformed
-/// header, out-of-range dimensions) mean "skip this texture", not a corrupt file.
+/// Decompress and decode a single texture into RGBA8. Errors (a pixel format this crate does not
+/// decode, an unreadable blob, a malformed header, out-of-range dimensions) mean "skip this
+/// texture", not a corrupt file. The first is much the commonest: measured over one install, 51,871
+/// of 54,885 declared textures are palettised, which is the whole of every `VINYLS.BIN`.
 pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture> {
     let abs = e.abs_offset as usize;
     let end = abs.checked_add(e.size as usize).ok_or(NfsError::CorruptArchive {
@@ -32,7 +40,7 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
         .get(abs..end)
         .ok_or(NfsError::CorruptArchive { detail: "TPK texture blob out of range" })?;
 
-    // JDLZ / HUFF (HUFF currently returns NotImplemented → this texture is skipped).
+    // The codec is whatever the blob's magic says — JDLZ or HUFF, and a pack mixes both.
     let pool = crate::compression::decompress(blob)?;
     let out_size = e.out_size as usize;
     if pool.len() < out_size {
@@ -70,11 +78,17 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
         .get(0..top)
         .ok_or(NfsError::BufferSizeMismatch { detail: "TPK pixel data shorter than top mip" })?;
 
-    let (rgba, source_format) = match comp {
-        fmt::DXT1 => (dxt::decode_dxt1(pixels, width, height), TexFormat::Dxt1),
-        fmt::DXT3 => (dxt::decode_dxt3(pixels, width, height), TexFormat::Dxt3),
-        fmt::DXT5 => (dxt::decode_dxt5(pixels, width, height), TexFormat::Dxt5),
-        fmt::RGBA8888 => (unpack_bgra(pixels, width, height), TexFormat::Unknown(0x20)),
+    let source_format =
+        named_format(comp).ok_or(NfsError::NotImplemented { feature: "TPK pixel format" })?;
+    let rgba = match comp {
+        fmt::DXT1 => dxt::decode_dxt1(pixels, width, height),
+        fmt::DXT3 => dxt::decode_dxt3(pixels, width, height),
+        fmt::DXT5 => dxt::decode_dxt5(pixels, width, height),
+        // Decoded, so it is named. It reported as `Unknown(32)` for as long as the enum had no
+        // variant for it, which put "we do not know this format" next to every `_DOORLINE` in the
+        // install — a texture the crate unpacks correctly and has done all along.
+        fmt::RGBA8888 => unpack_bgra(pixels, width, height),
+        // `P8` reaches here: it has a name and a known size, and no decoder. See `named_format`.
         _ => return Err(NfsError::NotImplemented { feature: "TPK pixel format" }),
     };
 
@@ -86,6 +100,26 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
         rgba,
         source_format,
         format: PixelFormat::Rgba8,
+    })
+}
+
+/// The [`TexFormat`] a compression tag is reported as, or `None` for a tag this module has never
+/// been shown.
+///
+/// It is its own function so the invariant below it is testable against the decoder rather than
+/// against a second copy of the decoder's arm list: a tag the crate can *size* or *decode* must
+/// have a name, because `Unknown` next to a texture we have just finished unpacking tells the
+/// interface, the exporter and the next reader that we did not recognise it. `P8` is the one
+/// deliberate case of a name with no decoder — the size is arithmetic, the palette layout is not
+/// locked.
+fn named_format(comp: u8) -> Option<TexFormat> {
+    Some(match comp {
+        fmt::DXT1 => TexFormat::Dxt1,
+        fmt::DXT3 => TexFormat::Dxt3,
+        fmt::DXT5 => TexFormat::Dxt5,
+        fmt::RGBA8888 => TexFormat::Bgra8888,
+        fmt::P8 => TexFormat::P8,
+        _ => return None,
     })
 }
 
@@ -126,6 +160,34 @@ mod tests {
         assert_eq!(top_mip_size(16, 16, fmt::RGBA8888), Some(16 * 16 * 4));
         // Unknown format -> None.
         assert_eq!(top_mip_size(16, 16, 0x99), None);
+    }
+
+    /// Every format with a size is a format with a name. `top_mip_size` returning `Some` is the
+    /// crate saying "I know this layout"; reporting `Unknown` for the same tag would contradict it.
+    ///
+    /// It asserts through [`named_format`] — the function `decode_texture` itself reports from —
+    /// rather than against a hand-copied list of the same `fmt::` constants `top_mip_size` matches
+    /// on. Written that second way, as it first was, the two sets were the same five constants by
+    /// construction and the assertion could not fail: it passed identically with the format left
+    /// anonymous, which is the one thing it existed to catch.
+    #[test]
+    fn a_format_the_crate_can_measure_is_a_format_it_can_name() {
+        for comp in 0u8..=255 {
+            if top_mip_size(64, 64, comp).is_none() {
+                continue;
+            }
+            let named = named_format(comp);
+            assert!(
+                matches!(named, Some(f) if !matches!(f, TexFormat::Unknown(_))),
+                "0x{comp:02X} has a size but no name: {named:?}"
+            );
+        }
+        // Named individually as well, so reverting one arm fails here and not only in the loop.
+        assert_eq!(named_format(fmt::RGBA8888), Some(TexFormat::Bgra8888));
+        assert_eq!(named_format(fmt::DXT1), Some(TexFormat::Dxt1));
+        // The one name without a decoder, and a tag with neither.
+        assert_eq!(named_format(fmt::P8), Some(TexFormat::P8));
+        assert_eq!(named_format(0x99), None);
     }
 
     #[test]

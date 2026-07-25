@@ -153,6 +153,12 @@ pub enum TexFormat {
     Dxt3,
     /// S3TC / BC3.
     Dxt5,
+    /// Uncompressed 32-bit (`ImageCompressionType` `0x20`), stored **B,G,R,A** on disk.
+    ///
+    /// Named for the byte order the file actually holds rather than for the tag's usual spelling
+    /// in modding tools ("RGBA8888"): the other variants here name their on-disk format faithfully,
+    /// and a decoder that has to reverse the channels should not be the only thing that says so.
+    Bgra8888,
     /// 8-bit palettized.
     P8,
     /// An unrecognised format tag (value preserved for reverse-engineering).

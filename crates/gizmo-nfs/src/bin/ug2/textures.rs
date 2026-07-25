@@ -10,9 +10,19 @@ pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
         return Err(format!("{}: no readable TEXTURES.BIN", car.dir.display()));
     };
 
-    outln!("== {} textures ==", tpk.textures.len());
+    // What the file declares and what came back as pixels are two numbers, and saying only the
+    // second reports a short pack as a whole one — which is exactly what a tool for asking "what is
+    // in this file" must not do. The app draws the same subtraction beside its contact sheet.
+    let undecoded = tpk.entries.len().saturating_sub(tpk.textures.len());
+    if undecoded > 0 {
+        outln!("== {} textures ==  ({undecoded} declared but not decoded)", tpk.textures.len());
+    } else {
+        outln!("== {} textures ==", tpk.textures.len());
+    }
     let mut texs: Vec<_> = tpk.textures.values().collect();
-    texs.sort_by(|a, b| a.name.cmp(&b.name));
+    // By name, then by hash: names are truncated to a fixed field, so two textures routinely share
+    // one, and a tie broken by `HashMap` order made two runs of the same command differ.
+    texs.sort_by(|a, b| a.name.cmp(&b.name).then(a.hash.0.cmp(&b.hash.0)));
     for t in &texs {
         // opaque% and mean luminance say whether a map is an alpha overlay (mostly transparent)
         // or a full-coverage image — the difference that decides whether it can be composited

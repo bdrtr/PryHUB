@@ -12,8 +12,16 @@
 //! file moves — not one other offset changes — which is why this is safe to do without a theory of
 //! the whole layout.
 //!
-//! When it does not fit, that is said plainly rather than worked around. Relocation is the next
-//! piece of work, and it needs the layout question answered properly.
+//! When it does not fit, that is said plainly rather than worked around. **What the misses are is
+//! measured, not assumed**, and the answer is not the one this file used to give. Over one install:
+//! 1,402 of 2,123 blobs fit (66%) — but split by the codec the blob arrived in, that is 1,392 of
+//! 1,538 JDLZ-sourced (90.5%) and 10 of 585 HUFF-sourced (1.7%). A HUFF blob is re-packed with the
+//! only encoder there is, JDLZ, into a slot HUFF sized, so it does not fit by construction: 575 of
+//! the 721 misses are a missing *encoder*, and only 146 are a layout problem.
+//!
+//! So a HUFF encoder buys back four fifths of the gap without moving one byte, and relocation —
+//! rewriting every absolute offset — is what the remaining 146 need. Relocation is still the
+//! general answer, for the day a texture changes size at all; it is not the next piece of work.
 
 use super::directory::{find_chunk, parse_descriptors, DESCRIPTORS};
 use crate::chunk::{ChunkNode, WalkOptions};
@@ -31,8 +39,9 @@ const SIZE_FIELD: usize = 8;
 /// editing the front of it and leaving the rest alone.
 ///
 /// # Errors
-/// When the hash is not in the pack, or its blob cannot be decompressed (a HUFF-compressed texture
-/// still cannot be read, so it cannot be written either).
+/// When the hash is not in the pack, when its blob lies outside the file, or when the stream will
+/// not decompress. The codec is not a limit here — whatever the magic says (JDLZ, HUFF or RefPack)
+/// is read. It is a limit on the way back: see [`replace_blob`].
 pub fn blob_of(file: &[u8], hash: AssetHash) -> NfsResult<Vec<u8>> {
     let (entries, _) = table(file)?;
     let entry = entries
@@ -56,7 +65,9 @@ pub fn blob_of(file: &[u8], hash: AssetHash) -> NfsResult<Vec<u8>> {
 /// - The hash is not in the pack.
 /// - `blob` is not the length the descriptor declares.
 /// - The recompressed blob is larger than the slot the old one occupied. Nothing is written; the
-///   caller is told rather than silently overwriting whatever follows.
+///   caller is told rather than silently overwriting whatever follows. This is where the codec
+///   asymmetry bites: JDLZ is the only encoder here, so a blob that arrived as HUFF goes back as
+///   JDLZ into a slot HUFF sized, and measured over one install that fits for 10 of 585.
 pub fn replace_blob(file: &[u8], hash: AssetHash, blob: &[u8]) -> NfsResult<Vec<u8>> {
     let (entries, table_at) = table(file)?;
     let (index, entry) = entries

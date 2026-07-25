@@ -10,7 +10,7 @@
 //! * [`reader`] — a bounds-checked byte cursor; the panic-free foundation.
 //! * [`fourcc`] — printable rendering of 32-bit chunk IDs.
 //! * [`chunk`] — the universal `BinSectionHeader` tree ([`chunk::walk`], [`chunk::ChunkNode`], [`chunk::dump`]).
-//! * [`compression`] — RefPack/QFS and JDLZ, detected by magic bytes.
+//! * [`compression`] — RefPack/QFS, JDLZ and HUFF, detected by magic bytes. JDLZ also compresses.
 //! * [`viv`] — BIGF/VIV archive extraction.
 //! * [`types`] — the engine-agnostic output contract.
 //! * [`placement`] — what a solid's local matrix means (a placement to apply, or a pose already

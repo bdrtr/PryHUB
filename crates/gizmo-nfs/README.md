@@ -17,17 +17,19 @@ layer (a demo binary or an optional `gizmo-nfs-engine` crate), not this crate.
 | RefPack / QFS decompression | `compression::refpack` | ✅ done |
 | JDLZ decompression | `compression::jdlz` | ✅ done — validated byte-exact against a real golden pair |
 | JDLZ **compression** | `compression::jdlz` | ✅ done — a real 1.6 MB bundle packs to **29.8%** and reads back byte-exact (EA's own encoder: 30.1%) |
-| TPK texture write-back | `texture::write` | 🟡 in place only — 66% of a real install's blobs recompress small enough to fit their slot; relocation (rewriting every absolute offset) still to come |
+| HUFF decompression | `compression::huff` | ✅ done — order-0 Huffman + clue escape; 52,390 real blobs decode, every one of them type `0xfb30`. There is no HUFF *compressor*, so a rewritten blob goes back as JDLZ |
+| TPK texture write-back | `texture::write` | 🟡 in place only — 1,402 of 2,123 blobs (66%) recompress small enough to fit their slot. Split by source codec that is 1,392/1,538 JDLZ but 10/585 HUFF, because JDLZ is the only encoder: 575 of the 721 misses want a HUFF *encoder*, not relocation |
 | BIGF / VIV archive reader | `viv` | ✅ done |
 | Output data contract | `types` | ✅ defined |
 | `GEOMETRY.BIN` car models | `geometry` | ✅ done — stride-36 vertices (pos/normal/uv) + u16 indices, validated on real cars |
-| TPK textures → RGBA8 images | `texture` | 🟡 mostly done — each 24-byte descriptor decoded to its own image: whole-file offset → JDLZ blob → embedded `OldTextureInfo` (width/height/format) → DXT1/3/5 or raw RGBA. **HUFF-compressed** textures are listed in `entries` but not decoded. |
-| Chunk stream **writing** | `repack` | 🟡 foundation done — byte-exact rebuild of 113 real files (241 MB); payload replacement with size/alignment fix-up. TPK offset fix-up and a JDLZ *compressor* still to come |
+| TPK textures → RGBA8 images | `texture` | 🟡 every car decodes, most of the install does not — each 24-byte descriptor decoded to its own image: whole-file offset → JDLZ **or HUFF** blob (by magic) → embedded `OldTextureInfo` (width/height/format) → DXT1/3/5 or uncompressed BGRA. **Codec is no longer a limit; pixel format is.** All 2,123 textures in the 30 `CARS/*/TEXTURES.BIN` decode (a golden test reads all 73 of the 240SX's), but across the install only 3,002 of 54,885 do: the other 51,871 are palettised (`0x08` 25,960, `0x80` 24,071, `0x81` 1,840), which is the whole of every `VINYLS.BIN` |
+| Chunk stream **writing** | `repack` | 🟡 foundation done — byte-exact rebuild of 113 real files (241 MB); payload replacement with size/alignment fix-up. TPK offset fix-up (relocation) still to come |
 | Asset-name hash (`bStringHash`) | `hash` | ✅ done — locked against 2,123 real (name, hash) pairs; recovers truncated names by confirming a candidate |
 | Chunk-tree comparison | `diff` | ✅ done — paired by position among same-id siblings; changed / resized / one-sided, with the first differing byte |
 | Schema discovery (unknown chunks) | `discover` | ✅ done — user-typed stride/columns, exact-divisor candidates ranked by lane consistency, `0x11` filler skipped; re-derives the real vertex layout in a golden test |
 | glTF (`.glb`) + OBJ/MTL + PNG output | `export` | ✅ done — pure text/bytes, no filesystem; shared by `ug2 export` and PryHUB |
-| `GLOBALB.LZC` global data | `global` | 🔜 later |
+| `GLOBALB.BUN` car + `CarParts` tables | `globalb` | ✅ done — wheel/car records, 12,167 parts, 4,636 attributes with 49 of 51 keys named, and the game's 123-colour paint palette; every count checked against its chunk rather than trusted |
+| Player profile (fitted upgrades) | `profile` | ✅ done — which performance products a car has fitted and the per-category totals, locked by diffing a save after each purchase |
 | World / city (`STREAM*.BUN`, `L4RA.BUN`) | `world` | 🔴 research-frontier |
 
 The crate is **synchronous on purpose**: it is CPU work over byte slices with no I/O to wait for,
@@ -61,7 +63,8 @@ cargo run -p gizmo-nfs --features tools --bin ug2 -- <command>
 | `ug2 dump FILE` | the chunk tree of any asset file (or a BIGF/VIV archive's contents) |
 | `ug2 diff A B [--all --max N]` | what differs between two asset files, chunk by chunk |
 | `ug2 probe CARS/240SX [--matrices]` | the raw solid view: declared counts vs. buffer sizes, mesh-header words, matrix classification |
-| `ug2 globalb GLOBALB.BUN` | wheel mounts, radius and mass per car |
+| `ug2 globalb GLOBALB.BUN [--parts]` | wheel mounts, radius and mass per car; `--parts` for the `CarParts` tables and the paint palette |
+| `ug2 profile PROFILE` | a save's fitted performance products and the per-category totals they sum to |
 
 `dump` and `probe` are the reverse-engineering levers: every unconfirmed offset in this crate
 was locked with them against a legally-owned install, never by assuming a constant.

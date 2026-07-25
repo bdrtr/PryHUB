@@ -34,7 +34,18 @@
 //! `Height = u16@P+34`, `ImageCompressionType = u8@P+38`. The image is the *top mip* only,
 //! decoded by [`dxt`] (DXT1/3/5) or unpacked directly (RGBA).
 //!
-//! HUFF-compressed textures are skipped until [`crate::compression::huff`] is implemented.
+//! A pack mixes codecs, and the blob's own magic says which: [`crate::compression::jdlz`] and
+//! [`crate::compression::huff`] both decompress, so **no texture is skipped for its codec** any
+//! more. A golden test reads all 73 of the 240SX's — 44 JDLZ, 29 HUFF.
+//!
+//! What is skipped is a *pixel format*. Measured over one install: 78 packs, 54,885 declared
+//! textures, 3,002 decoded. The other 51,871 are palettised (`ImageCompressionType` `0x08`: 25,960,
+//! `0x80`: 24,071, `0x81`: 1,840) and this module has no decoder for them — which is the whole of
+//! every `CARS/*/VINYLS.BIN`, so opening one gives an empty pack rather than a short one. Every
+//! texture in a car's `TEXTURES.BIN` does decode: 2,123 of 2,123 across 30 packs.
+//!
+//! Compression is the other asymmetry: only JDLZ has an encoder, so a HUFF blob read here and
+//! written back returns as JDLZ, and almost never fits the slot HUFF made for it — see [`write`].
 //!
 //! The module is split by layer: [`directory`] reads the descriptor table (and the DebugNames
 //! beside it), [`decode`] turns one descriptor's blob into RGBA8, and [`dxt`] holds the S3TC
@@ -56,8 +67,10 @@ use std::collections::HashMap;
 
 /// A parsed TPK: the raw per-texture descriptors plus every texture we could decode to RGBA8.
 ///
-/// Textures compressed with a codec that is not yet implemented (HUFF) are present in
-/// [`entries`](Tpk::entries) but absent from [`textures`](Tpk::textures).
+/// The two are counted separately on purpose. [`entries`](Tpk::entries) is what the file *declares*;
+/// [`textures`](Tpk::textures) is what came back as pixels. A texture that fails to decode is missing
+/// from the second and still present in the first, so a caller can say how many rather than showing a
+/// shorter grid and calling it the whole pack.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct Tpk {
@@ -107,8 +120,10 @@ impl Tpk {
     /// Decode one descriptor's texture.
     ///
     /// # Errors
-    /// Unsupported codec (HUFF), a malformed embedded header, or dimensions out of range — all of
-    /// which mean "skip this texture", not "the file is broken".
+    /// A pixel format this crate does not decode (the palettised `0x08`/`0x80`/`0x81`), an
+    /// unreadable blob, a malformed embedded header, or dimensions out of range — all of which mean
+    /// "skip this texture", not "the file is broken". The first is by far the commonest: it is
+    /// every image in every `VINYLS.BIN`.
     pub fn decode_one(bytes: &[u8], entry: &TpkEntry) -> NfsResult<NfsTexture> {
         decode::decode_texture(bytes, entry)
     }
@@ -128,7 +143,7 @@ impl Tpk {
         self.textures.get(&hash)
     }
 
-    /// Look up a texture descriptor by asset hash (present even for un-decodable codecs).
+    /// Look up a texture descriptor by asset hash (present even for a texture that did not decode).
     #[must_use]
     pub fn entry(&self, hash: AssetHash) -> Option<&TpkEntry> {
         self.entries.iter().find(|e| e.hash == hash)

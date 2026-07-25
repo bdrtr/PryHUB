@@ -122,12 +122,13 @@ enum Command {
         #[arg(long, value_name = "SUBSTR")]
         filter: Option<String>,
     },
-    /// Print the wheel mounts, radius and mass recorded in `GLOBALB.BUN`.
     /// Read a player profile: which performance products a car has fitted, and their totals.
     Profile {
         /// The profile file, or the directory holding it.
         path: PathBuf,
     },
+    /// Print the wheel mounts, radius and mass recorded in `GLOBALB.BUN`, and with `--parts` the
+    /// `CarParts` tables and the game's paint palette.
     Globalb {
         /// `GLOBAL/GLOBALB.BUN`, or a car directory / game root to find it from.
         path: PathBuf,

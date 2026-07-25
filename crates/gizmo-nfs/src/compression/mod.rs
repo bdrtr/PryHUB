@@ -41,8 +41,11 @@ pub fn detect(buf: &[u8]) -> Codec {
 
 /// Decompress `buf` if it carries a recognised codec, otherwise return a plain copy.
 ///
-/// A recognised-but-unimplemented codec (currently HUFF) returns
-/// [`crate::NfsError::NotImplemented`] rather than a bogus plain copy.
+/// All three codecs decompress. Only JDLZ also *compresses* — see [`jdlz::compress`] — so a blob
+/// read as RefPack or HUFF and written back comes back as JDLZ. The reader accepts that, because it
+/// dispatches on the magic bytes rather than on where the blob came from; what usually refuses it is
+/// the *slot*, since a JDLZ re-pack of a HUFF blob fits the space HUFF sized for 10 of 585 measured
+/// textures. See [`crate::texture::replace_blob`].
 pub fn decompress(buf: &[u8]) -> NfsResult<Vec<u8>> {
     match detect(buf) {
         Codec::RefPack => refpack::decompress(buf),

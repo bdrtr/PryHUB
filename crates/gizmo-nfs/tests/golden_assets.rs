@@ -96,8 +96,12 @@ fn geometry_parser_extracts_valid_parts() {
     assert!((len - 1.0).abs() < 0.02, "normal not unit length: {len}");
 }
 
-/// The TPK parser on a real car: the known descriptor count, and every JDLZ-compressed
-/// texture decoded to a correctly-sized RGBA8 image whose embedded header hash matches.
+/// The TPK parser on a real car: the known descriptor count, and every texture — 44 JDLZ and 29
+/// HUFF — decoded to a correctly-sized RGBA8 image whose embedded header hash matches.
+///
+/// This is the only place HUFF meets real bytes, so the codec split is asserted rather than
+/// described: a texture count cannot tell the two decoders apart, and would read the same if the
+/// pack were all JDLZ.
 #[test]
 fn tpk_parser_decodes_textures() {
     let Some(root) = root() else {
@@ -110,23 +114,50 @@ fn tpk_parser_decodes_textures() {
     // 240SX ships 73 textures; every one decodes now that both JDLZ and HUFF are supported.
     assert_eq!(tpk.entries.len(), 73, "descriptor count");
     assert_eq!(tpk.textures.len(), 73, "all 73 textures decode (JDLZ + HUFF)");
+    let huff = tpk
+        .entries
+        .iter()
+        .filter(|e| {
+            let at = e.abs_offset as usize;
+            let blob = bytes.get(at..at.saturating_add(e.size as usize)).unwrap_or(&[]);
+            gizmo_nfs::compression::detect(blob) == gizmo_nfs::compression::Codec::Huff
+        })
+        .count();
+    assert_eq!(huff, 29, "29 of the 240SX's 73 blobs are HUFF, the other 44 JDLZ");
     assert_eq!(
         tpk.entries.iter().map(|e| e.header_from_end).collect::<std::collections::HashSet<_>>(),
         std::iter::once(0x100).collect(),
         "every descriptor's header_from_end is the constant 0x100"
     );
 
-    let mut dxt1 = 0;
+    let (mut dxt1, mut dxt3, mut bgra) = (0, 0, 0);
     for tex in tpk.textures.values() {
         // Dimensions are powers of two and the RGBA buffer is exactly W*H*4.
         assert!(tex.width.is_power_of_two() && tex.height.is_power_of_two(), "dims power of two");
         assert_eq!(tex.rgba.len(), tex.width as usize * tex.height as usize * 4, "tight RGBA8");
         assert_eq!(tex.format, gizmo_nfs::PixelFormat::Rgba8);
-        if matches!(tex.source_format, gizmo_nfs::TexFormat::Dxt1) {
-            dxt1 += 1;
+        // A texture that decoded is a texture whose format we can name. `Unknown(n)` is for a tag
+        // nothing here handles; a decoder that reports it is telling the interface, the exporter
+        // and the next reader that it did not recognise what it had just finished unpacking.
+        assert!(
+            !matches!(tex.source_format, gizmo_nfs::TexFormat::Unknown(_)),
+            "{} decoded but reports {:?}",
+            tex.name,
+            tex.source_format
+        );
+        match tex.source_format {
+            gizmo_nfs::TexFormat::Dxt1 => dxt1 += 1,
+            gizmo_nfs::TexFormat::Dxt3 => dxt3 += 1,
+            gizmo_nfs::TexFormat::Bgra8888 => bgra += 1,
+            other => panic!("{} decoded as an unexpected format {other:?}", tex.name),
         }
     }
-    assert!(dxt1 >= 5, "expected several DXT1 textures, got {dxt1}");
+    // All three of the pack's formats, stated as the counts they are rather than as a floor: the
+    // numbers are measured and cost nothing to write down, and a floor of "several" would have been
+    // met just as well by a pack that lost two thirds of its textures. The six uncompressed ones are
+    // the `_DOORLINE` maps, and they are why the `Unknown` assertion above is exercised off the S3TC
+    // path at all.
+    assert_eq!((dxt1, dxt3, bgra), (39, 28, 6), "the 240SX's format histogram");
 
     // The embedded DebugNames are recovered and carry the expected part-linked names.
     let names: Vec<&str> = tpk.textures.values().map(|t| t.name.as_str()).collect();
@@ -345,6 +376,7 @@ fn a_texture_can_be_written_back_in_place() {
         return;
     };
     let (mut fits, mut misses, mut packs, mut verified) = (0usize, 0usize, 0usize, 0usize);
+    let mut verified_huff = 0usize;
     let mut worst = 0f64;
     for car in std::fs::read_dir(root.join("CARS")).expect("CARS/").flatten() {
         let Ok(file) = std::fs::read(car.path().join("TEXTURES.BIN")) else { continue };
@@ -353,8 +385,16 @@ fn a_texture_can_be_written_back_in_place() {
             continue;
         }
         packs += 1;
-        let mut checked_this_pack = false;
-        for (hash, before) in &tpk.textures {
+        // Iterating `tpk.textures` is `HashMap` order, which Rust randomises per process, and the
+        // full round trip below runs once per pack — so *which* texture got verified changed every
+        // run, and with it whether a HUFF-sourced blob was ever round-tripped at all. That is the
+        // one case where the codec changes under the write (HUFF in, JDLZ out), so leaving it to
+        // chance meant the interesting path was usually untested. Ordered by hash, a run verifies
+        // the same textures as the last one, and both codecs get a turn where the pack has both.
+        let mut by_hash: Vec<_> = tpk.textures.iter().collect();
+        by_hash.sort_by_key(|(h, _)| h.0);
+        let mut checked: [bool; 2] = [false, false];
+        for (hash, before) in by_hash {
             let Ok(blob) = gizmo_nfs::texture::blob_of(&file, *hash) else { continue };
             let entry = tpk.entry(*hash).expect("the entry we just read a blob for");
             let packed = gizmo_nfs::compression::jdlz::compress(&blob).expect("compress");
@@ -364,12 +404,19 @@ fn a_texture_can_be_written_back_in_place() {
                 continue;
             }
             fits += 1;
-            // The full verification is O(textures²) in this pack, so it runs once per pack; the
-            // fit/miss counts above cover every texture in the install.
-            if checked_this_pack {
+            // The full verification is O(textures²) in this pack, so it runs at most twice — once
+            // for a blob that arrived as JDLZ and once for one that arrived as HUFF, because those
+            // are different writes: the second changes the stored codec. The fit/miss counts above
+            // still cover every texture in the install.
+            let at = entry.abs_offset as usize;
+            let stored = gizmo_nfs::compression::detect(
+                file.get(at..at.saturating_add(entry.size as usize)).unwrap_or(&[]),
+            );
+            let lane = usize::from(stored == gizmo_nfs::compression::Codec::Huff);
+            if checked[lane] {
                 continue;
             }
-            checked_this_pack = true;
+            checked[lane] = true;
             match gizmo_nfs::texture::replace_blob(&file, *hash, &blob) {
                 Ok(out) => {
                     verified += 1;
@@ -393,17 +440,27 @@ fn a_texture_can_be_written_back_in_place() {
                 Err(e) => panic!("a blob that fits must be writable: {e}"),
             }
         }
+        verified_huff += usize::from(checked[1]);
     }
     assert!(packs > 20, "only {packs} packs read");
     let total = fits + misses;
     eprintln!(
-        "tpk in-place: {fits}/{total} textures fit their own slot ({:.0}%), verified in {verified} packs, worst {worst:.2}× the slot",
+        "tpk in-place: {fits}/{total} textures fit their own slot ({:.0}%), {verified} round trips \
+         ({verified_huff} of them HUFF-sourced), worst {worst:.2}× the slot",
         fits as f64 / total as f64 * 100.0
     );
-    assert!(verified > 20, "only {verified} packs verified");
-    // The number that decides how useful this is today. It is a floor, not a target: a better
-    // encoder raises it, and relocation removes the question.
-    assert!(fits * 2 > total, "fewer than half the textures fit: {fits} of {total}");
+    assert!(verified > 20, "only {verified} round trips");
+    // A HUFF-sourced blob is the write that changes the stored codec, and it fits its slot for only
+    // 10 of 585 textures — so without saying so out loud, a suite could stop covering it entirely
+    // and still look busy.
+    assert!(verified_huff > 0, "no HUFF-sourced texture was round-tripped");
+    // The published number, not a floor of "more than half": 1,402 of 2,123 is the 66% that
+    // `texture::write`, this crate's README and CLAUDE.md all quote. The band leaves room for
+    // encoder tuning in the direction that helps and fails the day the figure quietly rots.
+    assert!(
+        (1_380..=total).contains(&fits),
+        "the documented in-place fit rate is 1,402 of 2,123 (66%); measured {fits} of {total}"
+    );
 }
 
 /// The `CarParts` tables, against the install they were locked on.
