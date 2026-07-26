@@ -125,7 +125,12 @@ fn resolve(path: &Path) -> Result<PathBuf> {
 /// Names are matched through the truncation rather than around it: the field is 23 characters, so a
 /// long name arrives cut and the thing a person types is often longer than what the file holds. An
 /// exact match wins; failing that, a name the file's own (possibly cut) name is a prefix of; failing
-/// that, a unique substring. An ambiguous one lists the candidates instead of picking.
+/// that, a unique substring.
+///
+/// **Ambiguity is checked in every one of the three**, including the exact match. Two textures
+/// sharing a name is normal in this format rather than an edge case, so "the first one called that"
+/// is never an answer — the candidates are listed with their hashes, which is the thing that tells
+/// them apart and the thing to pass instead.
 fn find(bytes: &[u8], entries: &[TpkEntry], want: &str) -> Result<TpkEntry> {
     if let Some(hex) = want.strip_prefix("0x").or_else(|| want.strip_prefix("0X")) {
         let hash = u32::from_str_radix(hex, 16).map_err(|_| format!("{want}: not a hash"))?;
@@ -141,13 +146,22 @@ fn find(bytes: &[u8], entries: &[TpkEntry], want: &str) -> Result<TpkEntry> {
         .filter_map(|e| Tpk::name_of(bytes, e).ok().map(|n| (*e, n)))
         .collect();
     let upper = want.to_ascii_uppercase();
-    if let Some((e, _)) = named.iter().find(|(_, n)| n.eq_ignore_ascii_case(want)) {
-        return Ok(*e);
+
+    // Three ways to match, narrowest first — but all three funnel through the same ambiguity check
+    // at the bottom, and the exact one especially. An exact match used to short-circuit on the first
+    // hit, which is precisely backwards for this format: names are truncated to 23 characters, so
+    // *sharing* one is ordinary rather than exceptional — `240SX_DOORLINE_WIDEBODY` and its `_MASK`
+    // twin arrive under one name — and a command that writes a user's PNG into whichever of them
+    // comes first in file order, without saying there was a choice, is the one failure this whole
+    // function exists to prevent.
+    let mut hits: Vec<&(TpkEntry, String)> =
+        named.iter().filter(|(_, n)| n.eq_ignore_ascii_case(want)).collect();
+    if hits.is_empty() {
+        hits = named
+            .iter()
+            .filter(|(_, n)| upper.starts_with(&n.to_ascii_uppercase()) && !n.is_empty())
+            .collect();
     }
-    let mut hits: Vec<&(TpkEntry, String)> = named
-        .iter()
-        .filter(|(_, n)| upper.starts_with(&n.to_ascii_uppercase()) && !n.is_empty())
-        .collect();
     if hits.is_empty() {
         hits = named.iter().filter(|(_, n)| n.to_ascii_uppercase().contains(&upper)).collect();
     }
@@ -155,7 +169,9 @@ fn find(bytes: &[u8], entries: &[TpkEntry], want: &str) -> Result<TpkEntry> {
         0 => Err(format!("{want}: no texture of that name in this pack")),
         1 => Ok(hits[0].0),
         _ => {
-            let mut msg = format!("{want} names {} textures — say which:\n", hits.len());
+            // By hash, because that is the thing that tells two textures under one truncated name
+            // apart — and the thing the next invocation should be given.
+            let mut msg = format!("{want} names {} textures — say which by hash:\n", hits.len());
             for (e, n) in hits.iter().take(12) {
                 msg.push_str(&format!("  {:#010x}  {n}\n", e.hash.0));
             }

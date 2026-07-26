@@ -17,6 +17,21 @@
 //! The work itself is [`gizmo_nfs::texture::replace_image`] — the encode, the in-place attempt and
 //! the fall back to relocation — so this file is the part that reads and writes files, and none of
 //! the part that decides what the bytes are.
+//!
+//! # One texture at a time, and what that means for two
+//!
+//! Each run reads the pack **from disk** and writes one texture into it. Over the original that
+//! accumulates, because the second run reads what the first one wrote — the document is reopened
+//! after such a write, so the interface is reading it too. Into a copy it does not: the source is
+//! still the open file, so a second edit produces a copy holding the second texture and not the
+//! first.
+//!
+//! That is the honest behaviour of a per-texture operation rather than an oversight, and it is not
+//! silent — the dialog names the file it is about to write before the button is pressed, and the log
+//! names it again afterwards. Someone editing several textures either overwrites, or opens the copy
+//! and works on that. What would make it accumulate is an *edit set* the interface holds and applies
+//! together, which is a different feature: it needs somewhere to keep pending edits, a way to see
+//! and undo them, and a Save. The design has that vocabulary, on the CARP screen.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +58,8 @@ pub struct Spec {
 /// What happened, for the log.
 pub struct Done {
     pub name: String,
+    /// Which texture, so the interface can put the selection back on it after a reload.
+    pub hash: gizmo_nfs::AssetHash,
     pub into: PathBuf,
     /// Whether the pack had to be laid out afresh to take the new blob.
     pub moved: bool,
@@ -108,6 +125,7 @@ pub fn run(spec: &Spec) -> Result<Done, String> {
 
     Ok(Done {
         name: before.name.clone(),
+        hash: spec.hash,
         into: out,
         moved,
         psnr: quality(&after.rgba, &rgba),
@@ -139,16 +157,32 @@ pub fn target(pack: &Path, over: bool) -> Result<PathBuf, String> {
 }
 
 /// `<pack>.bak`, written once and never overwritten.
+///
+/// Copied to a temporary name and **renamed into place**, which is what makes the rule above it
+/// sound. Skipping on existence is only safe if existence means *completeness*: a plain copy that
+/// died half-way — a full disk, a pull on the cable — leaves a short file that looks exactly like a
+/// good one, and the next run would then overwrite the pack with a truncated backup behind it. A
+/// rename within a directory is atomic, so a `.bak` that is there was finished.
 fn back_up(pack: &Path) -> Result<Option<PathBuf>, String> {
-    let mut bak = pack.as_os_str().to_owned();
-    bak.push(".bak");
-    let bak = PathBuf::from(bak);
+    let with = |suffix: &str| {
+        let mut p = pack.as_os_str().to_owned();
+        p.push(suffix);
+        PathBuf::from(p)
+    };
+    let bak = with(".bak");
     if bak.exists() {
         // The existing one is older, which makes it the one worth keeping: it is the only copy of
         // the file as it was before this program touched it.
         return Ok(None);
     }
-    std::fs::copy(pack, &bak).map_err(|e| format!("{}: {e}", bak.display()))?;
+    let partial = with(".bak.part");
+    let copied = std::fs::copy(pack, &partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+    let want = std::fs::metadata(pack).map(|m| m.len()).unwrap_or(copied);
+    if copied != want {
+        std::fs::remove_file(&partial).ok();
+        return Err(format!("{}: backup came out {copied} bytes of {want}", bak.display()));
+    }
+    std::fs::rename(&partial, &bak).map_err(|e| format!("{}: {e}", bak.display()))?;
     Ok(Some(bak))
 }
 
@@ -276,6 +310,39 @@ mod tests {
             .count();
         let total = got.rgba.len() / 4;
         assert!(magenta_pixels * 10 >= total * 9, "{magenta_pixels} of {total} came back magenta");
+
+        // And the reason `PryHub::refresh_after` reopens the document rather than merely dropping
+        // the decoded pack: a `Doc` is a *snapshot*. One opened before the write goes on decoding
+        // the bytes it read at open time, however many times it is asked, because
+        // `decode_textures` reads `self.bytes` when the open file is itself the pack. Nothing short
+        // of opening it again sees what is now on disk — which is why the interface used to redraw
+        // the pre-edit image under a log line saying it had written a new one.
+        let stale = crate::doc::Doc::open(&pack).expect("open");
+        // (opened *after* the write, so this one is fresh — then the file changes under it.)
+        std::fs::write(&pack, &bytes).expect("put the original back");
+        let still = stale.decode_textures(&|_, _| {}).expect("decode").0;
+        let from_snapshot = still.texture(entry.hash).expect("the texture").rgba.clone();
+        let magenta_in_snapshot = from_snapshot
+            .chunks_exact(4)
+            .filter(|p| p[0] > 200 && p[1] < 60 && p[2] > 200)
+            .count();
+        assert!(
+            magenta_in_snapshot * 10 >= total * 9,
+            "a Doc decodes the bytes it was opened with, not the file: {magenta_in_snapshot} of {total}"
+        );
+        let reopened = crate::doc::Doc::open(&pack).expect("reopen");
+        let fresh = reopened.decode_textures(&|_, _| {}).expect("decode").0;
+        let magenta_after_reopen = fresh
+            .texture(entry.hash)
+            .expect("the texture")
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] > 200 && p[1] < 60 && p[2] > 200)
+            .count();
+        assert!(
+            magenta_after_reopen * 10 < total,
+            "reopening is what sees the file: {magenta_after_reopen} of {total} still magenta"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -49,12 +49,19 @@
 //! and decoding it again — so the number below is what a *round trip through the file* costs, not
 //! what an encoder scores on its own output:
 //!
-//! | tag | textures | came back identical | mean PSNR |
+//! | tag | textures | came back identical | mean PSNR **over the ones that changed** |
 //! |---|---|---|---|
-//! | `0x20` BGRA | 436 | **436** | — |
-//! | `0x08`/`0x80`/`0x81` palettised | 120 | **120** | — |
-//! | `0x24` DXT3 | 742 | 378 | 72.5 dB |
-//! | `0x22` DXT1 | 945 | 5 | 47.9 dB |
+//! | `0x20` BGRA | 436 | **436** | — nothing changed |
+//! | `0x08`/`0x80`/`0x81` palettised | 120 | **120** | — nothing changed |
+//! | `0x24` DXT3 | 742 | 378 | 44.9 dB over 364 |
+//! | `0x22` DXT1 | 945 | 5 | 47.6 dB over 940 |
+//!
+//! The last column excludes the identical ones deliberately, and the first version of this table
+//! did not — it gave every byte-identical texture a placeholder 99 dB and averaged those in, which
+//! made DXT3 read **72.5 dB** when what a DXT3 re-encode actually costs is 44.9. The column beside
+//! it was the giveaway: a format that came back identical 378 times out of 742 cannot also have a
+//! mean error, and a number that improves as more textures are left untouched is measuring the
+//! wrong thing.
 //!
 //! The two that come back **identical** are the two that can: a channel swap loses nothing, and an
 //! image with no more colours than its tag populates is reproduced exactly by the median cut. The
@@ -273,6 +280,13 @@ fn chain(width: usize, height: usize, comp: u8, image_size: usize) -> NfsResult<
             detail: "TPK ImageSize is not a whole number of mip levels",
         });
     }
+    // A chain of nothing satisfies the arithmetic above — zero levels fill zero bytes exactly — and
+    // would let a header declaring `ImageSize == 0` come back `Ok` with no pixels written at all.
+    // For a palettised tag that is worse than doing nothing: the palette is rewritten before the
+    // levels are, so the old indices would be left pointing into a new set of colours.
+    if levels.is_empty() {
+        return Err(NfsError::CorruptArchive { detail: "TPK ImageSize declares no image at all" });
+    }
     Ok(levels)
 }
 
@@ -453,11 +467,12 @@ fn colour_block(px: &[[u8; 4]; 16], punch: bool) -> [u8; 8] {
     }
 
     // One starting pair, inset, and the refinement below does the rest. All three of the obvious
-    // choices were measured over the install's 944 DXT1 textures, decoded and re-encoded: the plain
-    // bounding box gives 47.6 dB, insetting a sixteenth gives **47.9**, and starting from both and
-    // keeping the better-scoring one gives 47.8 — worse than the better of its own two inputs,
-    // because the choice is made on the starting pair and it is the refinement that decides the
-    // outcome. So the extra candidate is not here: it cost code and a tenth of a decibel.
+    // choices were measured over the install's DXT1 textures, decoded and re-encoded, scoring only
+    // the ones that came back changed: the plain bounding box gives 47.3 dB, insetting a sixteenth
+    // gives **47.6**, and starting from both and keeping the better-scoring one gives 47.5 — worse
+    // than the better of its own two inputs, because the choice is made on the starting pair and it
+    // is the refinement that decides the outcome. So the extra candidate is not here: it cost code
+    // and a tenth of a decibel.
     let (mut c0, mut c1) = range_fit(px, &lit, punch, 1.0 / 16.0);
     let mut best = block_error(px, &lit, c0, c1, punch);
     for _ in 0..REFINE {
@@ -970,6 +985,23 @@ mod tests {
         // And the exact length still goes through, so the check is about the length and not about
         // the buffer being suspicious.
         assert!(replace_pixels(&buf, &entry, &px, 16, 16).is_ok());
+    }
+
+    /// A header saying the image is nothing is refused rather than obeyed.
+    ///
+    /// Zero levels fill zero bytes exactly, so the chain's own exactness check has no complaint —
+    /// and the palette is rewritten before the levels are, so obeying it would leave a palettised
+    /// texture's old indices pointing into a new set of colours.
+    #[test]
+    fn an_image_size_of_zero_is_refused() {
+        let (mut buf, entry) = blob(16, 16, fmt::P8, 1);
+        let p = decode::header_at(entry.out_size as usize, entry.header_from_end as usize).unwrap();
+        let before = buf.clone();
+        buf[p + 0x14..p + 0x18].copy_from_slice(&0u32.to_le_bytes());
+        let err = replace_pixels(&buf, &entry, &quadrants(16, 16), 16, 16).expect_err("must refuse");
+        assert!(matches!(err, NfsError::CorruptArchive { .. }));
+        // And with a real ImageSize the same blob goes through, so the refusal is about the zero.
+        assert!(replace_pixels(&before, &entry, &quadrants(16, 16), 16, 16).is_ok());
     }
 
     #[test]

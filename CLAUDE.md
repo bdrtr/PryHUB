@@ -495,8 +495,10 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     past that in 2,113 of 2,323; what does hold is that image and palette end before the `DebugName`
     in 2,323 of 2,323, in 2,313 of them by exactly twelve bytes. Measured by round-tripping every
     texture through the file, `0x20` comes back identical 436 times of 436 and the palettised tags
-    120 of 120 — the two that can — while DXT3 manages 378 of 742 and 72.5 dB and DXT1 47.9 dB,
-    which is what two endpoints per 4×4 block costs. The palettised median cut is capped by the
+    120 of 120 — the two that can — while DXT3 is identical 378 of 742 and averages 44.9 dB over the
+    364 that changed, DXT1 47.6 dB over 940, which is what two endpoints per 4×4 block costs. That
+    last column counts only the textures that came back *changed*; the first version of it averaged a
+    placeholder 99 dB for the identical ones and read 72.5 dB for DXT3. The palettised median cut is capped by the
     tag (256/16/64) so a re-encode cannot become the first file in the game to index past it, and
     the DXT arms score their candidates with the *decoder's* own `palette_from` and
     `build_alpha_table` rather than a second copy. `texture::replace_image` is the whole

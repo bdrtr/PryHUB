@@ -38,6 +38,19 @@ pub enum Tab {
     Assembly,
 }
 
+/// Whether two paths name the same file on disk.
+///
+/// Resolved rather than compared as written: the two sides come from different places — one from the
+/// document, one from a job's spec — and "the same file spelt differently" has to count as the same
+/// file, because what hangs on the answer is whether the thing on screen is now stale.
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        // Unresolvable means it is not a file that is there to be the same as anything.
+        _ => false,
+    }
+}
+
 /// What the desktop's file chooser was opened for.
 ///
 /// One chooser at a time and one slot to hold it, so the slot has to say what the answer means. It
@@ -148,6 +161,11 @@ pub struct PryHub {
     /// A selection asked for on the command line, applied when the file finally arrives. Opening is
     /// a job now, so `--select` used to be overwritten by the root the moment the parse landed.
     pub pending_selection: Option<usize>,
+    /// The same, for the texture tab, and used for one thing: a file *reopened* because this program
+    /// just rewrote it. A reload is a new document and rightly forgets what was selected in the old
+    /// one — but the texture the user replaced is the one they are looking at, and putting them back
+    /// on the first image of the sheet would be the reload showing.
+    pub pending_texture: Option<gizmo_nfs::AssetHash>,
     /// Files opened this session, most recent first.
     pub recents: Vec<std::path::PathBuf>,
     /// The welcome screen's path field.
@@ -245,6 +263,7 @@ impl PryHub {
             scroll_hex_to: None,
             error: None,
             pending_selection: None,
+            pending_texture: None,
             recents: Vec::new(),
             path_input: String::new(),
             picking: None,
@@ -414,7 +433,7 @@ impl PryHub {
         self.textures = Textures::Unasked;
         self.texture_names = None;
         self.names_asked = false;
-        self.texture_selection = None;
+        self.texture_selection = self.pending_texture.take();
         self.texture_cache.clear();
         // Everything below describes the file that was open, in terms that mean something different
         // in the one that just arrived. A chunk offset, a stride, a mesh key: all of them are still
@@ -731,18 +750,39 @@ impl PryHub {
         self.jobs.send(crate::jobs::Request::Replace(Box::new(spec)));
     }
 
+    /// Show a write that landed, by reloading exactly as much as it invalidated.
+    ///
+    /// There are two cases and they are not the same, which is the thing this got wrong first time
+    /// round. When the pack is the file *beside* the open one — a `GEOMETRY.BIN` drawn with the
+    /// `TEXTURES.BIN` next to it — dropping the decoded pack is enough, because the decode re-reads
+    /// that file from disk. When the pack **is** the open document, it is not: `Doc::bytes` is the
+    /// snapshot taken at open and `decode_textures` reads it rather than the disk, so asking for the
+    /// textures again returns the pre-write image — and the interface would redraw the old pixels
+    /// under a log line saying it had written new ones, which is precisely the lie this is here to
+    /// avoid. It is also broader than the pack: the chunk tree, the hex view and the validation
+    /// report all describe bytes that have just changed. So the document is reopened, carrying the
+    /// selection and the replaced texture across so the reload does not show.
+    fn refresh_after(&mut self, done: &crate::replace::Done) {
+        let is_open = self.doc.as_ref().is_some_and(|d| same_file(&d.path, &done.into));
+        if is_open {
+            self.pending_selection = self.selection;
+            self.pending_texture = Some(done.hash);
+            let path = done.into.clone();
+            self.open(&path);
+        } else {
+            self.textures = Textures::Unasked;
+            self.texture_cache.clear();
+        }
+    }
+
     /// Take a replacement's result: say what happened, and show it.
     ///
-    /// `mine` is whether the document it was computed for is still the open one. When it is, the
-    /// pack is decoded again and the uploaded thumbnails dropped — the file on disk has changed
-    /// under the contact sheet, and an interface that went on showing the old pixels after saying it
-    /// had written new ones would be the worst of the two possible lies.
+    /// `mine` is whether the document it was computed for is still the open one.
     pub fn report_replace(&mut self, result: Result<crate::replace::Done, String>, mine: bool) {
         let note = match result {
             Ok(done) => {
                 if mine {
-                    self.textures = Textures::Unasked;
-                    self.texture_cache.clear();
+                    self.refresh_after(&done);
                 }
                 if let Some(bak) = &done.backup {
                     log::info!(target: "jobs", "backed up to {}", bak.display());
