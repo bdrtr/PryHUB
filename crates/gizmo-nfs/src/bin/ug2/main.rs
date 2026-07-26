@@ -35,6 +35,7 @@ mod import;
 mod info;
 mod parts;
 mod paths;
+mod poke;
 mod probe;
 mod profile;
 mod replace;
@@ -172,6 +173,27 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Change one number in one car's handling record, so the game can say what it was.
+    ///
+    /// 222 of the record's 4-byte lanes vary per car and nothing here reads them. Their meaning is
+    /// not in the file, and guessing produces a label that is wrong; the experiment that settles it
+    /// is to change one and drive. Without `--set` it only reports what every car has there.
+    Poke {
+        /// `GLOBAL/GLOBALB.BUN`, or a car directory / game root to find it from.
+        path: PathBuf,
+        /// Which car's record, by the name it carries.
+        #[arg(long, value_name = "NAME")]
+        car: String,
+        /// The lane, as a byte offset into the 2192-byte record.
+        #[arg(long, value_name = "0xNNN", value_parser = parse_offset)]
+        at: usize,
+        /// The value to write. Omit to only look.
+        #[arg(long, value_name = "FLOAT")]
+        set: Option<f32>,
+        /// Where to write the edited bundle.
+        #[arg(short, long, value_name = "FILE", default_value = "GLOBALB.BUN")]
+        out: PathBuf,
+    },
     /// Read a player profile: which performance products a car has fitted, and their totals.
     Profile {
         /// The profile file, or the directory holding it.
@@ -244,6 +266,27 @@ enum Command {
     },
 }
 
+/// `0x284` or `644` — the record's lanes are named in hex far more often than not.
+fn parse_offset(s: &str) -> std::result::Result<usize, String> {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => usize::from_str_radix(hex, 16).map_err(|e| e.to_string()),
+        None => s.parse().map_err(|e: std::num::ParseIntError| e.to_string()),
+    }
+}
+
+/// `GLOBALB.BUN` itself, or the bundle reachable from a car directory or a game root.
+fn gizmo_nfs_globalb_path(path: &std::path::Path) -> PathBuf {
+    if path.is_file() {
+        return path.to_path_buf();
+    }
+    for candidate in [path.join("GLOBAL/GLOBALB.BUN"), path.join("GLOBALB.BUN")] {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    paths::globalb_beside(path).unwrap_or_else(|| path.to_path_buf())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -256,6 +299,10 @@ fn main() -> ExitCode {
             globalb::run(&path, filter.as_deref(), parts, handling)
         }
         Command::Profile { path } => profile::run(&path),
+        Command::Poke { path, car, at, set, out } => {
+            let bundle = gizmo_nfs_globalb_path(&path);
+            poke::run(&bundle, &car, at, set, &out)
+        }
         Command::Replace { pack, texture, png, out, force } => {
             replace::run(&pack, &texture, &png, &out, force)
         }
