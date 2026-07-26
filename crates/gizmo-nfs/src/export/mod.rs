@@ -78,6 +78,23 @@ pub fn png_bytes(t: &NfsTexture) -> crate::NfsResult<Vec<u8>> {
 /// [`NfsError::Io`](crate::NfsError::Io) when the bytes are not a PNG this decoder reads, and
 /// [`NfsError::BufferSizeMismatch`](crate::NfsError::BufferSizeMismatch) when the frame it hands
 /// back is not the size its own header declared.
+/// A PNG's dimensions, from its header alone.
+///
+/// The cheap half of [`png_pixels`], and it exists because the expensive half is the wrong thing to
+/// do on the frame a user is looking at. A replacement has to have the texture's own dimensions, so
+/// that is the question an interface asks the moment a file is chosen — and answering it by decoding
+/// a 512² image costs the pixels, the allocation and the wait, to compare two integers that are in
+/// the first twenty-four bytes of the file.
+///
+/// # Errors
+/// [`NfsError::Io`](crate::NfsError::Io) when the bytes are not a PNG this decoder reads.
+#[cfg(feature = "png")]
+pub fn png_size(bytes: &[u8]) -> crate::NfsResult<(u32, u32)> {
+    let io = |e: png::DecodingError| crate::NfsError::Io(std::io::Error::other(e.to_string()));
+    let reader = png::Decoder::new(bytes).read_info().map_err(io)?;
+    Ok(reader.info().size())
+}
+
 #[cfg(feature = "png")]
 pub fn png_pixels(bytes: &[u8]) -> crate::NfsResult<(Vec<u8>, u32, u32)> {
     let io = |e: png::DecodingError| crate::NfsError::Io(std::io::Error::other(e.to_string()));

@@ -393,6 +393,15 @@ pub mod mark {
     /// that *have* fallbacks — the heading family is one bundled face and nothing else, so the
     /// design's `font-weight:800` warning renders there as a tofu box. Drawing it settles that, and
     /// puts it in the same ink and weight as the tick it stands next to.
+    /// A filled dot: the design's mark for a row with an unsaved change.
+    ///
+    /// Drawn rather than typed, for the reason the validation marks are and the assembly tab's
+    /// triangle count is: the bundled font has no `●` (U+25CF), and a missing glyph is a box. It was
+    /// a box, in the save dialog, until this existed.
+    pub fn dot(p: &Painter, at: Pos2, size: f32, colour: Color32) {
+        p.circle_filled(at, size * 0.5, colour);
+    }
+
     pub fn warn(p: &Painter, at: Pos2, size: f32, colour: Color32) {
         let s = size * 0.5;
         let stroke = Stroke::new((size * 0.14).max(1.2), colour);

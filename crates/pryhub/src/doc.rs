@@ -53,12 +53,12 @@ pub enum NoteKind {
     /// An export that landed: what it wrote and where.
     Exported { summary: String, into: String },
     ExportFailed { error: String },
-    /// A texture written back into a pack: which one, into which file, whether the pack had to be
-    /// relocated to take it, and what the round trip cost.
+    /// Textures written back into a pack: how many, into which file, whether the pack had to be
+    /// relocated to take them, and what the worst of the round trips cost.
     ///
-    /// `psnr` is `None` when the image came back identical — which is not a rounding of "very
+    /// `psnr` is `None` when every image came back identical — which is not a rounding of "very
     /// close" but the two lossless cases, a channel swap and a palette the image fits inside.
-    Replaced { name: String, into: String, moved: bool, psnr: Option<f32> },
+    Replaced { count: usize, into: String, moved: bool, psnr: Option<f32> },
     ReplaceFailed { error: String },
     /// Anything the program itself has to say — a panicking job, say. Not localised: it is a
     /// diagnostic that happens to be worth showing.
@@ -85,13 +85,17 @@ impl NoteKind {
             Self::Finding { subject, message } => format!("{subject}: {message}"),
             Self::Exported { summary, into } => format!("{} — {summary} → {into}", t.exported),
             Self::ExportFailed { error } => format!("{}: {error}", t.export_failed),
-            Self::Replaced { name, into, moved, psnr } => {
+            Self::Replaced { count, into, moved, psnr } => {
                 let how = match psnr {
                     None => t.rep_exact.to_string(),
                     Some(db) => format!("{db:.1} dB"),
                 };
                 let moved = if *moved { format!(" · {}", t.rep_moved) } else { String::new() };
-                format!("{name} {} → {into} · {how}{moved}", t.replaced)
+                format!(
+                    "{count} {} {} → {into} · {how}{moved}",
+                    t.textures_count.of(*count),
+                    t.replaced
+                )
             }
             Self::ReplaceFailed { error } => format!("{}: {error}", t.replace_failed),
             Self::Diagnostic(text) => text.clone(),
@@ -728,13 +732,13 @@ mod tests {
     #[test]
     fn a_written_texture_says_which_of_the_two_results_it_got() {
         let exact = NoteKind::Replaced {
-            name: "240SX_DOORLINE".into(),
+            count: 1,
             into: "/out/TEXTURES.BIN".into(),
             moved: false,
             psnr: None,
         };
         let lossy = NoteKind::Replaced {
-            name: "240SX_BADGING".into(),
+            count: 3,
             into: "/out/TEXTURES.BIN".into(),
             moved: true,
             psnr: Some(39.94),
@@ -742,12 +746,12 @@ mod tests {
         for lang in [crate::i18n::Lang::Tr, crate::i18n::Lang::En] {
             let t = lang.strings();
             let a = exact.text(t);
-            assert!(a.contains("240SX_DOORLINE") && a.contains(t.rep_exact), "{a}");
+            assert!(a.starts_with('1') && a.contains(t.rep_exact), "{a}");
             assert!(!a.contains("dB"), "an identical read-back must not report a figure: {a}");
             assert!(!a.contains(t.rep_moved), "nothing moved: {a}");
 
             let b = lossy.text(t);
-            assert!(b.contains("39.9 dB"), "{b}");
+            assert!(b.starts_with('3') && b.contains("39.9 dB"), "{b}");
             assert!(b.contains(t.rep_moved), "a relocated pack says so: {b}");
         }
         let failed = NoteKind::ReplaceFailed { error: "8×8, not 128×64".into() };

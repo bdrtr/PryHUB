@@ -100,7 +100,11 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(token::BG).inner_margin(PAD))
         .show_inside(ui, |ui| {
-            pick = sheet(app, ui, &entries, selected, undecoded, unread);
+            let (clicked, wants_save) = sheet(app, ui, &entries, selected, undecoded, unread);
+            pick = clicked;
+            if wants_save {
+                action = Some(Action::Save);
+            }
         });
 
     if let Some(hash) = pick {
@@ -108,19 +112,25 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     }
     match action {
         Some(Action::SavePng(hash)) => app.export_now(crate::export::Kind::OneTexture(hash)),
-        // The dialog rather than the write: which image, and — the part worth being asked — whether
-        // it goes over the game's own file.
-        Some(Action::Replace) => app.show_replace = true,
+        // Straight to the chooser, and what comes back is *staged* rather than written. The
+        // question the dialog exists to ask — a copy, or the game's own file — is asked once for
+        // the whole set, at Save.
+        Some(Action::Stage(hash)) => {
+            app.ask_for_image(ui.ctx(), hash);
+        }
+        Some(Action::Save) => app.show_replace = true,
         None => {}
     }
 }
 
-/// What the preview pane's buttons ask for.
+/// What the tab's buttons ask for.
 enum Action {
     /// Write this one image out as a PNG.
     SavePng(AssetHash),
-    /// Put an image in its place.
-    Replace,
+    /// Choose an image to put in its place, and hold it until Save.
+    Stage(AssetHash),
+    /// Write everything staged.
+    Save,
 }
 
 /// The right-hand pane: the selected image at size, what the file says about it, and the two buttons
@@ -209,7 +219,7 @@ fn preview(
             .on_hover_text(t.rep_hint)
             .clicked()
         {
-            action = Some(Action::Replace);
+            action = Some(Action::Stage(tex.hash));
         }
     });
     action
@@ -255,9 +265,10 @@ fn sheet(
     selected: Option<AssetHash>,
     undecoded: usize,
     unread: usize,
-) -> Option<AssetHash> {
+) -> (Option<AssetHash>, bool) {
     let t = app.lang.strings();
     let mut pick = None;
+    let mut save = false;
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(format!("{} {}", entries.len(), t.textures_count.of(entries.len())))
@@ -279,6 +290,25 @@ fn sheet(
                     .font(theme::font::mono(10.5))
                     .color(token::ACCENT_2),
             );
+        }
+        // What is staged and not yet written, in the design's CARP vocabulary: an accent dot, a
+        // count, and the Save that is the only way anything reaches the file. Drawn only when there
+        // is something to say, so a tab nobody has edited looks exactly as it did.
+        let staged = app.pending.len();
+        if staged > 0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = token::SPACE_2;
+                if crate::widget::button_primary(ui, t.rep_save).clicked() {
+                    save = true;
+                }
+                ui.label(
+                    RichText::new(format!("{staged} {}", t.rep_changes.of(staged)))
+                        .font(theme::font::mono(10.5))
+                        .color(token::ACCENT),
+                );
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                theme::mark::dot(ui.painter(), dot.center(), 7.0, token::ACCENT);
+            });
         }
     });
     ui.add_space(token::SPACE_4);
@@ -305,6 +335,11 @@ fn sheet(
         // themselves, and the sheet would scroll to somewhere other than where it drew.
         ui.spacing_mut().item_spacing = Vec2::new(GAP, 0.0);
 
+        // Which textures have an image waiting. Gathered once rather than searched per tile: the
+        // sheet draws a screenful at a time, but a `VINYLS.BIN` is 1,786 of them and a linear scan
+        // per tile is the kind of thing that is free until the file is big.
+        let staged: std::collections::HashSet<AssetHash> =
+            app.pending.iter().map(|p| p.hash).collect();
         let tile = tile_height(ui, width);
         let pitch = tile + GAP;
         let rows = entries.len().div_ceil(cols);
@@ -325,9 +360,9 @@ fn sheet(
                         &handle,
                         &label,
                         &meta_of(tex),
-                        width,
-                        tile,
+                        Vec2::new(width, tile),
                         selected == Some(**hash),
+                        staged.contains(hash),
                     );
                     if resp.clicked() {
                         pick = Some(**hash);
@@ -345,7 +380,7 @@ fn sheet(
         }
         ui.add_space(rows.saturating_sub(last) as f32 * pitch);
     });
-    pick
+    (pick, save)
 }
 
 /// How tall one tile is, without the gap under it.
@@ -378,10 +413,13 @@ fn cell(
     handle: &TextureHandle,
     name: &str,
     meta: &str,
-    width: f32,
-    height: f32,
+    // One measure rather than two: a tile is a size, and splitting it was what pushed this past
+    // what a reader can hold at once.
+    size: Vec2,
     on: bool,
+    staged: bool,
 ) -> egui::Response {
+    let width = size.x;
     let ink = if on { token::ACCENT_800 } else { token::TEXT };
     let inner = (width - CAP_X * 2.0).max(1.0);
     let name_line = elided(ui, name, theme::font::mono(10.5), ink, inner);
@@ -390,7 +428,7 @@ fn cell(
     // ([`tile_height`]) so that the row pitch the scroller reserved and the box drawn in it are the
     // same number — see that function for why measuring here instead drifts.
     let name_h = name_line.size().y;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
 
     let slot = Rect::from_min_size(rect.left_top(), Vec2::splat(width));
     // The image fades up the first time this cell is drawn. 73 thumbnails appearing at once
@@ -418,6 +456,14 @@ fn cell(
     );
     if resp.hovered() {
         p.rect_filled(rect, 0.0_f32, token::WASH_HOVER);
+    }
+    // An image waiting to go into this texture. The design's own mark for a row with an unsaved
+    // change — an accent dot — put in the corner of the slot, which is the one part of a tile that
+    // is always the image and never the caption.
+    if staged {
+        let at = egui::pos2(slot.right() - CAP_X, slot.top() + CAP_X);
+        theme::mark::dot(p, at, 8.0, token::ACCENT);
+        p.circle_stroke(at, 4.0, Stroke::new(token::HAIRLINE, token::SURFACE));
     }
     p.rect_stroke(
         rect,

@@ -38,6 +38,17 @@ pub enum Tab {
     Assembly,
 }
 
+/// A replacement chosen but not yet written.
+///
+/// Held in the interface rather than applied on the spot, so several of them become one rewrite of
+/// the pack — and so a second edit builds on the first rather than starting from the file again.
+pub struct Pending {
+    pub hash: gizmo_nfs::AssetHash,
+    /// What the texture is called on screen, for the list in the save dialog.
+    pub name: String,
+    pub png: std::path::PathBuf,
+}
+
 /// Whether two paths name the same file on disk.
 ///
 /// Resolved rather than compared as written: the two sides come from different places — one from the
@@ -60,8 +71,11 @@ fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
 pub enum Picking {
     /// A document, for one side of the compare screen.
     Open(crate::jobs::Side),
-    /// An image, for the replace dialog's field.
-    Image,
+    /// An image, to be staged against a particular texture. The hash travels with it because the
+    /// answer arrives frames later and the selection may have moved on — staging it against
+    /// whatever is selected *then* would put a user's image into a texture they were no longer
+    /// looking at when they chose it.
+    Image(gizmo_nfs::AssetHash),
 }
 
 /// The state of the open file's textures.
@@ -166,6 +180,9 @@ pub struct PryHub {
     /// one — but the texture the user replaced is the one they are looking at, and putting them back
     /// on the first image of the sheet would be the reload showing.
     pub pending_texture: Option<gizmo_nfs::AssetHash>,
+    /// `--stage <png>`: an image to stage against the pack's first texture once it has decoded.
+    /// Only a way in for screenshots and tests — staging is otherwise a click and a file chooser.
+    pub pending_stage: Option<std::path::PathBuf>,
     /// Files opened this session, most recent first.
     pub recents: Vec<std::path::PathBuf>,
     /// The welcome screen's path field.
@@ -218,13 +235,18 @@ pub struct PryHub {
     /// thing the second time.
     pub show_export: bool,
     pub export_choice: crate::export::Choice,
-    /// Whether the replace dialog is up, the image it has been given, and whether it has been told
-    /// to write over the game's own file. The path outlives the dialog the way the export choice
-    /// does; the *overwrite* flag does not, and that asymmetry is the point — someone who exports
-    /// twice means the same thing twice, and someone who overwrites a game file once has not
+    /// Replacements chosen but not yet written, in the order they were staged.
+    ///
+    /// The whole reason they are held rather than written on the spot: a write reads the pack from
+    /// disk, so two edits written one at a time into a *copy* each start from the original and the
+    /// second discards the first. Held here they go into one rewrite, which is also one file
+    /// operation instead of N over an 8.7 MB pack. It is the design's own CARP shape — edit into a
+    /// set, see what is dirty, Save or Revert — applied to the tab that needed it.
+    pub pending: Vec<Pending>,
+    /// Whether the save dialog is up, and whether it has been told to write over the game's own
+    /// file. The overwrite flag does not outlive the dialog: someone who overwrote once has not
     /// thereby asked to do it again.
     pub show_replace: bool,
-    pub replace_png: String,
     pub replace_over: bool,
     /// Set when the density or language changed and the style must be rebuilt.
     pub(crate) restyle: bool,
@@ -264,6 +286,7 @@ impl PryHub {
             error: None,
             pending_selection: None,
             pending_texture: None,
+            pending_stage: None,
             recents: Vec::new(),
             path_input: String::new(),
             picking: None,
@@ -286,8 +309,8 @@ impl PryHub {
             texture_cache: std::collections::HashMap::new(),
             show_export: false,
             export_choice: crate::export::Choice::default(),
+            pending: Vec::new(),
             show_replace: false,
-            replace_png: String::new(),
             replace_over: false,
             restyle: false,
             shot: shot.map(|p| crate::shot::Shot {
@@ -357,9 +380,9 @@ impl PryHub {
                     self.picking = None;
                     match what {
                         Picking::Open(side) => self.open_side(&path, side),
-                        // Into the dialog's field rather than straight into a write: the target is
-                        // still to be chosen, and this is a file that will be written over a game's.
-                        Picking::Image => self.replace_png = path.display().to_string(),
+                        // Staged, not written: the target — a copy, or the game's own file — is
+                        // still to be chosen, and is chosen once for the whole set.
+                        Picking::Image(hash) => self.stage_replacement(hash, &path),
                     }
                 }
                 // Cancelled, or the thread went away with it.
@@ -381,6 +404,21 @@ impl PryHub {
                 Outcome::Decoded { for_path, tpk, unread } => {
                     if self.doc.as_ref().is_some_and(|d| d.path == for_path) {
                         self.textures = Textures::Ready { tpk, unread };
+                        // `--stage` waits for exactly this: the dimensions to check against.
+                        if let Some(png) = self.pending_stage.take() {
+                            // By name, then hash — the sheet's own order, so `--stage` acts on the
+                            // texture the window opens showing rather than on whichever one happens
+                            // to sort first by hash.
+                            if let Some(hash) = self.textures.ready().and_then(|p| {
+                                p.textures
+                                    .values()
+                                    .min_by(|a, b| a.name.cmp(&b.name).then(a.hash.0.cmp(&b.hash.0)))
+                                    .map(|t| t.hash)
+                            }) {
+                                self.texture_selection = Some(hash);
+                                self.stage_replacement(hash, &png);
+                            }
+                        }
                     }
                 }
                 Outcome::TextureNames { for_path, names } => {
@@ -536,10 +574,52 @@ impl PryHub {
         self.ask(ctx, Picking::Open(side), crate::picker::Filter::Assets)
     }
 
-    /// Ask for an image to put in place of a texture. The same chooser and a different answer: this
-    /// one fills the replace dialog's field rather than opening a document.
-    pub(crate) fn ask_for_image(&mut self, ctx: &egui::Context) -> bool {
-        self.ask(ctx, Picking::Image, crate::picker::Filter::Images)
+    /// Ask for an image to stage against `hash`. The same chooser and a different answer: this one
+    /// stages a replacement rather than opening a document.
+    pub(crate) fn ask_for_image(
+        &mut self,
+        ctx: &egui::Context,
+        hash: gizmo_nfs::AssetHash,
+    ) -> bool {
+        self.ask(ctx, Picking::Image(hash), crate::picker::Filter::Images)
+    }
+
+    /// Stage an image against a texture, or say why it cannot go there.
+    ///
+    /// The dimension check happens **here**, when the file is chosen, and it reads the PNG's header
+    /// rather than its pixels — `png_size` is the first twenty-four bytes and two integers. Decoding
+    /// a 512² image to compare two numbers would put the cost of the whole replacement on the frame
+    /// that opened a file chooser, and leaving the check to the save would let a user stage six
+    /// images and find out at the end that the second one was never going to fit.
+    fn stage_replacement(&mut self, hash: gizmo_nfs::AssetHash, png: &std::path::Path) {
+        let Some(tex) = self.textures.ready().and_then(|p| p.texture(hash).cloned()) else { return };
+        let complain = |app: &mut Self, error: String| {
+            app.log.push(Note {
+                level: Level::Error,
+                chunk: None,
+                chunk_id: String::new(),
+                kind: NoteKind::ReplaceFailed { error },
+            });
+        };
+        let bytes = match std::fs::read(png) {
+            Ok(b) => b,
+            Err(e) => return complain(self, format!("{}: {e}", png.display())),
+        };
+        match gizmo_nfs::export::png_size(&bytes) {
+            Ok((w, h)) if (w, h) == (tex.width, tex.height) => {}
+            Ok((w, h)) => {
+                let name = png.file_name().unwrap_or_default().to_string_lossy().to_string();
+                return complain(
+                    self,
+                    format!("{name} is {w}×{h}, {} is {}×{}", tex.name, tex.width, tex.height),
+                );
+            }
+            Err(e) => return complain(self, format!("{}: {e}", png.display())),
+        }
+        // One image per texture: staging a second for the same one replaces it rather than queueing
+        // both, because two answers to one question is not a set anyone meant to build.
+        self.pending.retain(|p| p.hash != hash);
+        self.pending.push(Pending { hash, name: tex.name.clone(), png: png.to_path_buf() });
     }
 
     /// One chooser at a time, and it remembers what it was opened for.
@@ -727,26 +807,29 @@ impl PryHub {
         self.log.push(note);
     }
 
-    /// Queue a replacement of the selected texture with the image the dialog has been given.
+    /// Queue every staged replacement as one write.
     ///
-    /// Everything it needs is resolved **here**, on the click: which pack, which texture, which
-    /// file, and whether to write over the original. The worker is handed a decision rather than a
-    /// question, for the same reason the export snapshots the mounted build — the user is free to
-    /// change the selection while it runs, and what they pressed the button on is what should be
-    /// written.
+    /// Everything it needs is resolved **here**, on the click: which pack, which textures, which
+    /// files, and whether to write over the original. The worker is handed a decision rather than a
+    /// question, for the same reason the export snapshots the mounted build — the user is free to go
+    /// on staging while it runs, and what they pressed the button on is what should be written.
     pub fn replace_now(&mut self) {
         let Some(doc) = &self.doc else { return };
         let Some(pack) = doc.pack_path() else { return };
-        let Some(hash) = self.texture_selection else { return };
-        // The name is not carried: the worker decodes the texture anyway, to check the image against
-        // its dimensions, so it has the file's own name rather than a copy of the one on screen.
-        let spec = crate::replace::Spec {
-            doc: doc.path.clone(),
-            pack,
-            hash,
-            png: std::path::PathBuf::from(self.replace_png.trim()),
-            over: self.replace_over,
-        };
+        if self.pending.is_empty() {
+            return;
+        }
+        let edits = self
+            .pending
+            .iter()
+            .map(|p| crate::replace::Edit {
+                hash: p.hash,
+                name: p.name.clone(),
+                png: p.png.clone(),
+            })
+            .collect();
+        let spec =
+            crate::replace::Spec { doc: doc.path.clone(), pack, edits, over: self.replace_over };
         self.jobs.send(crate::jobs::Request::Replace(Box::new(spec)));
     }
 
@@ -781,6 +864,10 @@ impl PryHub {
     pub fn report_replace(&mut self, result: Result<crate::replace::Done, String>, mine: bool) {
         let note = match result {
             Ok(done) => {
+                // Staged edits are cleared on success and only on success: a set that could not be
+                // written is still the set the user built, and throwing it away would make them
+                // choose six files again to find out whether the second one fits this time.
+                self.pending.clear();
                 if mine {
                     self.refresh_after(&done);
                 }
@@ -792,7 +879,7 @@ impl PryHub {
                     chunk: None,
                     chunk_id: String::new(),
                     kind: NoteKind::Replaced {
-                        name: done.name,
+                        count: done.count,
                         into: done.into.display().to_string(),
                         moved: done.moved,
                         psnr: done.psnr,
@@ -837,6 +924,58 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         false
+    }
+
+    /// Staging: the dimension check, and one image per texture.
+    ///
+    /// Both rules exist because of what happens without them. The check is here rather than at Save
+    /// so a person who stages six images is not told at the end that the second one was never going
+    /// to fit; and staging a second image for one texture *replaces* the first, because two answers
+    /// to one question is not a set anybody meant to build — and `replace_images` refuses it anyway.
+    #[test]
+    fn staging_checks_the_size_and_keeps_one_image_per_texture() {
+        let Some(root) = std::env::var_os("NFSU2_ROOT").map(std::path::PathBuf::from) else {
+            eprintln!("NFSU2_ROOT unset — skipping");
+            return;
+        };
+        let mut app = app();
+        app.open(&root.join("CARS/240SX/TEXTURES.BIN"));
+        assert!(settle(&mut app, |a| a.doc.is_some()), "the file never opened");
+        app.want_textures();
+        assert!(settle(&mut app, |a| a.textures.ready().is_some()), "the pack never decoded");
+
+        let pack = app.textures.ready().expect("a pack").clone();
+        let mut texs: Vec<_> = pack.textures.values().collect();
+        texs.sort_by_key(|t| t.hash.0);
+        let tex = texs.first().expect("a texture");
+        let other = texs.iter().find(|t| (t.width, t.height) != (tex.width, tex.height));
+
+        let dir = std::env::temp_dir().join(format!("pryhub-stage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let right = dir.join("right.png");
+        std::fs::write(&right, gizmo_nfs::export::png_bytes(tex).expect("encode")).expect("write");
+
+        app.stage_replacement(tex.hash, &right);
+        assert_eq!(app.pending.len(), 1, "a matching image stages");
+
+        // A second image for the same texture replaces it rather than queueing beside it.
+        let again = dir.join("again.png");
+        std::fs::write(&again, gizmo_nfs::export::png_bytes(tex).expect("encode")).expect("write");
+        app.stage_replacement(tex.hash, &again);
+        assert_eq!(app.pending.len(), 1, "one image per texture");
+        assert_eq!(app.pending[0].png, again, "and it is the newer one");
+
+        // A differently-sized image is refused, said out loud, and staged nowhere.
+        if let Some(wrong_size) = other {
+            let wrong = dir.join("wrong.png");
+            std::fs::write(&wrong, gizmo_nfs::export::png_bytes(wrong_size).expect("encode"))
+                .expect("write");
+            let before = app.log.len();
+            app.stage_replacement(tex.hash, &wrong);
+            assert_eq!(app.pending.len(), 1, "nothing was staged for the wrong size");
+            assert!(app.log.len() > before, "and the user was told");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

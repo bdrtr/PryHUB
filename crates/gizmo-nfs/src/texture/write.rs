@@ -163,20 +163,81 @@ pub fn replace_image(
     width: u32,
     height: u32,
 ) -> NfsResult<(Vec<u8>, bool)> {
+    replace_images(file, &[Image { hash, rgba, width, height }])
+}
+
+/// One image to put into a pack, for [`replace_images`].
+#[derive(Clone, Copy)]
+pub struct Image<'a> {
+    /// The texture to replace.
+    pub hash: AssetHash,
+    /// `width * height * 4` bytes of RGBA8.
+    pub rgba: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Put several images into a pack **in one pass**, returning the new file and whether it moved.
+///
+/// Not a convenience over calling [`replace_image`] repeatedly — that is a different and worse
+/// thing. Each call rewrites the whole file, so N of them is N rewrites of a pack that is 8.7 MB for
+/// a car and 14 MB for its vinyls; and when one of them relocates, the next starts from a file whose
+/// every blob has already moved. Here the encodes happen against one input, the cheap path is tried
+/// for all of them, and relocation — if any single one needs it — happens once, for the whole set.
+///
+/// The in-place attempt is sequential on purpose: [`replace_blob`] writes into the slot a blob
+/// already occupies and touches nothing else, so applying it to the result of the previous one is
+/// exact. The moment any of them does not fit, the whole set goes through [`relocate`] instead,
+/// because a half-in-place-half-relocated pack is not a thing worth constructing.
+///
+/// # Errors
+/// Whatever [`crate::texture::replace_pixels`] refuses for any one image, and whatever [`relocate`]
+/// refuses for the pack. A set with two images for the same hash is refused rather than resolved:
+/// the caller has asked for two different answers to one question.
+pub fn replace_images(file: &[u8], images: &[Image<'_>]) -> NfsResult<(Vec<u8>, bool)> {
+    if images.is_empty() {
+        return Ok((file.to_vec(), false));
+    }
+    for (i, a) in images.iter().enumerate() {
+        if images.iter().skip(i + 1).any(|b| b.hash == a.hash) {
+            return Err(NfsError::CorruptArchive {
+                detail: "the same texture appears twice in one set of replacements",
+            });
+        }
+    }
+
     let (entries, _) = table(file)?;
-    let entry = *entries
-        .iter()
-        .find(|e| e.hash == hash)
-        .ok_or(NfsError::CorruptArchive { detail: "no texture with that hash in this TPK" })?;
-    let blob = blob_of(file, hash)?;
-    let new = super::encode::replace_pixels(&blob, &entry, rgba, width, height)?;
+    let mut blobs: Vec<(AssetHash, Vec<u8>)> = Vec::with_capacity(images.len());
+    for img in images {
+        let entry = *entries
+            .iter()
+            .find(|e| e.hash == img.hash)
+            .ok_or(NfsError::CorruptArchive { detail: "no texture with that hash in this TPK" })?;
+        let blob = blob_of(file, img.hash)?;
+        blobs.push((
+            img.hash,
+            super::encode::replace_pixels(&blob, &entry, img.rgba, img.width, img.height)?,
+        ));
+    }
+
     // The cheap path first, always. Whether a re-encoded blob of the same length compresses back
     // into its old slot is a property of the pixels rather than of the format, so it is answered by
     // trying rather than by predicting: over the install's 2,243 textures, 1,975 fit and 268 did not.
-    match replace_blob(file, hash, &new) {
-        Ok(out) => Ok((out, false)),
-        Err(_) => relocate(file, &[(hash, new)]).map(|out| (out, true)),
+    let mut out = file.to_vec();
+    let mut all_fit = true;
+    for (hash, blob) in &blobs {
+        match replace_blob(&out, *hash, blob) {
+            Ok(next) => out = next,
+            Err(_) => {
+                all_fit = false;
+                break;
+            }
+        }
     }
+    if all_fit {
+        return Ok((out, false));
+    }
+    relocate(file, &blobs).map(|out| (out, true))
 }
 
 /// The chunk whose payload is every pixel blob in the pack.

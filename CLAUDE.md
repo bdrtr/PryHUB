@@ -129,18 +129,36 @@ thing already on screen. The writers themselves are `gizmo_nfs::export`, so PryH
 cannot drift.
 
 `Değiştir…` on the preview pane is the tool's **write path**, and the first thing it writes that is
-not its own output. It opens a dialog (`screens/replace_dialog.rs`, `--screen replace`) stating which
-texture, taking a PNG, and offering the one choice that is not a preference: a copy under
-`pryhub-edit/`, or **over the game's own file** with a `.bak` written first. A copy is the default —
-someone trying the feature out should not find out what it does by finding out what it did to their
-install — and the resolved path is on screen before the button is pressed rather than in the log
-after. The work is `jobs::Request::Replace`, and the worker **decodes the pack it just built and
-pulls the texture back out of it before writing anything**: nothing else in this program can check
-its own output, but a pack can be handed straight back to the parser. When it lands, the pack is
-re-read and the thumbnail cache dropped, because an interface that went on showing the old pixels
-after saying it had written new ones would be the worse of the two possible lies. The design draws
-none of this: its texture tab has no controls at all and its only write affordance is the CARP
-screen's Save/Revert pair, so the vocabulary is borrowed from there rather than invented.
+not its own output. It does not write: it **stages**. The chooser's answer is checked against the
+texture's dimensions there and then — through `export::png_size`, which is the header and not the
+pixels — and either joins the pending set or says why it cannot, so nobody stages six images and
+learns at the end that the second was never going to fit. One image per texture; a second replaces
+the first.
+
+Staged edits show as the design's CARP vocabulary, which is where the prototype puts its only write
+affordance: an accent dot on the tile, `● n change` beside the count, and a `Save`. (Its **words**
+are not borrowed — `cp_save` reads "Save CARP" and said so on screen until it was noticed. Borrow a
+treatment, not a sentence about another screen. The dot is *drawn*, for the reason the validation
+marks are: the bundled font has no `●` and a missing glyph is a box, which it was.)
+
+Save opens `screens/replace_dialog.rs` (`--screen replace`, with `--stage <png>` to reach it in a
+screenshot): what goes in, then the one choice that is not a preference — a copy under
+`pryhub-edit/`, or **over the game's own file** with a `.bak` written first, atomically, once. A copy
+is the default, and the resolved path is on screen before the button is pressed rather than in the
+log after.
+
+**The set is why it is a set.** A write reads the pack from disk, so replacements written one at a
+time into a copy each started from the original and the second discarded the first; and each one
+rewrote an 8.7 MB file on its own. `texture::replace_images` takes them all, encodes against one
+input and relocates once if any single one needs it. A set is also refused *whole* — every image is
+checked before any is encoded.
+
+The worker **decodes the pack it just built and pulls every edited texture back out of it before
+writing anything**: nothing else in this program can check its own output, but a pack can be handed
+straight back to the parser. When the write lands on the *open* document — not the pack beside it —
+the document is reopened rather than merely re-decoded, carrying the selection and the replaced
+texture across: `Doc::bytes` is the snapshot taken at open, so a re-decode alone reads the pre-write
+image, and the sheet would redraw the old pixels under a log line saying it had written new ones.
 
 The texture tab is a contact sheet over the car's TPK: the open file when it is itself a
 `TEXTURES.BIN`, else the `TEXTURES.BIN` beside it, decoded on the worker because a whole pack

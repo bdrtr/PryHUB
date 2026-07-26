@@ -414,6 +414,77 @@ fn a_re_encoded_texture_reads_back_from_the_pack() {
     assert!(in_place >= 60, "only {in_place} of 73 fit in place");
 }
 
+/// Several images into one pack in one pass, and the thing that makes it worth doing that way.
+///
+/// Replacing three textures one call at a time rewrites the file three times, and the moment one of
+/// them relocates the next starts from a pack whose every blob has already moved. In one pass the
+/// encodes all happen against one input and relocation, if any single image needs it, happens once
+/// for the whole set.
+///
+/// What this asserts is that the result is the same pack either way — all three images present and
+/// correct, and every texture that was not named untouched — because "in one pass" is only an
+/// optimisation if it produces what the slow way would have.
+#[test]
+fn several_images_go_into_a_pack_in_one_pass() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping multi-replace test");
+        return;
+    };
+    use gizmo_nfs::texture::{replace_images, Image, Tpk};
+
+    let bytes = std::fs::read(root.join("CARS/240SX/TEXTURES.BIN")).expect("read TEXTURES.BIN");
+    let before = Tpk::parse(&bytes).expect("parse");
+    assert_eq!(before.textures.len(), 73);
+
+    // Three textures, each painted a different flat colour — flat so the comparison below is about
+    // the write path rather than about what DXT does to detail.
+    let mut chosen: Vec<_> = before.textures.values().take(3).cloned().collect();
+    chosen.sort_by_key(|t| t.hash.0);
+    let paints = [[255u8, 0, 255, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+    let painted: Vec<Vec<u8>> = chosen
+        .iter()
+        .zip(paints.iter())
+        .map(|(t, c)| c.iter().copied().cycle().take(t.rgba.len()).collect())
+        .collect();
+    let images: Vec<Image> = chosen
+        .iter()
+        .zip(painted.iter())
+        .map(|(t, px)| Image { hash: t.hash, rgba: px, width: t.width, height: t.height })
+        .collect();
+
+    let (written, _moved) = replace_images(&bytes, &images).expect("three at once");
+    let after = Tpk::parse(&written).expect("the written pack parses");
+    assert_eq!(after.textures.len(), before.textures.len(), "no texture was lost");
+
+    for (t, want) in chosen.iter().zip(paints.iter()) {
+        let got = after.texture(t.hash).expect("the replaced texture");
+        // Flat colour through a block encoder: near, not exact, and near is the claim.
+        let off = got
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p.iter().zip(want.iter()).any(|(a, b)| a.abs_diff(*b) > 12))
+            .count();
+        assert!(off * 20 < got.rgba.len() / 4, "{}: {off} pixels missed the paint", t.name);
+    }
+    // And every texture nobody named came back exactly as it was.
+    let named: Vec<_> = chosen.iter().map(|t| t.hash).collect();
+    for (hash, old) in &before.textures {
+        if named.contains(hash) {
+            continue;
+        }
+        let new = after.texture(*hash).expect("a bystander survived");
+        assert_eq!(new.rgba, old.rgba, "{} changed and nobody asked it to", old.name);
+    }
+
+    // Two edits for one texture is a caller asking for two answers to one question.
+    let twice = [images[0], images[0]];
+    assert!(replace_images(&bytes, &twice).is_err(), "one hash twice must be refused");
+    // And an empty set is the file, unchanged.
+    let (same, moved) = replace_images(&bytes, &[]).expect("nothing to do");
+    assert_eq!(same, bytes);
+    assert!(!moved);
+}
+
 /// The palettised half of the same claim, on the pack that is nothing but palettised: a `VINYLS.BIN`.
 ///
 /// Kept apart from the car pack rather than folded into it because the two exercise different code

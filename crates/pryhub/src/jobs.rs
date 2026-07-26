@@ -247,7 +247,7 @@ fn describe(request: &Request) -> String {
         Request::Palette { beside } => format!("palette beside {}", beside.display()),
         Request::CarSpec { beside } => format!("car spec beside {}", beside.display()),
         Request::Replace(spec) => {
-            format!("{} into {}", spec.png.display(), spec.pack.display())
+            format!("{} edits into {}", spec.edits.len(), spec.pack.display())
         }
     }
 }

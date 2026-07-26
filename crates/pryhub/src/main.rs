@@ -68,6 +68,15 @@ fn main() -> eframe::Result {
                 .position(|a| a == "--compare")
                 .and_then(|i| args.get(i + 1))
                 .cloned();
+            // `--stage <png>` stages an image against the first texture in the pack, once it has
+            // decoded. The same reason `--select` and `--compare` exist: staging is a click and a
+            // desktop file chooser, and neither is available to a screenshot on a machine whose
+            // compositor will not hand out a screen grab.
+            let stage = args
+                .iter()
+                .position(|a| a == "--stage")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
             let file = args.first().filter(|a| !a.starts_with("--")).cloned();
             let mut app = app::PryHub::new(&cc.egui_ctx, chosen, file, shot, screen);
             if let Some(tab) = tab {
@@ -81,6 +90,11 @@ fn main() -> eframe::Result {
             if let Some(offset) = select {
                 // Applied when the parse lands, not now: there is no document to select in yet.
                 app.pending_selection = Some(offset);
+            }
+            if let Some(png) = stage {
+                // Applied when the *pack* lands, which is later still: staging needs the texture's
+                // dimensions to check the image against.
+                app.pending_stage = Some(std::path::PathBuf::from(png));
             }
             if let Some(other) = compare {
                 app.open_other(std::path::Path::new(&other));
