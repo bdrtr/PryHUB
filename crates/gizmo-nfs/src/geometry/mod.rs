@@ -15,7 +15,7 @@
 //!
 //! **Vertex buffer** `0x00134B01`: leading alignment padding (`0x11` filler) followed by
 //! `vertex_count` vertices of **stride 36 bytes = 9 little-endian f32**:
-//! `position[3]`, `normal[3]`, one reserved sentinel float, `uv[2]`. The vertices occupy
+//! `position[3]`, `normal[3]`, a packed B,G,R,A colour, `uv[2]`. The vertices occupy
 //! the *last* `vertex_count * 36` bytes, so the pad size is derived, not scanned.
 //!
 //! **Index buffer** `0x00134B03`: leading `0x11` padding followed by `triangle_count * 3`
@@ -27,6 +27,7 @@
 //! and tables it pulls together.
 
 pub mod format;
+pub mod write;
 mod index;
 mod material;
 mod name;
@@ -37,6 +38,7 @@ pub use format::VERTEX_STRIDE;
 pub use name::{part_name, read_matrix};
 pub use solid::{mesh_field, skip_leading_filler, SkipReason, Skipped};
 pub use vertex::standard_vertex_layout;
+pub use write::{rebuild, SOLID_DIRECTORY};
 
 use crate::chunk::ChunkNode;
 use crate::error::NfsResult;

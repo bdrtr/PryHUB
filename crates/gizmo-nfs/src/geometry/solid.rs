@@ -66,7 +66,7 @@ pub(super) fn parse_solid(
         return Ok(Err(SkipReason::PackedVertexLayout { vert_count, vbuf_len }));
     }
 
-    let (positions, normals, uvs) = vertex::parse_vertices(vbuf.data(root), vert_count)?;
+    let (positions, normals, colours, uvs) = vertex::parse_vertices(vbuf.data(root), vert_count)?;
     let indices = index::parse_indices(ibuf.data(root), tri_count, vert_count)?;
 
     // Name / role / LOD / transform from the solid header (optional but usually present).
@@ -98,6 +98,7 @@ pub(super) fn parse_solid(
         positions,
         normals,
         uvs,
+        colours,
         indices,
         material_refs,
         materials,

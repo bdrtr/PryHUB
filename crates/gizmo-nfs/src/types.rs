@@ -110,6 +110,26 @@ pub struct NfsMeshPart {
     pub normals: Vec<[f32; 3]>,
     /// Vertex texture coordinates (empty if absent).
     pub uvs: Vec<[f32; 2]>,
+    /// Per-vertex colour, RGBA8.
+    ///
+    /// It was read as nothing at all until it was measured: the four bytes at `+24` of the stride-36
+    /// record were documented here and in the parser as "a constant sentinel (~-1.7e38); unused",
+    /// and they are neither constant nor unused. Over one install they take **4,278 distinct
+    /// values** across 4,058,782 vertices, and 5,558 of 18,225 solids vary within themselves; the
+    /// "-1.7e38" that made it look like a sentinel is `0xFF000000` read as an `f32`. Dropping it made
+    /// the parser lossy for half a megabyte per car, which is only a curiosity until something tries
+    /// to write a mesh *back*.
+    ///
+    /// **The channel order is stated, not proven.** The last byte is an alpha — `0xFF` on 99.96% of
+    /// the install's vertices — and the middle one is green, which the data does say. Which of the
+    /// outer two is red it does not: over 44,266 strongly-coloured vertices the first byte is the
+    /// largest 18,673 times and the third 20,504, near enough even to settle nothing. What decides it
+    /// is consistency rather than this field: `D3DCOLOR` is B,G,R,A in memory on a little-endian
+    /// machine, and this crate has already locked exactly that order for the TPK palette and for the
+    /// uncompressed `0x20` texture format — on images that *could* say, which is how it was locked
+    /// there. So these bytes are read B,G,R,A and handed back R,G,B,A. A round trip is unaffected
+    /// either way: read and written through the same order, the bytes come back identical.
+    pub colours: Vec<[u8; 4]>,
     /// Triangle-list indices into the attribute arrays.
     pub indices: Vec<u32>,
     /// Asset hashes this part references (from the solid's material list). Resolve each

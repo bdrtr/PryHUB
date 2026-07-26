@@ -12,12 +12,12 @@ pub fn standard_vertex_layout(vert_count: usize, vbuf_len: usize) -> bool {
 }
 
 /// The vertices occupy the last `count * STRIDE` bytes of the buffer (leading bytes are
-/// alignment padding). Returns parallel position/normal/uv arrays.
+/// alignment padding). Returns parallel position/normal/colour/uv arrays.
 #[allow(clippy::type_complexity)]
 pub(super) fn parse_vertices(
     vbuf: &[u8],
     count: usize,
-) -> NfsResult<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>)> {
+) -> NfsResult<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[u8; 4]>, Vec<[f32; 2]>)> {
     let needed = count
         .checked_mul(VERTEX_STRIDE)
         .ok_or(NfsError::BufferSizeMismatch { detail: "vertex count overflow" })?;
@@ -27,6 +27,7 @@ pub(super) fn parse_vertices(
     let start = vbuf.len() - needed;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
+    let mut colours = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);
     // One record at a time as a fixed-size array. The range was bounds-checked once above, so
     // reading through a cursor would pay for nine more checks per vertex — 134,000 vertices in a car
@@ -39,10 +40,13 @@ pub(super) fn parse_vertices(
         let f = |o: usize| f32::from_le_bytes([v[o], v[o + 1], v[o + 2], v[o + 3]]);
         positions.push([f(0), f(4), f(8)]);
         normals.push([f(12), f(16), f(20)]);
-        // 24: a constant sentinel (~-1.7e38); unused.
+        // 24: a per-vertex colour, stored B,G,R,A and handed back R,G,B,A. It was read as nothing
+        // here — "a constant sentinel (~-1.7e38)" — and the sentinel was `0xFF000000` as an `f32`.
+        // See `NfsMeshPart::colours` for what the install says and what is still only convention.
+        colours.push([v[26], v[25], v[24], v[27]]);
         uvs.push([f(28), f(32)]);
     }
-    Ok((positions, normals, uvs))
+    Ok((positions, normals, colours, uvs))
 }
 
 /// Axis-aligned bounds of a position list (zeroed when it is empty).
@@ -76,7 +80,8 @@ mod tests {
                 vbuf.extend_from_slice(&f.to_le_bytes());
             }
         }
-        let (pos, nrm, uv) = parse_vertices(&vbuf, 2).unwrap();
+        let (pos, nrm, col, uv) = parse_vertices(&vbuf, 2).unwrap();
+        assert_eq!(col.len(), 2);
         assert_eq!(pos.len(), 2);
         assert!((pos[1][0] - 1.0).abs() < 1e-6);
         assert_eq!(nrm[0], [0.0, 1.0, 0.0]);

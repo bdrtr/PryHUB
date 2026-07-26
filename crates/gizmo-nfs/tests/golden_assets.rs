@@ -304,6 +304,163 @@ fn a_relocated_pack_reads_back() {
     }
 }
 
+/// A real `GEOMETRY.BIN` rebuilt with a grown chunk: the solids move, and the directory follows.
+///
+/// This is the geometry half of what `texture::relocate` does for a TPK, and it is here for the same
+/// reason: the check cannot be made on a synthetic file. A hand-built fixture proves the arithmetic;
+/// only a real car proves that the table this reasoning is about is the table the file has, that
+/// there is exactly one record per solid, and that a rebuild with an edit still yields a file the
+/// parser reads back as the same car.
+///
+/// It also asserts the *failure* — the same edit through the general repacker leaves records
+/// pointing at bytes that are no longer solids — because a fix whose absence is not visible is a fix
+/// nobody can tell is working.
+#[test]
+fn a_rebuilt_car_keeps_its_solid_directory_true() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping geometry rebuild test");
+        return;
+    };
+    use gizmo_nfs::chunk::ChunkNode;
+    use gizmo_nfs::geometry::SOLID_DIRECTORY;
+
+    let bytes = std::fs::read(root.join("CARS/240SX/GEOMETRY.BIN")).expect("read GEOMETRY.BIN");
+    let before = gizmo_nfs::parse_geometry(&bytes).expect("parse");
+    assert!(before.len() > 500, "the 240SX has hundreds of parts");
+
+    // Every solid, and the directory as it stands.
+    let tree = ChunkNode::parse(&bytes).expect("chunk tree");
+    fn solids(nodes: &[ChunkNode], out: &mut Vec<usize>) {
+        for n in nodes {
+            if n.header.id == 0x8013_4010 {
+                out.push(n.offset);
+            }
+            solids(&n.children, out);
+        }
+    }
+    fn directory(nodes: &[ChunkNode], bytes: &[u8]) -> Vec<u32> {
+        fn find(nodes: &[ChunkNode], id: u32) -> Option<&ChunkNode> {
+            for n in nodes {
+                if n.header.id == id {
+                    return Some(n);
+                }
+                if let Some(f) = find(&n.children, id) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        let d = find(nodes, SOLID_DIRECTORY).expect("the directory");
+        let data = d.data(bytes);
+        (0..data.len() / 24)
+            .map(|r| {
+                let o = r * 24 + 4;
+                u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
+            })
+            .collect()
+    }
+    let mut live = Vec::new();
+    solids(&tree, &mut live);
+    let records = directory(&tree, &bytes);
+    assert_eq!(records.len(), live.len(), "one record per solid");
+
+    // Grow the first vertex buffer, which pushes every solid after it along.
+    fn first_vertex_buffer(nodes: &[ChunkNode]) -> Option<(usize, usize)> {
+        for n in nodes {
+            if n.header.id == 0x0013_4b01 {
+                return Some((n.offset, n.header.size as usize));
+            }
+            if let Some(f) = first_vertex_buffer(&n.children) {
+                return Some(f);
+            }
+        }
+        None
+    }
+    let (vb_at, vb_len) = first_vertex_buffer(&tree).expect("a vertex buffer");
+    let mut edits = gizmo_nfs::repack::Edits::new();
+    edits.insert(vb_at, vec![0x11; vb_len + 128]);
+
+    // Through the general repacker: the pointers go stale, which is the failure being fixed.
+    let naive = gizmo_nfs::repack::rebuild(&bytes, &edits).expect("repack");
+    let naive_tree = ChunkNode::parse(&naive).expect("parse");
+    let mut naive_live = Vec::new();
+    solids(&naive_tree, &mut naive_live);
+    let naive_set: std::collections::BTreeSet<u32> =
+        naive_live.iter().map(|o| *o as u32).collect();
+    let stale = directory(&naive_tree, &naive).into_iter().filter(|o| !naive_set.contains(o)).count();
+    assert!(stale > 100, "expected the plain repacker to strand most records, stranded {stale}");
+
+    // Through this one: every record names a solid again.
+    let fixed = gizmo_nfs::geometry::rebuild(&bytes, &edits).expect("geometry rebuild");
+    let fixed_tree = ChunkNode::parse(&fixed).expect("parse");
+    let mut fixed_live = Vec::new();
+    solids(&fixed_tree, &mut fixed_live);
+    let fixed_set: std::collections::BTreeSet<u32> =
+        fixed_live.iter().map(|o| *o as u32).collect();
+    for off in directory(&fixed_tree, &fixed) {
+        assert!(fixed_set.contains(&off), "{off:#x} is not a solid in the rebuilt car");
+    }
+    assert_eq!(fixed_live.len(), live.len(), "no solid was gained or lost");
+
+    // And the car still reads as the same car. The grown part is the one that changed; every other
+    // part must come back with the vertices it had.
+    let after = gizmo_nfs::parse_geometry(&fixed).expect("the rebuilt car parses");
+    assert_eq!(after.len(), before.len(), "same number of parts");
+    let mut identical = 0usize;
+    for (a, b) in after.iter().zip(before.iter()) {
+        assert_eq!(a.name, b.name, "parts came back in a different order");
+        if a.positions == b.positions && a.indices == b.indices && a.colours == b.colours {
+            identical += 1;
+        }
+    }
+    assert!(identical + 1 >= before.len(), "{identical} of {} parts survived", before.len());
+
+    // A rebuild with no edits at all is byte-identical, which is the stronger claim and the one
+    // that says this function adds nothing of its own to a file it was not asked to change.
+    let untouched = gizmo_nfs::geometry::rebuild(&bytes, &gizmo_nfs::repack::Edits::new())
+        .expect("no-op rebuild");
+    assert_eq!(untouched, bytes, "a no-op rebuild must not touch a byte");
+}
+
+/// The vertex colour is a colour, which is worth a test because it was documented as not existing.
+///
+/// The four bytes at `+24` of the stride-36 record were called "a constant sentinel (~-1.7e38);
+/// unused" in two places, and the parser threw them away. They are neither constant nor unused — the
+/// "sentinel" is `0xFF000000` read as an `f32` — and a parser that drops half a megabyte per car is
+/// only a curiosity until something tries to write a mesh back.
+///
+/// So this asserts the thing the comment denied: that the field **varies**, both across a car and
+/// within a single part. A regression that reinstated the old reading would put a constant here and
+/// fail on the first count.
+#[test]
+fn vertices_carry_a_colour_that_is_not_constant() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping vertex colour test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("CARS/240SX/GEOMETRY.BIN")).expect("read GEOMETRY.BIN");
+    let parts = gizmo_nfs::parse_geometry(&bytes).expect("parse");
+    assert!(!parts.is_empty());
+
+    let mut all = std::collections::BTreeSet::new();
+    let mut parts_that_vary = 0usize;
+    for p in &parts {
+        assert_eq!(p.colours.len(), p.positions.len(), "{}: one colour per vertex", p.name);
+        let own: std::collections::BTreeSet<[u8; 4]> = p.colours.iter().copied().collect();
+        if own.len() > 1 {
+            parts_that_vary += 1;
+        }
+        all.extend(own);
+    }
+    assert!(all.len() > 50, "only {} distinct colours in a whole car", all.len());
+    assert!(parts_that_vary > 20, "only {parts_that_vary} parts vary within themselves");
+    // The alpha is an alpha: opaque almost everywhere, which is what made the whole word look like
+    // a sentinel in the first place.
+    let opaque = parts.iter().flat_map(|p| &p.colours).filter(|c| c[3] == 0xFF).count();
+    let total: usize = parts.iter().map(|p| p.colours.len()).sum();
+    assert!(opaque * 100 >= total * 95, "{opaque} of {total} vertices opaque");
+}
+
 /// The write path end to end: decode a real texture, re-encode it, put it back, and decode it
 /// again.
 ///
