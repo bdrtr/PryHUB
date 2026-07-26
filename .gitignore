@@ -33,3 +33,7 @@ Cargo.lock.orig
 /CLAUDE.md
 /nfsu2_arac_plani.md
 /ss/
+
+# Ölçüm için yazılıp atılan geçici testler. Bir tanesi `git add -A` ile kazara içeri girdi;
+# desen olarak kapatmak, her seferinde hatırlamaktan güvenli.
+scratch_*.rs
