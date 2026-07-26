@@ -1,0 +1,141 @@
+# Build the two binaries and attach them to a GitHub release.
+#
+# It runs on a **22.04** runner on purpose, and that is the whole reason this is not built on a
+# developer's machine. A Linux binary carries a floor, not a version: it needs a glibc at least as
+# new as the one it was linked against, and nothing older will load it. Built on Ubuntu 24.04
+# (glibc 2.39) the result refuses to start on Ubuntu 22.04, Debian 12 or anything else shipping
+# 2.35–2.38 — which is most of what people are running. Built here it needs 2.35, which every
+# current desktop distribution has.
+#
+# `ug2` gets a second, **static musl** build with no floor at all. It is a pure-Rust command-line
+# tool with nothing to dlopen, so it can be linked against nothing and run anywhere x86_64.
+#
+# `pryhub` cannot: it is a GPU application. But it links against only libc, libgcc_s and libm —
+# winit and wgpu open X11, Wayland and Vulkan at *run* time rather than linking them — so glibc is
+# genuinely the only floor it has, and a musl build would buy nothing a static libc cannot give a
+# program that dlopens its whole display stack.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So a build can be tried without cutting a release first.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The repo's `.cargo/config.toml` turns LTO **off** and splits codegen units, because the machine
+  # it was written for has 13 GB of RAM and sixteen cores. A runner has neither problem, and a
+  # release binary should be the small fast one. `RUSTFLAGS` replaces the config's rustflags rather
+  # than adding to them, which is exactly what is wanted here.
+  RUSTFLAGS: "-C lto=fat -C codegen-units=1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Nothing ships that has not passed. The parser's tests are synthetic and need no game install —
+  # the ones that do are skipped without `NFSU2_ROOT`, which a runner does not have and must not.
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: system libraries for the interface
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev
+      - run: cargo test --workspace --features gizmo-nfs/tools
+      - run: cargo clippy --workspace --all-targets --features gizmo-nfs/tools -- -D warnings
+
+  build:
+    needs: test
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            # Both, and this is the pair a person downloads.
+            bins: pryhub ug2
+            suffix: x86_64-linux-gnu
+          - target: x86_64-unknown-linux-musl
+            # The CLI only — see the note at the top.
+            bins: ug2
+            suffix: x86_64-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: system libraries for the interface
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev
+
+      # A tag that disagrees with the version in `Cargo.toml` is a release nobody can reason about
+      # afterwards, so it is caught here rather than discovered later.
+      - name: the tag and the crate version must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          echo "tag $tag, Cargo.toml $crate"
+          test "$tag" = "$crate"
+
+      - name: build
+        run: |
+          for bin in ${{ matrix.bins }}; do
+            case "$bin" in
+              pryhub) cargo build --release --target ${{ matrix.target }} -p pryhub ;;
+              ug2)    cargo build --release --target ${{ matrix.target }} \
+                        -p gizmo-nfs --features tools --bin ug2 ;;
+            esac
+          done
+
+      - name: package
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || version="$(git rev-parse --short HEAD)"
+          out="pryhub-${version}-${{ matrix.suffix }}"
+          mkdir -p "dist/$out"
+          for bin in ${{ matrix.bins }}; do
+            cp "target/${{ matrix.target }}/release/$bin" "dist/$out/"
+            strip "dist/$out/$bin" || true
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$out/"
+          tar -C dist -czf "dist/${out}.tar.gz" "$out"
+          ( cd dist && sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256" )
+          echo "name=$out" >> "$GITHUB_OUTPUT"
+          ls -la dist
+          echo "--- what the binaries need ---"
+          for bin in ${{ matrix.bins }}; do file "dist/$out/$bin"; ldd "dist/$out/$bin" || true; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*.tar.gz*
+
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The release normally exists already — it is what creates the tag that triggers this. A
+          # tag pushed on its own would find nothing to upload to, so one is made if missing; both
+          # matrix jobs may try, and the loser of that race is harmless.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            || true
+          gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 --clobber
