@@ -20,10 +20,17 @@
 //!   only thing the record stores four times. Everything else it stores once, so it is shown under
 //!   `STOCK` and left blank under the upgrades — repeating a number across four columns would read
 //!   as "this upgrade changes nothing", which the file does not say.
-//! * `[::AERO]`, `[::BRAKES]` and `[::STEERING]` are **not in this game's files**. That is measured,
-//!   not unsearched: the one brake-shaped triple is exactly zero for all 15 traffic vehicles, and
-//!   the only steering angles are a global ±43 identical in all 46 records. A row fed from either
-//!   would print the same number for a bus and a Skyline.
+//! * `[::AERO]` and `[::BRAKES]` are **not in this game's files**, and that is measured rather than
+//!   unsearched: the one brake-shaped triple is exactly zero for all 15 traffic vehicles, and the
+//!   likeliest remaining candidate — `+0x38C`, which a modding tool calls `BrakeBias` — was set to
+//!   0.02 on a real 240SX, installed and driven, and braking was unchanged. A negative anyone can
+//!   re-run beats a negative nobody looked for.
+//! * `[::STEERING]` half filled, and the half that did is a correction. It was ruled out here for a
+//!   good reason that turned out to be about the wrong quantity: the only steering *angles* in the
+//!   record are a global ±43 identical in all 46 cars, so nothing angle-shaped could be per-car.
+//!   `steer_speed` is not an angle — it is a multiplier, 1.00 to 1.25 across the install — and
+//!   setting a 240SX's to 0.05 produced a car that would barely turn. `steer_lock` stays empty; the
+//!   angles really are global.
 //! * `torque_scale` has no lane because the curve is stored in absolute N·m, so there is nothing to
 //!   scale. `shift_time`'s only candidate is one constant shared by 45 of 46 cars. `grip_*`,
 //!   `slip_angle`, `weight_bias_f` and `cg_height` were swept for and are absent.
@@ -77,6 +84,9 @@ enum Source {
     Gear(usize),
     /// Front tyre width in millimetres.
     TyreWidth,
+    /// The steering multiplier — see the module note for why this row exists and its neighbour
+    /// does not.
+    SteerRatio,
     /// Nothing in this install answers it. See the module note.
     NotLocated,
 }
@@ -193,7 +203,14 @@ static SECTIONS: &[Section] = &[
         name: "[::BRAKES]",
         params: &[gap("brake_force", "×"), gap("brake_bias_f", ""), gap("handbrake", "×")],
     },
-    Section { name: "[::STEERING]", params: &[gap("steer_lock", "°"), gap("steer_speed", "×")] },
+    Section {
+        name: "[::STEERING]",
+        params: &[
+            // Still absent: the only angles in the record are a global ±43, identical in all 46.
+            gap("steer_lock", "°"),
+            got("steer_speed", "×", Source::SteerRatio),
+        ],
+    },
 ];
 
 /// The design's four upgrade columns.
@@ -238,6 +255,7 @@ pub struct Car {
     rpm: [f32; 3],
     torque_nm: [f32; 9],
     tyre_width_mm: f32,
+    steer_ratio: f32,
     /// One per upgrade level: final drive, gear count, and the forward ratios.
     gearbox: [(f32, usize, [f32; 6]); 4],
 }
@@ -251,6 +269,7 @@ impl Car {
             *slot = (g.final_drive, g.count, g.forward);
         }
         Self {
+            steer_ratio: h.steer_ratio,
             name: c.name.clone(),
             mass_kg: c.mass_kg,
             rear_drive: h.rear_drive,
@@ -294,6 +313,7 @@ fn cell(param: &Param, car: Option<&Car>, level: usize) -> Option<String> {
         )),
         Source::Torque(i) => stock_only(format!("{:.0}", car.torque_nm.get(i).copied()?)),
         Source::TyreWidth => stock_only(format!("{:.0}", car.tyre_width_mm)),
+        Source::SteerRatio => stock_only(format!("{:.2}", car.steer_ratio)),
         Source::GearCount => Some(count.to_string()),
         Source::FinalDrive => Some(format!("{final_drive:.3}")),
         Source::Gear(n) => forward.get(n - 1).filter(|_| n <= count).map(|r| format!("{r:.3}")),
@@ -626,20 +646,27 @@ mod tests {
                 "car_name", "drive_type", "mass", "idle_rpm", "red_line", "max_rpm", "trq_pt_1",
                 "trq_pt_2", "trq_pt_3", "trq_pt_4", "trq_pt_5", "trq_pt_6", "trq_pt_7", "trq_pt_8",
                 "trq_pt_9", "gear_count", "final_drive", "gear_1", "gear_2", "gear_3", "gear_4",
-                "gear_5", "gear_6", "tire_width",
+                "gear_5", "gear_6", "tire_width", "steer_speed",
             ]
         );
-        assert_eq!(located(), 24);
-        // The sections this game genuinely does not store stay wholly unclaimed. `AERO`, `BRAKES`
-        // and `STEERING` were each searched for and ruled out against all 46 records, so a row here
-        // gaining a source later should be a deliberate edit to this test too.
-        for section in &SECTIONS[6..9] {
+        assert_eq!(located(), 25);
+        // `AERO` and `BRAKES` stay wholly unclaimed, and that is measured rather than unsearched —
+        // the module note says how, including a candidate that was driven and did nothing. A row
+        // here gaining a source later should be a deliberate edit to this test too, which is exactly
+        // what happened to `STEERING` below.
+        for section in &SECTIONS[6..8] {
             assert!(
                 section.params.iter().all(|p| p.source == Source::NotLocated),
                 "{} is not in this game's files",
                 section.name
             );
         }
+        // `STEERING` is half filled, and the halves are not interchangeable: the multiplier is
+        // per-car and was confirmed by driving it, the lock angle is a global ±43 and stays a gap.
+        let steering = &SECTIONS[8];
+        assert_eq!(steering.name, "[::STEERING]");
+        assert!(steering.params[0].source == Source::NotLocated, "steer_lock is still global");
+        assert!(steering.params[1].source == Source::SteerRatio, "steer_speed reads the multiplier");
     }
 
     /// With no record nothing is filled. With one, the gearbox varies across all four upgrade
@@ -695,6 +722,7 @@ mod tests {
             rpm: [800.0, 6500.0, 7000.0],
             torque_nm: [140.0, 150.0, 160.0, 180.0, 200.0, 216.0, 203.0, 170.0, 150.0],
             tyre_width_mm: 205.0,
+            steer_ratio: 1.1,
             gearbox: [five, five, five, six],
         }
     }

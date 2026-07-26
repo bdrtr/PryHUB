@@ -32,6 +32,9 @@ const W_LATERAL: usize = 0x1C; // YValue
 const OFF_BODY: usize = 0x224; // length, width, height (m)
 const OFF_RPM: usize = 0x300; // idle, red line, limiter
 const OFF_TORQUE: usize = 0x310; // 9 × f32, kN·m
+/// Steering response, as a multiplier. 1.00–1.25 across the install, and **confirmed in the game**:
+/// see [`CarHandling::steer_ratio`].
+const OFF_STEER: usize = 0x380;
 /// The four transmission blocks: stock, then the three upgrade levels.
 const GEARBOX_AT: [usize; 4] = [0x2C0, 0x460, 0x4A0, 0x4E0];
 // Field offsets within one transmission block.
@@ -102,7 +105,7 @@ impl Gearbox {
 /// What a car's physics record says about how it drives.
 ///
 /// Read from the same `CarTypeInfo` record as the rest — see the module note for what is in there
-/// and, just as importantly, what is not. Aero, brakes, steering, tyre grip and the torque curve's
+/// and, just as importantly, what is not. Aero, brakes, tyre grip and the torque curve's
 /// rpm axis are **not in this file**; they are absent rather than unread, and this struct does not
 /// pretend otherwise by carrying zeroed fields for them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +132,20 @@ pub struct CarHandling {
     pub body_m: [f32; 3],
     /// Tyre width per corner in metres, in the same order as [`CarTypeInfo::wheels`].
     pub tyre_width_m: [f32; 4],
+    /// How much the car turns for a given input, as a multiplier — 1.00 to 1.25 across the install,
+    /// 1.10 for a 240SX.
+    ///
+    /// **This one was settled by driving.** An earlier sweep concluded steering was not in this
+    /// game's files, and it was looking for the right thing in the wrong units: the only steering
+    /// *angles* are a global ±43 identical in all 46 records, so nothing angle-shaped could be
+    /// per-car. This is not an angle. Set to 0.05 on a 240SX and installed, the car barely turns at
+    /// all — which is what a steering multiplier does and what no other subsystem does.
+    ///
+    /// It is deliberately named for what the experiment showed rather than for what a modding tool
+    /// calls it. The candidate word was `SteeringRatio`; the evidence is "the car stopped turning",
+    /// and that supports a multiplier on steering response and not the precise quantity a name
+    /// implies.
+    pub steer_ratio: f32,
 }
 
 /// The subset of a `CarTypeInfo` record needed to place and size a car: its name, the four
@@ -252,6 +269,7 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
             le_f32(b, rec + OFF_BODY + 8)?,
         ],
         tyre_width_m,
+        steer_ratio: le_f32(b, rec + OFF_STEER)?,
     })
 }
 
