@@ -69,22 +69,39 @@ pub fn run(bundle: &Path, car: &str, at: usize, set: Option<f32>, out: &Path) ->
         return Ok(());
     };
 
-    // The whole payload with one lane changed, back through the repacker so the container sizes and
-    // the alignment are the file's own rather than this command's idea of them.
-    let mut payload = data.to_vec();
-    payload[at + 8 + index * STRIDE..at + 12 + index * STRIDE]
+    // Four bytes, written where they already are. **Not** through `repack::rebuild`, which is the
+    // right tool for a payload that changed length and the wrong one here: nothing changes length,
+    // so nothing needs re-deriving, and re-deriving it is not free. Measured on this very bundle,
+    // rebuilding it with *no* edits at all returns 8,008,120 bytes for an 8,008,064-byte input —
+    // `GLOBALB.BUN` carries an embedded `0x80134000` geometry stream, and the repacker re-derives
+    // the 128-byte solid alignment inside it into padding the file did not have.
+    //
+    // The same reasoning as `texture::replace_blob`: an in-place write is safe *because* nothing
+    // moves, and so it needs no theory of the layout it is writing into.
+    let lane_abs = node.data_offset + 8 + index * STRIDE + at;
+    let mut written = bytes.clone();
+    written
+        .get_mut(lane_abs..lane_abs + 4)
+        .ok_or("the lane is outside the bundle")?
         .copy_from_slice(&value.to_le_bytes());
-    let mut edits = gizmo_nfs::repack::Edits::new();
-    edits.insert(node.offset, payload);
-    let written = gizmo_nfs::repack::rebuild(&bytes, &edits).map_err(|e| format!("{e}"))?;
-
-    // Read it back before handing it over, the same rule the other write commands keep.
-    let check = gizmo_nfs::globalb::find_car(&written, &want)
-        .ok_or("the rewritten bundle no longer holds that car")?;
-    let _ = check;
     if written.len() != bytes.len() {
-        return Err(format!("the bundle changed size ({} → {})", bytes.len(), written.len()));
+        return Err("an in-place write changed the file's length".into());
     }
+
+    // Read it back through the parser before handing it over, the same rule the other write
+    // commands keep — and read the *lane*, not merely the record, so a write to the wrong byte is
+    // caught here rather than in the game.
+    let back = f32::from_le_bytes([
+        written[lane_abs],
+        written[lane_abs + 1],
+        written[lane_abs + 2],
+        written[lane_abs + 3],
+    ]);
+    if back.to_bits() != value.to_bits() {
+        return Err(format!("read back {back} rather than {value}"));
+    }
+    gizmo_nfs::globalb::find_car(&written, &want)
+        .ok_or("the rewritten bundle no longer holds that car")?;
 
     std::fs::write(out, &written).map_err(|e| format!("{}: {e}", out.display()))?;
     outln!("  now {value}  → {}", out.display());
