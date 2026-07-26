@@ -228,6 +228,33 @@ pub struct State {
     pub level: usize,
 }
 
+/// Resolve a `--section` argument to an index into [`SECTIONS`].
+///
+/// This screen is the one that could not be photographed. `--screen carp` always opened on
+/// `[::VEHICLE]`, which is three rows of the forty and none of the ones worth looking at, and the
+/// section is chosen by clicking — so on a machine whose compositor will not hand out a screen
+/// grab there was no way to check the table at all. Same reason `--select` and `--stage` exist.
+///
+/// Matched **by name**, because `--section torque` survives a section being inserted and
+/// `--section 3` does not. The design writes its keys as `[::TORQUE_CURVE]` and that punctuation
+/// is noise to type, so what is compared is the bare word, case-folded, as a prefix: `torque`,
+/// `Torque_Curve` and `[::TORQUE_CURVE]` all land on the same row. A bare index is still taken,
+/// for the two sections nobody wants to spell.
+#[must_use]
+pub fn section_index(query: &str) -> Option<usize> {
+    let bare = |s: &str| {
+        s.trim().trim_start_matches("[::").trim_end_matches(']').to_ascii_uppercase()
+    };
+    let want = bare(query);
+    if want.is_empty() {
+        return None;
+    }
+    if let Ok(n) = want.parse::<usize>() {
+        return (n < SECTIONS.len()).then_some(n);
+    }
+    SECTIONS.iter().position(|s| bare(s.name).starts_with(&want))
+}
+
 /// How many of the design's parameters this install can answer.
 #[must_use]
 pub fn located() -> usize {
@@ -736,6 +763,30 @@ mod tests {
         assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("AWD"));
         car.rear_drive = 1.0;
         assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("RWD"));
+    }
+
+    /// `--section` finds a section the ways someone would actually type it, and refuses the rest.
+    #[test]
+    fn a_section_is_found_by_name() {
+        // The three spellings of one row, all landing on it.
+        for q in ["torque", "TORQUE_CURVE", "[::TORQUE_CURVE]", "Torque_Cur"] {
+            assert_eq!(section_index(q), Some(3), "{q}");
+        }
+        assert_eq!(section_index("vehicle"), Some(0));
+        assert_eq!(section_index("steering"), Some(8));
+        // A prefix that is ambiguous takes the first, which is the order the screen draws them in.
+        assert_eq!(section_index("t"), Some(3), "[::TORQUE_CURVE] comes before [::TIRES]");
+
+        // An index still works, and is bounded by the table rather than by a literal.
+        assert_eq!(section_index("0"), Some(0));
+        assert_eq!(section_index(&(SECTIONS.len() - 1).to_string()), Some(SECTIONS.len() - 1));
+        assert_eq!(section_index(&SECTIONS.len().to_string()), None, "one past the end");
+
+        // And a miss is a miss — the caller warns rather than quietly showing section zero.
+        assert_eq!(section_index("gearboxes"), None, "a prefix of the query is not a match");
+        assert_eq!(section_index("nope"), None);
+        assert_eq!(section_index(""), None);
+        assert_eq!(section_index("[::]"), None);
     }
 
     /// The torque rows carry engine speeds, and only when a car is open.

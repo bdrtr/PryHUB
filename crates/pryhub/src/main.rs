@@ -68,6 +68,14 @@ fn main() -> eframe::Result {
                 .position(|a| a == "--compare")
                 .and_then(|i| args.get(i + 1))
                 .cloned();
+            // `--section <name|n>` opens the CARP screen somewhere other than its first section.
+            // Without it a screenshot of that screen can only ever show `[::VEHICLE]`, which is
+            // three rows of the forty; the section is otherwise chosen by clicking.
+            let section = args
+                .iter()
+                .position(|a| a == "--section")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
             // `--stage <png>` stages an image against the first texture in the pack, once it has
             // decoded. The same reason `--select` and `--compare` exist: staging is a click and a
             // desktop file chooser, and neither is available to a screenshot on a machine whose
@@ -90,6 +98,19 @@ fn main() -> eframe::Result {
             if let Some(offset) = select {
                 // Applied when the parse lands, not now: there is no document to select in yet.
                 app.pending_selection = Some(offset);
+            }
+            if let Some(name) = section {
+                // Set now rather than pended: which section is open is a property of the screen,
+                // not of the document, so there is nothing to wait for.
+                match screens::carp::section_index(&name) {
+                    Some(i) => app.carp.section = i,
+                    // Said out loud, because the failure mode is a screenshot that looks fine and
+                    // is of the wrong section — which is the same shape as the black panel this
+                    // screen already has a paragraph about.
+                    None => {
+                        log::warn!("--section {name:?} matches no CARP section; showing the first");
+                    }
+                }
             }
             if let Some(png) = stage {
                 // Applied when the *pack* lands, which is later still: staging needs the texture's
