@@ -31,6 +31,7 @@ mod dump;
 mod export;
 mod fields;
 mod globalb;
+mod import;
 mod info;
 mod parts;
 mod paths;
@@ -122,6 +123,33 @@ enum Command {
         /// Only show parts whose name contains this.
         #[arg(long, value_name = "SUBSTR")]
         filter: Option<String>,
+    },
+    /// Put an edited model back into a `GEOMETRY.BIN` — the far end of `export`.
+    ///
+    /// Reads an OBJ, undoes the V flip and the part's placement, and writes the mesh into a solid.
+    /// Which solid is the one thing the model file cannot say: 24.8% of the install's solids share
+    /// their name with another in the same file, so a name is accepted only when it names one and
+    /// the candidates are otherwise listed by header offset.
+    Import {
+        /// The car's `GEOMETRY.BIN`.
+        file: PathBuf,
+        /// The model to read.
+        #[arg(long, value_name = "FILE")]
+        obj: PathBuf,
+        /// Which part: its name, or its solid's header offset as `0x…`. Not needed when the model
+        /// holds exactly one mesh and its name matches.
+        #[arg(long, value_name = "NAME|0xOFFSET")]
+        part: Option<String>,
+        /// Where to write the edited car. Never the input unless `--force`.
+        #[arg(short, long, value_name = "FILE")]
+        out: PathBuf,
+        /// Allow `-o` to be the file being read.
+        #[arg(long)]
+        force: bool,
+        /// Which way up the model is: `file` (Z up, what `export` writes) or `yup` (Blender's
+        /// default `Forward -Z, Up Y`). Worked out from the file when not given.
+        #[arg(long, value_name = "file|yup")]
+        axes: Option<String>,
     },
     /// Put a PNG back into a texture pack — the one command here that writes an asset file.
     ///
@@ -230,6 +258,15 @@ fn main() -> ExitCode {
         Command::Profile { path } => profile::run(&path),
         Command::Replace { pack, texture, png, out, force } => {
             replace::run(&pack, &texture, &png, &out, force)
+        }
+        Command::Import { file, obj, part, out, force, axes } => {
+            let axes = match axes.as_deref() {
+                None => Ok(None),
+                Some("file") | Some("zup") => Ok(Some(import::Axes::File)),
+                Some("yup") | Some("blender") => Ok(Some(import::Axes::YUp)),
+                Some(other) => Err(format!("{other}: axes are `file` or `yup`")),
+            };
+            axes.and_then(|a| import::run(&file, &obj, part.as_deref(), &out, force, a))
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),

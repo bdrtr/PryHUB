@@ -619,6 +619,150 @@ fn a_mesh_written_back_unchanged_is_the_same_bytes() {
     assert!(checked_align > 500, "only {checked_align} buffers checked for alignment");
 }
 
+/// The whole round trip, through the crate's own text: a car written out as OBJ, read back in,
+/// un-placed, and written into the file it came from.
+///
+/// Each half is tested on its own — `export::obj` writes, `import::obj` reads, `replace_mesh`
+/// writes back — and none of that says the three *agree*. This does: the geometry that comes out the
+/// far end has to be the geometry that went in, through a text format that keeps three independent
+/// attribute pools, flips V, bakes each part's placement into its positions and names 24.8% of solids
+/// ambiguously.
+///
+/// It is not the Blender round trip, and cannot be: what an editor does to an OBJ between the two
+/// ends is not measurable from here. It is the half that *is* — every assumption this crate makes
+/// about its own text, checked against a real car.
+#[test]
+fn a_car_written_as_obj_reads_back_as_the_same_geometry() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping obj round-trip test");
+        return;
+    };
+    use gizmo_nfs::placement::{part_centroid, should_place, Unplace};
+
+    let bytes = std::fs::read(root.join("CARS/240SX/GEOMETRY.BIN")).expect("read GEOMETRY.BIN");
+    let parts = gizmo_nfs::parse_geometry(&bytes).expect("parse");
+
+    // A handful of parts, written the way `ug2 export` writes them.
+    let chosen: Vec<&gizmo_nfs::NfsMeshPart> =
+        parts.iter().filter(|p| p.positions.len() > 32).take(12).collect();
+    assert!(chosen.len() >= 8, "not enough parts to be worth testing");
+    let text = gizmo_nfs::export::write_obj(&chosen, "car.mtl", |_, i| format!("m{i}"));
+
+    let read = gizmo_nfs::import::obj::read(&text).expect("the crate's own OBJ reads back");
+    assert_eq!(read.len(), chosen.len(), "one mesh per part, in order");
+
+    for (mesh, part) in read.iter().zip(chosen.iter()) {
+        // The exporter bakes the placement in; the importer's caller takes it out again.
+        let apply = should_place(&part.transform, &part_centroid(part));
+        let un = Unplace::new(&part.transform, apply).expect("a real part's matrix inverts");
+
+        assert_eq!(mesh.indices.len(), part.indices.len(), "{}: triangle count", part.name);
+        // The vertex *count* is not preserved and should not be: a corner-deduping reader welds
+        // vertices whose position, normal and uv are all identical, and the file has some — the
+        // 240SX's `_BASE_B` comes back as 387 of its 395, eight of them exact duplicates. It can
+        // only ever go down, never up, which is the claim worth making.
+        assert!(
+            mesh.positions.len() <= part.positions.len(),
+            "{}: {} vertices became {}",
+            part.name,
+            part.positions.len(),
+            mesh.positions.len()
+        );
+
+        // Position by position, through the index list — the vertex *order* is not preserved by a
+        // format that rebuilds vertices from corners, so the comparison is per triangle corner.
+        let mut worst_p = 0.0f32;
+        let mut worst_uv = 0.0f32;
+        for (a, b) in mesh.indices.iter().zip(part.indices.iter()) {
+            let there = un.point(mesh.positions[*a as usize]);
+            let here = part.positions[*b as usize];
+            for k in 0..3 {
+                worst_p = worst_p.max((there[k] - here[k]).abs());
+            }
+            if !mesh.uvs.is_empty() {
+                let uv = mesh.uvs[*a as usize];
+                let want = part.uvs[*b as usize];
+                for k in 0..2 {
+                    worst_uv = worst_uv.max((uv[k] - want[k]).abs());
+                }
+            }
+        }
+        // The text carries six decimals, so this is what the format costs and nothing more.
+        assert!(worst_p < 1e-3, "{}: positions drifted by {worst_p}", part.name);
+        assert!(worst_uv < 1e-4, "{}: uvs drifted by {worst_uv}", part.name);
+
+        // The material runs survive as runs, which is what `0x00134B02` needs.
+        if !part.materials.is_empty() {
+            assert_eq!(mesh.runs.len(), part.materials.len(), "{}: run count", part.name);
+            let mut walked = 0usize;
+            for r in &mesh.runs {
+                assert_eq!(r.offset, walked, "{}: runs must tile", part.name);
+                walked += r.count;
+            }
+            assert_eq!(walked, mesh.indices.len());
+        }
+    }
+
+    // And the far end: one of them written back into the file, which must still be the same car.
+    let part = chosen[0];
+    let mesh = &read[0];
+    let apply = should_place(&part.transform, &part_centroid(part));
+    let un = Unplace::new(&part.transform, apply).expect("invertible");
+    let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|p| un.point(*p)).collect();
+    let normals: Vec<[f32; 3]> = mesh.normals.iter().map(|n| un.dir(*n)).collect();
+    // The OBJ carries no colour, so the part keeps the shading the file baked into it. Inventing
+    // white here is exactly what `import::obj` refuses to do for the caller.
+    let colours: Vec<[u8; 4]> = (0..positions.len())
+        .map(|i| part.colours.get(i).copied().unwrap_or([255; 4]))
+        .collect();
+    let runs: Vec<gizmo_nfs::geometry::Run> = mesh
+        .runs
+        .iter()
+        .map(|r| gizmo_nfs::geometry::Run { offset: r.offset, count: r.count })
+        .collect();
+
+    use gizmo_nfs::chunk::ChunkNode;
+    let tree = ChunkNode::parse(&bytes).expect("tree");
+    fn first_solid(nodes: &[ChunkNode]) -> Option<usize> {
+        for n in nodes {
+            if n.header.id == 0x8013_4010 {
+                return Some(n.offset);
+            }
+            if let Some(f) = first_solid(&n.children) {
+                return Some(f);
+            }
+        }
+        None
+    }
+    let solid = first_solid(&tree).expect("a solid");
+    let out = gizmo_nfs::geometry::replace_mesh(
+        &bytes,
+        solid,
+        &gizmo_nfs::geometry::Mesh {
+            positions: &positions,
+            normals: &normals,
+            colours: &colours,
+            uvs: &mesh.uvs,
+            indices: &mesh.indices,
+            runs: Some(&runs),
+        },
+    )
+    .expect("the imported mesh goes back in");
+
+    let after = gizmo_nfs::parse_geometry(&out).expect("the car parses");
+    assert_eq!(after.len(), parts.len());
+    // The geometry survived the whole loop: file → OBJ text → file.
+    let mut worst = 0.0f32;
+    for (a, b) in after[0].indices.iter().zip(part.indices.iter()) {
+        let there = after[0].positions[*a as usize];
+        let here = part.positions[*b as usize];
+        for k in 0..3 {
+            worst = worst.max((there[k] - here[k]).abs());
+        }
+    }
+    assert!(worst < 1e-3, "the round trip moved the mesh by {worst}");
+}
+
 /// The vertex colour is a colour, which is worth a test because it was documented as not existing.
 ///
 /// The four bytes at `+24` of the stride-36 record were called "a constant sentinel (~-1.7e38);

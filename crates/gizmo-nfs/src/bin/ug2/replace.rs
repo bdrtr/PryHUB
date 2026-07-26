@@ -101,7 +101,7 @@ pub fn run(pack: &Path, texture: &str, png: &Path, out: &Path, force: bool) -> R
 /// directory is the same file as `./TEXTURES.BIN`, and a comparison of the two paths says otherwise.
 /// A target that does not exist yet cannot be the input, which is the case the `unwrap_or(false)`
 /// covers.
-fn same_file(a: &Path, b: &Path) -> bool {
+pub fn same_file(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
         _ => false,

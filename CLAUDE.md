@@ -553,8 +553,32 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     of each buffer is a function of where it lands (vertex data on a 128-byte boundary, indices and
     runs on 16, 18,225/18,225 each), which is a property of the rebuilt file, so it is built,
     measured and built again until the three settle. A solid is named by its **header offset**, since
-    24.8% of them share a name. What is still missing is an *importer* — reading an edited model back
-    in — and the one thing that cannot be measured from here is what Blender actually writes.
+    24.8% of them share a name.
+
+15c. **`import::obj`** — the inverse of `export::obj`, and the half that makes it a round trip. An
+    OBJ is *not* a vertex list: it keeps three independent pools and a face names one of each per
+    corner, so a vertex is built per distinct corner and the corners are indexed — a position with a
+    UV seam through it comes back as two vertices, and a real part's 395 come back as 387 because
+    eight were exact duplicates. `usemtl` may be interleaved and NFSU2's runs must be contiguous, so
+    faces are bucketed per material within each object; polygons are fan-triangulated, because
+    Blender writes quads unless told not to. Vertex colour is read from the `v x y z r g b`
+    extension and reported **absent** rather than white when there is none — inventing white would
+    flatten a car's baked shading and look like it had worked.
+
+    `ug2 import` is the command, and it undoes the two things the file did to the model: the V flip,
+    and **the axis convention**, which was measured rather than assumed. Blender's exporter defaults
+    to `Forward -Z, Up Y` and rotates the whole car: a vertex written as `(-1.48727, 0.69655,
+    0.69480)` comes back `(-1.48727, 0.69480, -0.69655)`, i.e. `(x, y, z) → (x, z, −y)`. The command
+    recognises this crate's own OBJ by its header line and takes anything else for Blender's, and it
+    *says* which it used — a model silently rotated a quarter turn is the kind of wrong that looks
+    like a bad import. The placement is undone after the frame, through `placement::Unplace`, and in
+    that order: the rotation is what the file is in, the placement is what the part is in.
+
+    **Checked through Blender 5.2 on a real car.** Exported, round-tripped untouched and written
+    back: 0 of 609 parts changed, worst vertex delta 5 µm — the OBJ's six decimals. The same car
+    with one part moved a metre in Blender: exactly that part moved, by 1.0000046 m on the axis it
+    was moved along, its bounding box following it from `0.855..2.161` to `1.855..3.161`, and every
+    other part at 0.000000.
 
 16. **`repack`** — the write path: `rebuild(bytes, edits)` reassembles a chunk stream, recomputing container sizes and alignment padding, replacing named leaf payloads. **Measured, not assumed**: every chunk size and offset in a real install is a multiple of 4; `0x80134010` (SolidObject) starts on a **128**-byte boundary 18,230 times out of 18,230, padded with an `id == 0` chunk only when needed; a 4-byte alignment debt is unpayable (a header is 8) so the files pay 132; `0x80034020` aligns to 64. An `id == 0` chunk is *not* always padding — BUS carries one of 1,332 bytes with a non-zero byte inside — so a gap is only re-derived when it is exactly what the rule would produce, and copied otherwise. A golden test rebuilds 113 files byte-for-byte.
 17. **`globalb::carparts`** — the `CarParts` tables in `GLOBAL/GLOBALB.BUN`: 12,167 parts, 4,636

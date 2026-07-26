@@ -101,10 +101,147 @@ pub fn place_dir(m: &Mat4, n: [f32; 3], apply: bool) -> [f32; 3] {
     ]
 }
 
+/// The inverse of a part's placement, built once and applied to every vertex.
+///
+/// [`place_point`] is what an exporter does on the way out; this is what an importer has to do on
+/// the way back, and it is the same decision — a part whose pose is already baked into its vertices
+/// is not placed and must not be un-placed either. Built once because a car is 4 million vertices
+/// and inverting a 3×3 per vertex is 4 million inversions of the same matrix.
+///
+/// The transform is row-major with the translation in the last **row** (`v' = v · M`), so undoing it
+/// is `v = (v' − t) · M⁻¹` — subtract first, then rotate back, and not the other way round.
+#[derive(Clone, Copy, Debug)]
+pub struct Unplace {
+    inverse: [[f32; 3]; 3],
+    translation: [f32; 3],
+    apply: bool,
+}
+
+impl Unplace {
+    /// Build it, or `None` when the 3×3 cannot be inverted.
+    ///
+    /// Measured over the install: 3,905 placed parts, none of them singular, worst `M · M⁻¹`
+    /// round-trip error 9.7e-7 m over 863,757 positions. A singular one would be a part whose
+    /// placement flattens it, which is not a thing a car has — but it is a division, so it is
+    /// answered rather than assumed.
+    #[must_use]
+    pub fn new(m: &Mat4, apply: bool) -> Option<Self> {
+        let d = det3(m);
+        if !d.is_finite() || d.abs() < f32::EPSILON {
+            return None;
+        }
+        let c = |r: usize, k: usize| m[r][k];
+        // The adjugate, transposed — the ordinary 3×3 inverse.
+        let inv = [
+            [
+                (c(1, 1) * c(2, 2) - c(1, 2) * c(2, 1)) / d,
+                (c(0, 2) * c(2, 1) - c(0, 1) * c(2, 2)) / d,
+                (c(0, 1) * c(1, 2) - c(0, 2) * c(1, 1)) / d,
+            ],
+            [
+                (c(1, 2) * c(2, 0) - c(1, 0) * c(2, 2)) / d,
+                (c(0, 0) * c(2, 2) - c(0, 2) * c(2, 0)) / d,
+                (c(0, 2) * c(1, 0) - c(0, 0) * c(1, 2)) / d,
+            ],
+            [
+                (c(1, 0) * c(2, 1) - c(1, 1) * c(2, 0)) / d,
+                (c(0, 1) * c(2, 0) - c(0, 0) * c(2, 1)) / d,
+                (c(0, 0) * c(1, 1) - c(0, 1) * c(1, 0)) / d,
+            ],
+        ];
+        Some(Self { inverse: inv, translation: [m[3][0], m[3][1], m[3][2]], apply })
+    }
+
+    /// A car-space position back into the part's own space.
+    #[must_use]
+    pub fn point(&self, p: [f32; 3]) -> [f32; 3] {
+        if !self.apply {
+            return p;
+        }
+        let v = [
+            p[0] - self.translation[0],
+            p[1] - self.translation[1],
+            p[2] - self.translation[2],
+        ];
+        self.rotate(v)
+    }
+
+    /// A car-space direction back into the part's own space — the same rotation, no translation.
+    #[must_use]
+    pub fn dir(&self, n: [f32; 3]) -> [f32; 3] {
+        if !self.apply {
+            return n;
+        }
+        self.rotate(n)
+    }
+
+    fn rotate(&self, v: [f32; 3]) -> [f32; 3] {
+        let i = &self.inverse;
+        [
+            v[0] * i[0][0] + v[1] * i[1][0] + v[2] * i[2][0],
+            v[0] * i[0][1] + v[1] * i[1][1] + v[2] * i[2][1],
+            v[0] * i[0][2] + v[1] * i[1][2] + v[2] * i[2][2],
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{det3, should_place};
+    use super::{det3, should_place, place_dir, place_point, Unplace};
     use crate::types::Mat4;
+
+    /// Placing and then un-placing must be the identity, which is the only claim `Unplace` makes.
+    #[test]
+    fn un_placing_undoes_placing() {
+        // A rotation about Z, a scale and a translation — the shape a real part's matrix has.
+        let (c, s) = (0.6f32, 0.8f32);
+        let t = m([
+            [2.0 * c, 2.0 * s, 0.0, 0.0],
+            [-3.0 * s, 3.0 * c, 0.0, 0.0],
+            [0.0, 0.0, 1.5, 0.0],
+            [10.0, -4.0, 0.25, 1.0],
+        ]);
+        let un = Unplace::new(&t, true).expect("invertible");
+        for p in [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [-5.5, 0.25, 7.0]] {
+            let there = place_point(&t, p, true);
+            let back = un.point(there);
+            for k in 0..3 {
+                assert!((back[k] - p[k]).abs() < 1e-3, "{back:?} != {p:?}");
+            }
+        }
+        for n in [[0.0, 0.0, 1.0], [0.6, 0.8, 0.0]] {
+            let there = place_dir(&t, n, true);
+            let back = un.dir(there);
+            for k in 0..3 {
+                assert!((back[k] - n[k]).abs() < 1e-3, "{back:?} != {n:?}");
+            }
+        }
+    }
+
+    /// A part whose pose is baked in is not placed, so it must not be un-placed either.
+    #[test]
+    fn a_part_that_is_not_placed_is_not_un_placed() {
+        let t = m([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [9.0, 9.0, 9.0, 1.0],
+        ]);
+        let un = Unplace::new(&t, false).expect("invertible");
+        assert_eq!(un.point([1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+        assert_eq!(un.dir([0.0, 1.0, 0.0]), [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_flattening_matrix_has_no_inverse_and_says_so() {
+        let flat = m([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        assert!(Unplace::new(&flat, true).is_none());
+    }
 
     // Row-major 4x4 with translation in the last row (the file's `v · M` convention).
     fn m(rows: [[f32; 4]; 4]) -> Mat4 {
