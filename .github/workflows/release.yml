@@ -27,11 +27,6 @@ permissions:
   contents: write
 
 env:
-  # The repo's `.cargo/config.toml` turns LTO **off** and splits codegen units, because the machine
-  # it was written for has 13 GB of RAM and sixteen cores. A runner has neither problem, and a
-  # release binary should be the small fast one. `RUSTFLAGS` replaces the config's rustflags rather
-  # than adding to them, which is exactly what is wanted here.
-  RUSTFLAGS: "-C lto=fat -C codegen-units=1"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -93,7 +88,20 @@ jobs:
           echo "tag $tag, Cargo.toml $crate"
           test "$tag" = "$crate"
 
+      # The repo's `.cargo/config.toml` turns LTO **off** and splits codegen units, because the
+      # machine it was written for has 13 GB of RAM and sixteen cores. A runner has neither problem
+      # and a release binary should be the small fast one — but LTO cannot simply be put in
+      # `RUSTFLAGS`, which is what the first attempt did and what failed in 23 seconds: those flags
+      # reach *every* unit including the build scripts and proc-macros cargo has already decided to
+      # compile with `-C embed-bitcode=no`, and `lto` with that is an error rather than an override.
+      #
+      # So the profile says LTO, which cargo applies only where it makes sense and knows how to keep
+      # consistent, and `RUSTFLAGS` carries only what is needed to *replace* the config's own flags
+      # (setting it at all is what makes cargo ignore them).
       - name: build
+        env:
+          RUSTFLAGS: "-C codegen-units=1"
+          CARGO_PROFILE_RELEASE_LTO: "fat"
         run: |
           for bin in ${{ matrix.bins }}; do
             case "$bin" in
