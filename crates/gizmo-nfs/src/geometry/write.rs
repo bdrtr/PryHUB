@@ -40,6 +40,13 @@ const LANE_OFFSET: usize = 4;
 const LANE_SIZE_A: usize = 8;
 const LANE_SIZE_B: usize = 12;
 
+/// The mesh header word that states how many `0x00134B02` runs the solid has.
+///
+/// Measured rather than taken from the parser, which never reads it: word 4 equals the number of
+/// entries in 23,300 of 23,300 real solids. The reader derives the count from the chunk's size
+/// instead, which is why it could go without — a writer cannot.
+const SUBMESH_COUNT_FIELD: usize = 4;
+
 /// Rebuild a `GEOMETRY.BIN` with edited leaves, keeping its solid directory true.
 ///
 /// The same contract as [`crate::repack::rebuild`] — `edits` maps a leaf's header offset to its new
@@ -118,148 +125,297 @@ pub fn rebuild(bytes: &[u8], edits: &Edits) -> NfsResult<Vec<u8>> {
     Ok(out)
 }
 
-/// New attribute values for one solid's mesh, at its **existing** topology.
+/// A mesh to write into a solid.
 ///
-/// Every array is per-vertex and must be as long as the mesh already is; `indices` likewise. That is
-/// the whole restriction, and it is what makes this the safe half of a mesh write: nothing changes
-/// length, so no chunk moves, no count in the mesh header goes stale, the submesh runs still tile
-/// the index buffer, and the alignment padding in front of each buffer stays the padding the file
-/// chose. A mesh whose vertex *count* changes needs all of those recomputed and is a different
-/// function — see [`replace_mesh`]'s own note.
+/// Every attribute array is per-vertex and they must all be the same length; `indices` is a triangle
+/// list into them. Unlike the first version of this, the counts **may differ** from what the solid
+/// holds — that is what makes it usable for a model that has been through an editor, where welding a
+/// seam or adding a loop changes them by construction.
+///
+/// `runs` is the one thing that cannot be invented. The 60-byte `0x00134B02` entries carry thirteen
+/// words this crate does not decode — a per-material bounding box among them — so a *new* run has no
+/// template to be built from. Their counts and offsets are rewritten from what is given here; their
+/// number must stay what the solid already has.
 pub struct Mesh<'a> {
     pub positions: &'a [[f32; 3]],
     pub normals: &'a [[f32; 3]],
     /// RGBA8, as [`crate::NfsMeshPart::colours`] hands it out. Written back B,G,R,A.
     pub colours: &'a [[u8; 4]],
     pub uvs: &'a [[f32; 2]],
-    /// Triangle-list indices. Must be the length the mesh already has, and in range.
+    /// Triangle-list indices into the arrays above.
     pub indices: &'a [u32],
+    /// Per-material index runs, which must tile `indices` end to end from zero — as they do in
+    /// 23,300 of 23,300 real solids. `None` keeps the solid's own runs, which is only meaningful
+    /// when the index count has not changed.
+    pub runs: Option<&'a [Run]>,
 }
 
-/// Write one solid's mesh back, at its existing topology.
+/// One material's slice of the index list.
+///
+/// Deliberately **not** [`crate::NfsMaterialRange`], which is what the reader hands out. That type
+/// also carries the run's material and shader hashes, and those are not the caller's to give here:
+/// they live in the `0x00134012`/`0x00134013` lists the entry indexes into, and the writer keeps
+/// them from the entry it is rewriting. Taking the reader's type would ask for two fields and
+/// silently ignore them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// Where this run starts in `indices`.
+    pub offset: usize,
+    /// How many indices it covers — a multiple of three.
+    pub count: usize,
+}
+
+/// Write one solid's mesh back.
 ///
 /// `solid` is the header offset of a `0x80134010` chunk — the same number the chunk tree and
 /// PryHUB's selection use, and the only stable name a solid has: 24.8% of them share their *name*
 /// with another solid in the same file.
 ///
-/// What it rewrites is the vertex buffer, the index buffer, and the bounding box in the solid's
-/// header. The bbox is not the vertices' AABB and copying one in would be wrong: measured over
-/// 23,299 real solids it is the minimum **minus 0.01** and the maximum **plus 0.01** in 23,292 of
-/// them, every exception being in the `PEUGOT` mod. So it is recomputed by that rule, which is also
-/// why writing a mesh back unchanged reproduces the file's own bytes.
+/// It rewrites the vertex buffer, the index buffer, the submesh runs, the two counts in the mesh
+/// header and the bounding box in the solid's header — and then the file, through [`rebuild`], so
+/// the per-solid directory stays true when the solid changes size.
 ///
-/// **Same topology only.** The vertex and index counts must be what the mesh already has. Changing
-/// them means rewriting the mesh header's two counts, the 60-byte submesh runs that tile the index
-/// buffer, and the alignment padding in front of both buffers — the vertices start on a 128-byte
-/// file boundary, which is a property of where the buffer lands and therefore of the rebuild that
-/// has not happened yet. That is a real next step, not a hidden one; this function refuses rather
-/// than guessing at it.
+/// Three things are computed rather than copied, each because the file computes them:
+///
+/// * **The bounding box is not the vertices' AABB.** It is the minimum minus 0.01 and the maximum
+///   plus 0.01, in 23,292 of 23,299 real solids. Writing an AABB puts six floats 0.01 out.
+/// * **The buffers are aligned by where they land**, and each differently: measured over 18,225
+///   solids, the first vertex sits on a 128-byte file boundary 18,225 times, and the first index and
+///   the first submesh entry on a 16-byte boundary 18,225 times each. The padding in front of each
+///   buffer is therefore a function of the rebuilt file, not of the old one — so the file is built,
+///   measured and built again until the three settle, which takes at most three passes because the
+///   three buffers are in that order and each one's offset depends only on the ones before it.
+/// * **The two anchors are opposite ends.** Vertices occupy the *last* `count × 36` bytes of their
+///   buffer; indices and submesh entries start just past the *leading* `0x11` filler, with whatever
+///   the file kept after them. Getting that backwards is the bug `geometry::index` warns about.
 ///
 /// # Errors
 /// - `solid` is not a `0x80134010` header, or it has no mesh.
-/// - Any array is not the length the mesh already has, or an index is out of range.
+/// - The attribute arrays disagree in length, the index count is not a multiple of three, or an
+///   index is past the last vertex.
+/// - `runs` has a different number of runs than the solid, or they do not tile the indices.
 /// - The solid uses the packed vertex layout this crate does not decode (one solid in the install).
+/// - The alignment did not settle, which would mean the file moves in a way this does not model.
 pub fn replace_mesh(bytes: &[u8], solid: usize, mesh: &Mesh<'_>) -> NfsResult<Vec<u8>> {
     use super::format::{
-        FILLER_BYTE, INDEX_BUFFER, MESH_HEADER, MESH_TRI_COUNT_FIELD, MESH_VERT_COUNT_FIELD,
-        SOLID_HEADER, VERTEX_BUFFER, VERTEX_STRIDE,
+        FILLER_BYTE, INDEX_BUFFER, MATERIAL_RANGES, MAT_RANGE_COUNT, MAT_RANGE_OFFSET,
+        MAT_RANGE_STRIDE, MESH_HEADER, MESH_TRI_COUNT_FIELD, MESH_VERT_COUNT_FIELD, SOLID_HEADER,
+        VERTEX_BUFFER,
     };
 
     let tree = ChunkNode::parse(bytes)?;
     let node = at(&tree, solid)
         .filter(|n| n.header.id == SOLID)
         .ok_or(NfsError::CorruptArchive { detail: "no solid at that offset" })?;
-    let (Some(header), Some(mh), Some(vb), Some(ib)) = (
-        find(std::slice::from_ref(node), SOLID_HEADER),
-        find(std::slice::from_ref(node), MESH_HEADER),
-        find(std::slice::from_ref(node), VERTEX_BUFFER),
-        find(std::slice::from_ref(node), INDEX_BUFFER),
+    let one = std::slice::from_ref(node);
+    let (Some(header), Some(mh), Some(vb), Some(mr), Some(ib)) = (
+        find(one, SOLID_HEADER),
+        find(one, MESH_HEADER),
+        find(one, VERTEX_BUFFER),
+        find(one, MATERIAL_RANGES),
+        find(one, INDEX_BUFFER),
     ) else {
         return Err(NfsError::CorruptArchive { detail: "that solid has no mesh" });
     };
 
-    // The counts the file states, read the way the parser reads them.
     let md = mh.data(bytes);
-    let body = super::skip_leading_filler(md);
-    let word = |i: usize| -> NfsResult<usize> {
+    let filler = md.len() - super::skip_leading_filler(md).len();
+    let word = |body: &[u8], i: usize| -> NfsResult<usize> {
         let o = i * 4;
         let b = body
             .get(o..o + 4)
             .ok_or(NfsError::BufferSizeMismatch { detail: "mesh header too short" })?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
     };
-    let verts = word(MESH_VERT_COUNT_FIELD)?;
-    let tris = word(MESH_TRI_COUNT_FIELD)?;
-
-    let vbuf = vb.data(bytes);
-    if !super::standard_vertex_layout(verts, vbuf.len()) {
+    let body = super::skip_leading_filler(md);
+    let old_verts = word(body, MESH_VERT_COUNT_FIELD)?;
+    if !super::standard_vertex_layout(old_verts, vb.data(bytes).len()) {
         return Err(NfsError::NotImplemented { feature: "packed vertex layout" });
     }
+
+    // What the caller is asking for.
     let n = mesh.positions.len();
-    if n != verts
-        || mesh.normals.len() != n
-        || mesh.colours.len() != n
-        || mesh.uvs.len() != n
-        || mesh.indices.len() != tris * 3
-    {
-        return Err(NfsError::BufferSizeMismatch {
-            detail: "a mesh replacement must keep the vertex and index counts it already has",
-        });
+    if mesh.normals.len() != n || mesh.colours.len() != n || mesh.uvs.len() != n {
+        return Err(NfsError::BufferSizeMismatch { detail: "attribute arrays disagree in length" });
+    }
+    if n > u32::MAX as usize || n > u16::MAX as usize + 1 {
+        return Err(NfsError::BufferSizeMismatch { detail: "more vertices than a u16 index can name" });
+    }
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(NfsError::BufferSizeMismatch { detail: "the index count is not whole triangles" });
     }
     if mesh.indices.iter().any(|i| *i as usize >= n) {
         return Err(NfsError::CorruptArchive { detail: "an index is past the last vertex" });
     }
+    let tris = mesh.indices.len() / 3;
 
-    // The vertex buffer: the file's own leading padding, then the records.
-    let lead = vbuf.len() - n * VERTEX_STRIDE;
-    let mut vout = vbuf[..lead].to_vec();
-    for i in 0..n {
-        let (p, nr, c, uv) = (mesh.positions[i], mesh.normals[i], mesh.colours[i], mesh.uvs[i]);
-        for f in [p[0], p[1], p[2], nr[0], nr[1], nr[2]] {
-            vout.extend_from_slice(&f.to_le_bytes());
+    // The runs: the solid's own unless the caller replaced them, and they must tile the indices.
+    let mrd = mr.data(bytes);
+    let old_runs = mrd.len() / MAT_RANGE_STRIDE;
+    let template_lead = mrd.len() - old_runs * MAT_RANGE_STRIDE;
+    let kept: Vec<Run>;
+    let runs: &[Run] = match mesh.runs {
+        Some(r) => r,
+        None => {
+            // Keep the solid's own, read straight back out of the entries.
+            kept = (0..old_runs)
+                .map(|i| {
+                    let base = template_lead + i * MAT_RANGE_STRIDE;
+                    let g = |o: usize| -> usize {
+                        mrd.get(base + o..base + o + 4)
+                            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+                            .unwrap_or(0)
+                    };
+                    Run { count: g(MAT_RANGE_COUNT), offset: g(MAT_RANGE_OFFSET) }
+                })
+                .collect();
+            &kept
         }
-        vout.extend_from_slice(&[c[2], c[1], c[0], c[3]]); // back to B,G,R,A
-        for f in [uv[0], uv[1]] {
-            vout.extend_from_slice(&f.to_le_bytes());
+    };
+    if runs.len() != old_runs {
+        return Err(NfsError::NotImplemented { feature: "changing how many material runs a solid has" });
+    }
+    let mut walked = 0usize;
+    for r in runs {
+        if r.offset != walked {
+            return Err(NfsError::CorruptArchive { detail: "material runs do not tile the indices" });
         }
+        walked += r.count;
+    }
+    if walked != mesh.indices.len() {
+        return Err(NfsError::CorruptArchive { detail: "material runs do not cover the indices" });
     }
 
-    // The index buffer, and it is **not** anchored the way the vertex buffer is. Vertices occupy the
-    // last `count * 36` bytes, so a tail anchor is right for them; indices start just past the
-    // leading `0x11` filler and some solids — wheels, bumpers — carry a *trailing* pad as well. The
-    // reader says so in as many words (`geometry::index`), having been the bug that shredded meshes
-    // into shards; anchoring the write at the tail reintroduced it here, on a decal whose buffer has
-    // four bytes of tail. Both ends are kept exactly as they were and only the indices are written.
-    let ibuf = ib.data(bytes);
-    let ilead = ibuf.iter().take_while(|&&b| b == FILLER_BYTE).count();
-    let end = ilead
-        .checked_add(tris * 6)
-        .filter(|e| *e <= ibuf.len())
-        .ok_or(NfsError::BufferSizeMismatch { detail: "index buffer smaller than tri_count*6" })?;
-    let mut iout = ibuf[..ilead].to_vec();
-    for i in mesh.indices {
-        iout.extend_from_slice(&(*i as u16).to_le_bytes());
+    // The mesh header, with the counts the file will now state.
+    let mut hout = md.to_vec();
+    for (field, value) in
+        [(MESH_TRI_COUNT_FIELD, tris), (MESH_VERT_COUNT_FIELD, n), (SUBMESH_COUNT_FIELD, runs.len())]
+    {
+        let o = filler + field * 4;
+        hout.get_mut(o..o + 4)
+            .ok_or(NfsError::BufferSizeMismatch { detail: "mesh header too short" })?
+            .copy_from_slice(&(value as u32).to_le_bytes());
     }
-    iout.extend_from_slice(&ibuf[end..]);
-    debug_assert_eq!(iout.len(), ibuf.len());
 
-    // The bounding box, by the file's own rule rather than as a plain AABB.
-    let mut hout = header.data(bytes).to_vec();
+    // The solid header, with the box the file's own rule produces.
+    let mut sout = header.data(bytes).to_vec();
     let (min, max) = super::vertex::bounds(mesh.positions);
     for (base, values, sign) in [(0x20usize, min, -0.01f32), (0x30, max, 0.01)] {
         for (k, v) in values.iter().enumerate() {
             let o = base + k * 4;
-            hout.get_mut(o..o + 4)
+            sout.get_mut(o..o + 4)
                 .ok_or(NfsError::BufferSizeMismatch { detail: "solid header too short" })?
                 .copy_from_slice(&(v + sign).to_le_bytes());
         }
     }
 
-    let mut edits = Edits::new();
-    edits.insert(vb.offset, vout);
-    edits.insert(ib.offset, iout);
-    edits.insert(header.offset, hout);
-    rebuild(bytes, &edits)
+    // The three payloads, given the padding each needs. Sizes: the vertex buffer is lead + n*36; the
+    // index buffer keeps the file's own tail rule (4-aligned); the submesh table is lead + runs*60.
+    let old_ibuf = ib.data(bytes);
+    let build = |vlead: usize, mlead: usize, ilead: usize| -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut v = vec![FILLER_BYTE; vlead];
+        for i in 0..n {
+            let (p, nr, c, uv) = (mesh.positions[i], mesh.normals[i], mesh.colours[i], mesh.uvs[i]);
+            for f in [p[0], p[1], p[2], nr[0], nr[1], nr[2]] {
+                v.extend_from_slice(&f.to_le_bytes());
+            }
+            v.extend_from_slice(&[c[2], c[1], c[0], c[3]]);
+            for f in [uv[0], uv[1]] {
+                v.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+
+        let mut m = vec![FILLER_BYTE; mlead];
+        for (i, r) in runs.iter().enumerate() {
+            // The thirteen words this crate does not decode are the template's; only the count and
+            // the offset are the caller's.
+            let base = template_lead + (i.min(old_runs.saturating_sub(1))) * MAT_RANGE_STRIDE;
+            let mut entry = mrd
+                .get(base..base + MAT_RANGE_STRIDE)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_else(|| vec![0u8; MAT_RANGE_STRIDE]);
+            entry[MAT_RANGE_COUNT..MAT_RANGE_COUNT + 4]
+                .copy_from_slice(&(r.count as u32).to_le_bytes());
+            entry[MAT_RANGE_OFFSET..MAT_RANGE_OFFSET + 4]
+                .copy_from_slice(&(r.offset as u32).to_le_bytes());
+            m.extend_from_slice(&entry);
+        }
+
+        let mut ix = vec![FILLER_BYTE; ilead];
+        for i in mesh.indices {
+            ix.extend_from_slice(&(*i as u16).to_le_bytes());
+        }
+        if tris * 3 == old_ibuf.len().saturating_sub(ilead) / 2 {
+            // Unchanged length: keep whatever the file had after the indices, byte for byte.
+            let end = ilead + tris * 6;
+            if let Some(tail) = old_ibuf.get(end..) {
+                ix.extend_from_slice(tail);
+            }
+        } else {
+            while !ix.len().is_multiple_of(4) {
+                ix.push(0);
+            }
+        }
+        (v, m, ix)
+    };
+
+    // Build, look at where the buffers landed, and build again. The vertex buffer's offset does not
+    // depend on any of the three pads, the submesh table's depends only on the vertex buffer's, and
+    // the index buffer's on both — so three passes is the most this can need, and it is asserted
+    // rather than assumed by looping until nothing moves.
+    let (mut vlead, mut mlead, mut ilead) = (0usize, 0usize, 0usize);
+    for _ in 0..4 {
+        let (v, m, ix) = build(vlead, mlead, ilead);
+        let mut edits = Edits::new();
+        edits.insert(vb.offset, v);
+        edits.insert(mr.offset, m);
+        edits.insert(ib.offset, ix);
+        edits.insert(mh.offset, hout.clone());
+        edits.insert(header.offset, sout.clone());
+        let out = rebuild(bytes, &edits)?;
+
+        let after = ChunkNode::parse(&out)?;
+        let solid_now = at(&after, offset_of(&after, solid, &tree)?)
+            .ok_or(NfsError::CorruptArchive { detail: "the solid vanished from the rebuild" })?;
+        let one = std::slice::from_ref(solid_now);
+        let (Some(v2), Some(m2), Some(i2)) = (
+            find(one, VERTEX_BUFFER),
+            find(one, MATERIAL_RANGES),
+            find(one, INDEX_BUFFER),
+        ) else {
+            return Err(NfsError::CorruptArchive { detail: "the rebuilt solid lost a mesh buffer" });
+        };
+        // The vertex data ends the buffer, so its start is `data_offset + lead`; the other two begin
+        // just past their filler, so theirs is `data_offset + lead` too.
+        let want_v = pad_to(v2.data_offset, 128);
+        let want_m = pad_to(m2.data_offset, 16);
+        let want_i = pad_to(i2.data_offset, 16);
+        if (want_v, want_m, want_i) == (vlead, mlead, ilead) {
+            return Ok(out);
+        }
+        vlead = want_v;
+        mlead = want_m;
+        ilead = want_i;
+    }
+    Err(NfsError::CorruptArchive { detail: "the mesh buffers' alignment did not settle" })
+}
+
+/// How many bytes of padding put `at + pad` on an `align` boundary.
+const fn pad_to(at: usize, align: usize) -> usize {
+    (align - at % align) % align
+}
+
+/// The solid's header offset in the rebuilt file: the same position among solids as before.
+fn offset_of(after: &[ChunkNode], solid: usize, before: &[ChunkNode]) -> NfsResult<usize> {
+    let old = solids(before);
+    let new = solids(after);
+    let i = old
+        .iter()
+        .position(|(o, _)| *o as usize == solid)
+        .ok_or(NfsError::CorruptArchive { detail: "no solid at that offset" })?;
+    new.get(i)
+        .map(|(o, _)| *o as usize)
+        .ok_or(NfsError::CorruptArchive { detail: "the rebuild lost a solid" })
 }
 
 /// The chunk whose header sits at `offset`.

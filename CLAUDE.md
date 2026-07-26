@@ -547,9 +547,14 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     23,299 solids), and the index buffer is anchored at its **leading** `0x11` filler while the
     vertex buffer is anchored at its tail — writing indices from the tail reintroduced the exact
     "shard" bug `geometry::index`'s own comment warns about, on a decal with four bytes of trailing
-    pad. Changing a vertex or triangle *count* is refused rather than guessed at (it needs the mesh
-    header's counts, the 60-byte submesh runs and the 128-byte alignment in front of the buffers),
-    and an *importer* — reading an edited model back in — still does not exist.
+    pad. **A different topology goes in too**: halving a part's triangles shrinks the file, the mesh
+    header's counts follow, the submesh runs retile, every other part is untouched and all 609 vertex
+    buffers keep their alignment. That last one is why the write is a *loop* — the padding in front
+    of each buffer is a function of where it lands (vertex data on a 128-byte boundary, indices and
+    runs on 16, 18,225/18,225 each), which is a property of the rebuilt file, so it is built,
+    measured and built again until the three settle. A solid is named by its **header offset**, since
+    24.8% of them share a name. What is still missing is an *importer* — reading an edited model back
+    in — and the one thing that cannot be measured from here is what Blender actually writes.
 
 16. **`repack`** — the write path: `rebuild(bytes, edits)` reassembles a chunk stream, recomputing container sizes and alignment padding, replacing named leaf payloads. **Measured, not assumed**: every chunk size and offset in a real install is a multiple of 4; `0x80134010` (SolidObject) starts on a **128**-byte boundary 18,230 times out of 18,230, padded with an `id == 0` chunk only when needed; a 4-byte alignment debt is unpayable (a header is 8) so the files pay 132; `0x80034020` aligns to 64. An `id == 0` chunk is *not* always padding — BUS carries one of 1,332 bytes with a non-zero byte inside — so a gap is only re-derived when it is exactly what the rule would produce, and copied otherwise. A golden test rebuilds 113 files byte-for-byte.
 17. **`globalb::carparts`** — the `CarParts` tables in `GLOBAL/GLOBALB.BUN`: 12,167 parts, 4,636

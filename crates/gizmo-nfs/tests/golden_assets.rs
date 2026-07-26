@@ -494,6 +494,7 @@ fn a_mesh_written_back_unchanged_is_the_same_bytes() {
             colours: &part.colours,
             uvs: &part.uvs,
             indices: &part.indices,
+            runs: None,
         };
         let out = gizmo_nfs::geometry::replace_mesh(&bytes, node.offset, &mesh)
             .unwrap_or_else(|e| panic!("{}: {e}", part.name));
@@ -516,6 +517,7 @@ fn a_mesh_written_back_unchanged_is_the_same_bytes() {
         colours: &part.colours,
         uvs: &part.uvs,
         indices: &part.indices,
+        runs: None,
     };
     let solid = *offsets.first().expect("a solid");
     let out = gizmo_nfs::geometry::replace_mesh(&bytes, solid, &mesh).expect("write");
@@ -535,9 +537,86 @@ fn a_mesh_written_back_unchanged_is_the_same_bytes() {
         assert_eq!(a.positions, b.positions, "{} changed and nobody asked it to", b.name);
     }
 
-    // Counts are the contract, and a set that breaks them is refused rather than written.
+    // Arrays that disagree with each other are refused; a *count* change is not, any more.
     let short = Mesh { positions: &moved[..1], ..mesh };
     assert!(gizmo_nfs::geometry::replace_mesh(&bytes, solid, &short).is_err());
+
+    // **A mesh with fewer triangles**, which is the case the first version of this function refused
+    // and the case an editor produces by default. The runs have to be given, because the solid's own
+    // describe the index list that is being replaced.
+    //
+    // Done on a solid with exactly one run, so the shrink is genuinely exercised rather than falling
+    // into the documented refusal for a multi-run solid.
+    let (i, single) = parts
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.materials.len() == 1 && p.indices.len() >= 60)
+        .expect("a single-material part");
+    let solid_single = offsets[i];
+    let keep = (single.indices.len() / 3 / 2).max(1) * 3;
+    let fewer: Vec<u32> = single.indices[..keep].to_vec();
+    let runs = vec![gizmo_nfs::geometry::Run { offset: 0, count: keep }];
+    let one_run = Mesh {
+        positions: &single.positions,
+        normals: &single.normals,
+        colours: &single.colours,
+        uvs: &single.uvs,
+        indices: &fewer,
+        runs: Some(&runs),
+    };
+    let smaller = gizmo_nfs::geometry::replace_mesh(&bytes, solid_single, &one_run)
+        .expect("a shrunk mesh goes in");
+    assert!(smaller.len() < bytes.len(), "dropping half the triangles must shrink the file");
+    let re = gizmo_nfs::parse_geometry(&smaller).expect("the shrunk car parses");
+    assert_eq!(re.len(), parts.len(), "no part was lost");
+    assert_eq!(re[i].indices.len(), keep, "the mesh header's triangle count followed");
+    assert_eq!(re[i].positions.len(), single.positions.len(), "vertices untouched");
+    assert_eq!(re[i].indices, fewer, "and they are the triangles that were given");
+    // Every *other* part still holds exactly what it held — which is what the solid directory
+    // rewrite is for, because everything after this solid moved.
+    for (k, (a, b)) in re.iter().zip(parts.iter()).enumerate() {
+        if k == i {
+            continue;
+        }
+        assert_eq!(a.positions, b.positions, "{} moved and changed", b.name);
+        assert_eq!(a.indices, b.indices, "{} moved and lost its triangles", b.name);
+    }
+    // And the alignment the file states still holds for the buffer that moved.
+    // The lead is `len - verts * 36` and can be larger than 36 — the install's are 4, 20, 36, 52,
+    // 68 … — so it has to come from the header's own count rather than from the buffer's length.
+    let re_tree = ChunkNode::parse(&smaller).expect("parse");
+    let mut checked_align = 0usize;
+    fn each_solid(nodes: &[ChunkNode], bytes: &[u8], checked: &mut usize) {
+        for n in nodes {
+            if n.header.id == 0x8013_4010 {
+                fn find(n: &ChunkNode, id: u32) -> Option<&ChunkNode> {
+                    if n.header.id == id {
+                        return Some(n);
+                    }
+                    n.children.iter().find_map(|c| find(c, id))
+                }
+                if let (Some(mh), Some(vb)) = (find(n, 0x0013_4900), find(n, 0x0013_4b01)) {
+                    let body = gizmo_nfs::geometry::skip_leading_filler(mh.data(bytes));
+                    if let Some(b) = body.get(13 * 4..13 * 4 + 4) {
+                        let verts = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                        let len = vb.data(bytes).len();
+                        if verts > 0 && verts * 36 <= len {
+                            let lead = len - verts * 36;
+                            assert_eq!(
+                                (vb.data_offset + lead) % 128,
+                                0,
+                                "a vertex buffer lost its 128-byte alignment"
+                            );
+                            *checked += 1;
+                        }
+                    }
+                }
+            }
+            each_solid(&n.children, bytes, checked);
+        }
+    }
+    each_solid(&re_tree, &smaller, &mut checked_align);
+    assert!(checked_align > 500, "only {checked_align} buffers checked for alignment");
 }
 
 /// The vertex colour is a colour, which is worth a test because it was documented as not existing.
