@@ -12,12 +12,19 @@
 //!
 //! # Two things to know before spending a drive on it
 //!
-//! **The install carries two copies of this table.** `GLOBAL/GLOBALB.BUN` is the 8 MB uncompressed
-//! one this writes; `GLOBAL/GlobalB.lzc` is 24.9 MB and holds the same 46 records. Which one the
-//! game reads is not established, and if it is the second then every edit made here is invisible and
-//! every "nothing changed" is worthless. The first experiment anyone runs should therefore be on a
-//! lane already decoded — tripling a car's mass at `+0x220` is unmistakable — so that a null result
-//! from a real experiment can be told apart from an edit that never arrived.
+//! **The game reads `GLOBAL/GlobalB.lzc`, not `GLOBAL/GLOBALB.BUN`.** Both exist and both hold the
+//! same 46-record table; only one of them matters, and it is not the obvious one. Settled by
+//! experiment rather than by reading: tripling the 240SX's mass at `+0x220` in `GLOBALB.BUN` was
+//! driven and felt like nothing at all, and the same edit to the same lane of the same record in
+//! `GlobalB.lzc` produced a car that could barely get off the line.
+//!
+//! The `.lzc` is **not compressed**, whatever its name says — it opens with a plain `0x00135200`
+//! chunk header, which is exactly why [`crate::compression::detect`] picks a codec by magic bytes
+//! and never by extension. So it takes the same in-place four-byte write as its twin.
+//!
+//! That is worth a paragraph because of what it costs to not know it: an edit to the wrong file
+//! produces silence, and silence is also what a lane that does nothing produces. Every null result
+//! against `GLOBALB.BUN` before this was established means nothing at all.
 //!
 //! **A one-car coincidence is not a pattern.** The nine values at `+0x530` are exactly a quarter of
 //! the 240SX's torque curve, which made it look derived; over all 46 records 371 of 414 points
