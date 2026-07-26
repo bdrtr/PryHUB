@@ -44,6 +44,7 @@ pub mod diff;
 pub mod discover;
 pub mod error;
 pub mod export;
+pub mod import;
 pub mod fourcc;
 pub mod geometry;
 pub mod globalb;

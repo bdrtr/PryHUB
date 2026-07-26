@@ -163,6 +163,29 @@ proptest! {
         let _ = gizmo_nfs::export::png_pixels(&data);
     }
 
+    /// The OBJ reader takes a *text* file somebody chose, which is a different kind of untrusted
+    /// input from the rest of this file — its indices are one-based, may be negative, and name three
+    /// separate pools whose lengths change as the file is read.
+    #[test]
+    fn obj_read_never_panics(text in ".{0,4096}") {
+        let _ = gizmo_nfs::import::obj::read(&text);
+    }
+
+    /// And over text made of the tokens an OBJ is made of, so the parser gets past the first line.
+    #[test]
+    fn obj_read_never_panics_on_plausible_lines(
+        lines in proptest::collection::vec(
+            proptest::sample::select(vec![
+                "v 0 0 0", "v 1 2 3 0.5 0.5 0.5", "v 1", "vt 0 0", "vt 1", "vn 0 0 1",
+                "o part", "g sub", "usemtl m", "f 1 2 3", "f 1/1/1 2/2/2 3/3/3", "f 1 2 3 4",
+                "f -1 -2 -3", "f 0 0 0", "f 1//1 2//1 3//1", "f 99 99 99", "s off", "# hi", "",
+            ]),
+            0..64,
+        )
+    ) {
+        let _ = gizmo_nfs::import::obj::read(&lines.join("\n"));
+    }
+
     // The compressor is the one function here that is asked to be *correct*, not merely
     // non-panicking: whatever it writes must read back as what it was given.
     #[test]
