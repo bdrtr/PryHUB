@@ -24,6 +24,19 @@
 //! [`rebuild`] is therefore what a caller should use instead of the general repacker: it does the
 //! same job and then puts the directory back in agreement with the file. Grow one vertex buffer
 //! without it and 608 of a 240SX's 609 records point at a byte that is no longer a solid.
+//!
+//! # And then the game read one
+//!
+//! A 240SX was exported as OBJ, opened in Blender, had its bonnet moved a metre forward, exported
+//! back with Blender's own defaults, imported through [`replace_mesh`] and installed. The car in the
+//! garage has its bonnet floating a metre in front of it, and the other 608 parts are where they
+//! were.
+//!
+//! That is the check nothing here can make for itself, and it is the same one the texture write
+//! path waited for. Every test in this crate is the decoder reading back what the encoder wrote,
+//! which proves the two agree; only the game proves they are both right — that the counts it reads
+//! are the counts this writes, that the directory it walks is the one this rebuilt, and that a solid
+//! moved by half a file's worth of padding is still a solid to it.
 
 use super::format::SOLID;
 use crate::chunk::ChunkNode;

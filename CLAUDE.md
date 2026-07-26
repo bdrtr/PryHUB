@@ -580,6 +580,11 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     was moved along, its bounding box following it from `0.855..2.161` to `1.855..3.161`, and every
     other part at 0.000000.
 
+    **And then the game read it.** That car, installed: the bonnet floats a metre in front of it in
+    the garage and the other 608 parts are where they were. It is the same check the texture write
+    path waited for and the same reason — every test here is the decoder reading back what the
+    encoder wrote, which proves the two agree; only the game proves they are both right.
+
 16. **`repack`** — the write path: `rebuild(bytes, edits)` reassembles a chunk stream, recomputing container sizes and alignment padding, replacing named leaf payloads. **Measured, not assumed**: every chunk size and offset in a real install is a multiple of 4; `0x80134010` (SolidObject) starts on a **128**-byte boundary 18,230 times out of 18,230, padded with an `id == 0` chunk only when needed; a 4-byte alignment debt is unpayable (a header is 8) so the files pay 132; `0x80034020` aligns to 64. An `id == 0` chunk is *not* always padding — BUS carries one of 1,332 bytes with a non-zero byte inside — so a gap is only re-derived when it is exactly what the rule would produce, and copied otherwise. A golden test rebuilds 113 files byte-for-byte.
 17. **`globalb::carparts`** — the `CarParts` tables in `GLOBAL/GLOBALB.BUN`: 12,167 parts, 4,636
     attributes and the game's **paint palette**, which is the only place a car's colour is written
