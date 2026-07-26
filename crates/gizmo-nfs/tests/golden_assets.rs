@@ -422,6 +422,124 @@ fn a_rebuilt_car_keeps_its_solid_directory_true() {
     assert_eq!(untouched, bytes, "a no-op rebuild must not touch a byte");
 }
 
+/// A mesh written back into a real car: unchanged is byte-identical, moved is read back moved.
+///
+/// Two claims, and the first is the one that matters. Writing a part's own vertices back must
+/// reproduce **the file's own bytes** — not "a file that parses", not "close enough". That is only
+/// true if every derived thing is re-derived the way the file derives it, and the bounding box is
+/// where that bites: it is not the vertices' AABB but the minimum minus 0.01 and the maximum plus
+/// 0.01, measured over 23,292 of 23,299 real solids. Write a plain AABB and this test fails on six
+/// floats out of seven and a half million bytes.
+#[test]
+fn a_mesh_written_back_unchanged_is_the_same_bytes() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping mesh write test");
+        return;
+    };
+    use gizmo_nfs::chunk::ChunkNode;
+    use gizmo_nfs::geometry::Mesh;
+
+    let bytes = std::fs::read(root.join("CARS/240SX/GEOMETRY.BIN")).expect("read GEOMETRY.BIN");
+    let parts = gizmo_nfs::parse_geometry(&bytes).expect("parse");
+
+    // Solids in tree order, paired with the parts the parser produced. A solid without a mesh is
+    // skipped by the parser, so the pairing is by name rather than by position.
+    let tree = ChunkNode::parse(&bytes).expect("chunk tree");
+    fn solids(nodes: &[ChunkNode], out: &mut Vec<usize>) {
+        for n in nodes {
+            if n.header.id == 0x8013_4010 {
+                out.push(n.offset);
+            }
+            solids(&n.children, out);
+        }
+    }
+    let mut offsets = Vec::new();
+    solids(&tree, &mut offsets);
+
+    // Pair solids with parts. The parser skips a solid that yields no mesh, so the pairing is
+    // "mesh-bearing solids in tree order" — which is exactly the order the parts come back in.
+    fn has_mesh(node: &ChunkNode, bytes: &[u8]) -> bool {
+        fn find(n: &ChunkNode, id: u32) -> Option<&ChunkNode> {
+            if n.header.id == id {
+                return Some(n);
+            }
+            n.children.iter().find_map(|c| find(c, id))
+        }
+        let (Some(mh), Some(vb)) = (find(node, 0x0013_4900), find(node, 0x0013_4b01)) else {
+            return false;
+        };
+        let body = gizmo_nfs::geometry::skip_leading_filler(mh.data(bytes));
+        let Some(b) = body.get(13 * 4..13 * 4 + 4) else { return false };
+        let verts = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        verts > 0 && gizmo_nfs::geometry::standard_vertex_layout(verts, vb.data(bytes).len())
+    }
+    fn mesh_solids<'a>(nodes: &'a [ChunkNode], bytes: &[u8], out: &mut Vec<&'a ChunkNode>) {
+        for n in nodes {
+            if n.header.id == 0x8013_4010 && has_mesh(n, bytes) {
+                out.push(n);
+            }
+            mesh_solids(&n.children, bytes, out);
+        }
+    }
+    let mut bearing = Vec::new();
+    mesh_solids(&tree, &bytes, &mut bearing);
+    assert_eq!(bearing.len(), parts.len(), "mesh-bearing solids should equal parts");
+
+    // Writing a part's own data back must reproduce the file's own bytes.
+    let mut checked = 0usize;
+    for (node, part) in bearing.iter().zip(parts.iter()) {
+        let mesh = Mesh {
+            positions: &part.positions,
+            normals: &part.normals,
+            colours: &part.colours,
+            uvs: &part.uvs,
+            indices: &part.indices,
+        };
+        let out = gizmo_nfs::geometry::replace_mesh(&bytes, node.offset, &mesh)
+            .unwrap_or_else(|e| panic!("{}: {e}", part.name));
+        assert_eq!(out.len(), bytes.len(), "{}: the file changed size", part.name);
+        // Compared by hand rather than with `assert_eq!`, which would print seven megabytes.
+        if let Some(at) = out.iter().zip(bytes.iter()).position(|(a, b)| a != b) {
+            panic!("{}: first byte differs at {at:#x} ({} vs {})", part.name, out[at], bytes[at]);
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, parts.len(), "every mesh in the car must write back unchanged");
+    let offsets: Vec<usize> = bearing.iter().map(|n| n.offset).collect();
+
+    // And a mesh that actually changed comes back changed — moved a metre along X, nothing else.
+    let part = parts.first().expect("a part");
+    let moved: Vec<[f32; 3]> = part.positions.iter().map(|p| [p[0] + 1.0, p[1], p[2]]).collect();
+    let mesh = Mesh {
+        positions: &moved,
+        normals: &part.normals,
+        colours: &part.colours,
+        uvs: &part.uvs,
+        indices: &part.indices,
+    };
+    let solid = *offsets.first().expect("a solid");
+    let out = gizmo_nfs::geometry::replace_mesh(&bytes, solid, &mesh).expect("write");
+    let after = gizmo_nfs::parse_geometry(&out).expect("the edited car parses");
+    assert_eq!(after.len(), parts.len());
+    let edited = &after[0];
+    for (a, b) in edited.positions.iter().zip(moved.iter()) {
+        assert!((a[0] - b[0]).abs() < 1e-5, "the move did not survive: {a:?} vs {b:?}");
+    }
+    // The bbox followed it, by the file's own inflation rule.
+    assert!(
+        (edited.bbox_min[0] - (part.bbox_min[0] + 1.0)).abs() < 1e-4,
+        "the bounding box did not follow the vertices"
+    );
+    // Every other part is untouched.
+    for (a, b) in after.iter().zip(parts.iter()).skip(1) {
+        assert_eq!(a.positions, b.positions, "{} changed and nobody asked it to", b.name);
+    }
+
+    // Counts are the contract, and a set that breaks them is refused rather than written.
+    let short = Mesh { positions: &moved[..1], ..mesh };
+    assert!(gizmo_nfs::geometry::replace_mesh(&bytes, solid, &short).is_err());
+}
+
 /// The vertex colour is a colour, which is worth a test because it was documented as not existing.
 ///
 /// The four bytes at `+24` of the stride-36 record were called "a constant sentinel (~-1.7e38);

@@ -38,7 +38,7 @@ pub use format::VERTEX_STRIDE;
 pub use name::{part_name, read_matrix};
 pub use solid::{mesh_field, skip_leading_filler, SkipReason, Skipped};
 pub use vertex::standard_vertex_layout;
-pub use write::{rebuild, SOLID_DIRECTORY};
+pub use write::{rebuild, replace_mesh, Mesh, SOLID_DIRECTORY};
 
 use crate::chunk::ChunkNode;
 use crate::error::NfsResult;

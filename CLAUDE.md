@@ -540,8 +540,16 @@ Layered bottom-up; each layer is `&[u8]`-based and independently testable:
     offset rather than by position. Growing one vertex buffer through the plain repacker strands
     over a hundred of a 240SX's 609 records; through this one every record still names a solid, the
     car reparses with every part intact, and a no-op rebuild is byte-identical. This is the
-    foundation a mesh write needs, not the mesh write: an *importer* — reading an edited model back
-    in — does not exist, and the notes below say what it would have to solve.
+    foundation the mesh write stands on. On top of it, `replace_mesh` writes one solid's vertices,
+    indices and bounding box back: **all 609 meshes in a 240SX round-trip byte-identically**, and a
+    part moved a metre comes back moved with its box following. Two things that had to be measured
+    rather than assumed, and both bit: the bbox is not the AABB but min−0.01 / max+0.01 (23,292 of
+    23,299 solids), and the index buffer is anchored at its **leading** `0x11` filler while the
+    vertex buffer is anchored at its tail — writing indices from the tail reintroduced the exact
+    "shard" bug `geometry::index`'s own comment warns about, on a decal with four bytes of trailing
+    pad. Changing a vertex or triangle *count* is refused rather than guessed at (it needs the mesh
+    header's counts, the 60-byte submesh runs and the 128-byte alignment in front of the buffers),
+    and an *importer* — reading an edited model back in — still does not exist.
 
 16. **`repack`** — the write path: `rebuild(bytes, edits)` reassembles a chunk stream, recomputing container sizes and alignment padding, replacing named leaf payloads. **Measured, not assumed**: every chunk size and offset in a real install is a multiple of 4; `0x80134010` (SolidObject) starts on a **128**-byte boundary 18,230 times out of 18,230, padded with an `id == 0` chunk only when needed; a 4-byte alignment debt is unpayable (a header is 8) so the files pay 132; `0x80034020` aligns to 64. An `id == 0` chunk is *not* always padding — BUS carries one of 1,332 bytes with a non-zero byte inside — so a gap is only re-derived when it is exactly what the rule would produce, and copied otherwise. A golden test rebuilds 113 files byte-for-byte.
 17. **`globalb::carparts`** — the `CarParts` tables in `GLOBAL/GLOBALB.BUN`: 12,167 parts, 4,636
