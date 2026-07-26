@@ -1661,8 +1661,9 @@ fn handling_reads_the_real_records() {
 
     // The second car that was driven, and the one that makes the axis more than a curve fit: the
     // Mustang spans 800 → 6500 rather than 800 → 7000, so its step is 712.5 and its peak falls on
-    // index 7 rather than 6. The game's dynamometer reads 223.6 kW; this reads 223.638, and the
-    // readout truncates — which is also why the 240SX's 115.8567 showed as 115.8 and not 115.9.
+    // index 7 rather than 6. The game's dynamometer reads 223.6 kW and this reads 223.638, which is
+    // 223.6 whether the readout rounds or truncates — so unlike the 240SX's figure it says nothing
+    // about which, and this test deliberately asserts neither.
     let gt = cars.iter().find(|c| c.name == "MUSTANGGT").expect("the Mustang is in the roster");
     let gt_axis = gt.handling.torque_rpm();
     assert_eq!(gt_axis[1] - gt_axis[0], 712.5, "a different step from the 240SX's 775");
@@ -1670,9 +1671,6 @@ fn handling_reads_the_real_records() {
     assert_eq!(gt_power.rpm, 5787.5);
     let gt_kw = gt_power.kw();
     assert!((gt_kw - 223.638).abs() < 0.01, "{gt_kw} kW against the dyno's 223.6");
-    let truncated = |kw: f32| (kw * 10.0).floor() / 10.0;
-    assert_eq!(truncated(gt_power.kw()), 223.6, "as the game showed it");
-    assert_eq!(truncated(power.kw()), 115.8, "and as it showed the 240SX");
     // Stock is a five-speed; the third transmission upgrade adds a sixth gear and shortens the
     // final drive. That progression is the design's four columns, in the file.
     assert_eq!(h.gearbox[0].count, 5);

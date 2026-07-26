@@ -398,8 +398,8 @@ static TR: Strings = Strings {
 (46 × 2192 bayt). Motor, tork eğrisi ve vites kutusu oradan okunuyor — vites kutusu dört \
 yükseltme sütununun tamamıyla, çünkü dosyada dört kez saklanan tek şey o. Tork noktalarının \
 devirleri dosyada yazmıyor: rölantiden devir kesiciye sekiz eşit adım, oyunun kendi \
-dinamometresine karşı doğrulandı. Aero ve fren bu oyunun dosyalarında yok; direksiyondan yalnızca \
-çarpan var, o da sürülerek doğrulandı.",
+dinamometresine karşı doğrulandı. Aero arandı ve yok. Frende doğrulanmamış bir aday var, o yüzden \
+satırlar boş duruyor. Direksiyondan yalnızca çarpan burada, o da sürülerek doğrulandı.",
     cp_no_install: "Kurulum bulunamadı — GLOBALB.BUN okunamadı",
     cp_no_record: "GLOBALB.BUN'da bu ada sahip araç kaydı yok",
     cp_from_globalb: "GLOBALB",
@@ -621,8 +621,9 @@ static EN: Strings = Strings {
 (46 × 2192 bytes). Engine limits, the torque curve and the gearbox are read from it — the gearbox \
 across all four upgrade columns, since it is the only thing the record stores four times. The rpm \
 each torque point sits at is not stored: it is idle to limiter in eight equal steps, checked \
-against the game's own dynamometer. Aero and brakes are not in this game's files; of the steering \
-only the multiplier is, and that one was settled by driving it.",
+against the game's own dynamometer. Aero was swept for and is absent. Brakes have a live candidate \
+that is not confirmed, so the rows stay empty. Of the steering only the multiplier is here, and \
+that one was settled by driving it.",
     cp_no_install: "No install found — GLOBALB.BUN was not readable",
     cp_no_record: "GLOBALB.BUN holds no car record under this name",
     cp_from_globalb: "GLOBALB",

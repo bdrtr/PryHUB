@@ -146,10 +146,20 @@ pub struct CarHandling {
     /// per-car. This is not an angle. Set to 0.05 on a 240SX and installed, the car barely turns at
     /// all — which is what a steering multiplier does and what no other subsystem does.
     ///
-    /// It is deliberately named for what the experiment showed rather than for what a modding tool
-    /// calls it. The candidate word was `SteeringRatio`; the evidence is "the car stopped turning",
-    /// and that supports a multiplier on steering response and not the precise quantity a name
-    /// implies.
+    /// The name was held at arm's length for a while, because the candidate word `SteeringRatio`
+    /// came from a modding tool and the evidence was only "the car stopped turning" — which supports
+    /// a multiplier on steering response, not the precise quantity that name implies. **The game
+    /// settles it in its own words.** `LANGUAGES/English.bin` carries the tuning screen's help text:
+    ///
+    /// > Steering ratio determines how quickly the wheels of car respond to steering input. Use the
+    /// > slider to adjust the sensitivity of your steering.
+    ///
+    /// So "steering ratio" is this game's own term for response sensitivity rather than for a
+    /// geometric ratio, which is exactly what the driving showed. Name and meaning both come from
+    /// the game now, and neither is borrowed.
+    ///
+    /// That text also places this field: it is one of **ten tuning sliders** the game names, and it
+    /// is the first of them found in this record. The others are worth looking for nearby.
     pub steer_ratio: f32,
 }
 
@@ -215,11 +225,16 @@ impl CarHandling {
     /// index 6. A formula that happened to fit one span at one index had to fit a different span at
     /// a different index to survive that.
     ///
-    /// It also settles the one loose end the first reading left. 115.86 kW displayed as `115.8`,
-    /// which looked like the axis being 0.06 out; the Mustang's 223.64 displays as `223.6`, and
-    /// **truncation fits both readouts where rounding fits only one**. The gap was the readout
-    /// cutting a digit, not the arithmetic. (Only the 240SX says so — the Mustang's figure shows
-    /// the same either way.)
+    /// One loose end is **open, and was briefly written down here as closed**. The 240SX computes
+    /// 115.8567 and was read off the game as `115.8`; the Mustang computes 223.638 and reads
+    /// `223.6`. Truncation fits both and rounding fits only the second, so this said the readout
+    /// truncates. Then `LANGUAGES/English.bin` turned up the game's own format string for that
+    /// line — `%$3.1f %s^@%$d rpm` — and `%.1f` **rounds**, which would print `115.9`. So either
+    /// the first reading was a digit out or that format is not the one behind it. Unresolved, and
+    /// one look at the 240SX's dyno decides it.
+    ///
+    /// The axis does not rest on it either way: the Mustang reads `223.6` under both conventions,
+    /// and the three rival axes are 3.8 to 21 kW away from it.
     ///
     /// What this is *not* is 46 confirmations. Two cars were driven; the other 44 are this formula
     /// applied to their own two numbers, and they are unchecked against a dynamometer.
@@ -556,18 +571,12 @@ mod tests {
         assert_eq!(peak.rpm, 5787.5, "index 7, where the 240SX peaks at index 6");
         assert!((peak.kw() - 223.638).abs() < 0.01, "{} kW against the dyno's 223.6", peak.kw());
 
-        // And the readout **truncates**: 223.638 shows as 223.6 either way, but the 240SX's
-        // 115.8567 shows as 115.8 and would show 115.9 if the game rounded. One digit, and it is
-        // the difference between "the axis is 0.06 out" and "the axis is exact".
-        let trunc = |kw: f32| (kw * 10.0).floor() / 10.0;
-        assert_eq!(trunc(peak.kw()), 223.6);
-        let s14 = engine_record(
-            800.0,
-            6500.0,
-            7000.0,
-            [0.140, 0.150, 0.160, 0.180, 0.200, 0.216, 0.203, 0.170, 0.150],
-        );
-        assert_eq!(trunc(s14.peak_power().kw()), 115.8, "as the game showed it");
+        // What is asserted is the computed figure, not how the game prints it. An earlier version
+        // of this test asserted truncation, on the strength of the 240SX reading 115.8 where
+        // 115.8567 rounds to 115.9 — and then the game's own format string for that line turned up
+        // in `LANGUAGES/English.bin` as `%$3.1f`, which rounds. The printing convention is open;
+        // both cars agree with the axis regardless, since 223.638 prints 223.6 either way.
+        assert!((peak.kw() - 223.638).abs() < 0.01, "either convention shows 223.6");
     }
 
     #[test]

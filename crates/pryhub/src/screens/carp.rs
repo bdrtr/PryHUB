@@ -20,11 +20,16 @@
 //!   only thing the record stores four times. Everything else it stores once, so it is shown under
 //!   `STOCK` and left blank under the upgrades — repeating a number across four columns would read
 //!   as "this upgrade changes nothing", which the file does not say.
-//! * `[::AERO]` and `[::BRAKES]` are **not in this game's files**, and that is measured rather than
-//!   unsearched: the one brake-shaped triple is exactly zero for all 15 traffic vehicles, and the
-//!   likeliest remaining candidate — `+0x38C`, which a modding tool calls `BrakeBias` — was set to
-//!   0.02 on a real 240SX, installed and driven, and braking was unchanged. A negative anyone can
-//!   re-run beats a negative nobody looked for.
+//! * `[::AERO]` has no source and was swept for. `[::BRAKES]` is a **weaker claim than it used to
+//!   be here, and the weakening is the honest direction**. It said the section was measured absent,
+//!   citing `+0x38C` — which a modding tool calls `BrakeBias` — set to 0.02 on a real 240SX,
+//!   installed, driven, and braking unchanged. Three things since then point the other way: the
+//!   lane holds 0.47–0.60 in all 46 records, which is a *front fraction* just over half; it orders
+//!   by drivetrain (FWD 0.564, AWD 0.568, RWD 0.531), so front-heavy cars get more front brake; and
+//!   the game's own tuning text reads "Brake bias controls how much braking the front tires do
+//!   verses the rears." A bias does not change **stopping distance** — it moves force between axles
+//!   — so a null on distance was very likely the wrong observable. The row stays empty because
+//!   nothing is confirmed, not because the question is closed.
 //! * `[::STEERING]` half filled, and the half that did is a correction. It was ruled out here for a
 //!   good reason that turned out to be about the wrong quantity: the only steering *angles* in the
 //!   record are a global ±43 identical in all 46 cars, so nothing angle-shaped could be per-car.
@@ -704,14 +709,16 @@ mod tests {
             ]
         );
         assert_eq!(located(), 25);
-        // `AERO` and `BRAKES` stay wholly unclaimed, and that is measured rather than unsearched —
-        // the module note says how, including a candidate that was driven and did nothing. A row
-        // here gaining a source later should be a deliberate edit to this test too, which is exactly
-        // what happened to `STEERING` below.
+        // `AERO` and `BRAKES` stay wholly unclaimed. For `AERO` that is a sweep that found nothing;
+        // for `BRAKES` it is now "nothing confirmed" rather than "measured absent" — see the module
+        // note, which records a live candidate at `+0x38C` and why the experiment that dismissed it
+        // probably watched the wrong thing. Either way no row here may claim a source without the
+        // claim being made in the open, by editing this test — which is exactly what `STEERING`
+        // below made someone do.
         for section in &SECTIONS[6..8] {
             assert!(
                 section.params.iter().all(|p| p.source == Source::NotLocated),
-                "{} is not in this game's files",
+                "{} has nothing confirmed behind it",
                 section.name
             );
         }
