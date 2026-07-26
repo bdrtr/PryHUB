@@ -27,3 +27,9 @@ Cargo.lock.orig
 # bir `git add -A` 820 KB'ı kazara içeri alıyordu.
 /STRUKT NFSU2 Asset Tool/
 /STRUKT NFSU2 Asset Tool.zip
+
+# Çalışma notları ve ekran görüntüleri: depoda değil, diskte kalıyor.
+# `git rm --cached` ile takipten çıkarıldı — dosyalar duruyor, sadece izlenmiyor.
+/CLAUDE.md
+/nfsu2_arac_plani.md
+/ss/
