@@ -10,6 +10,21 @@
 //! settles it is the experiment the save profile was locked with, run the other way round: change
 //! **one** value, install, drive, and see what the car does. This writes the file for that.
 //!
+//! # Two things to know before spending a drive on it
+//!
+//! **The install carries two copies of this table.** `GLOBAL/GLOBALB.BUN` is the 8 MB uncompressed
+//! one this writes; `GLOBAL/GlobalB.lzc` is 24.9 MB and holds the same 46 records. Which one the
+//! game reads is not established, and if it is the second then every edit made here is invisible and
+//! every "nothing changed" is worthless. The first experiment anyone runs should therefore be on a
+//! lane already decoded — tripling a car's mass at `+0x220` is unmistakable — so that a null result
+//! from a real experiment can be told apart from an edit that never arrived.
+//!
+//! **A one-car coincidence is not a pattern.** The nine values at `+0x530` are exactly a quarter of
+//! the 240SX's torque curve, which made it look derived; over all 46 records 371 of 414 points
+//! deviate, SKYLINE's ratios spread 92%, and BUS's are zero. What is true is that the run is the
+//! torque curve times a *per-car* scalar, in 23 of 31 playable cars. Checking a hypothesis on the
+//! car in front of you is how it survives to be written down wrong.
+//!
 //! Nothing here interprets the lane. It reports what was there and what is there now, and leaves the
 //! naming to whatever the car does next.
 
