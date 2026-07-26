@@ -37,11 +37,15 @@
 //!
 //! # The one deliberate departure
 //!
-//! The design's torque section is eight rows labelled by rpm, generated from its own `rpmSteps`. The
-//! file holds **nine** magnitudes and **no rpm axis** — every 4-aligned lane of all 46 records was
-//! swept for a nine-wide increasing run and there is none. So the rows here are the file's own nine
-//! points, unlabelled by rpm. Putting eight invented rpms on nine real numbers is the single thing
-//! this screen exists not to do.
+//! The design's torque section is rows labelled by rpm, generated from its own `rpmSteps`, and this
+//! screen refused to label its nine for a long time — the axis was recorded as absent, having been
+//! swept for as a nine-wide increasing run in every 4-aligned lane of all 46 records and not found.
+//! That search was right and looked for the wrong shape: the axis is not a run, it is **idle to
+//! limiter in eight equal steps**, two numbers this screen already had. It was settled on the game's
+//! own dynamometer, on two cars — a 240SX reads 115.8 kW where this computes 115.86, and a Mustang
+//! GT reads 223.6 where this computes 223.64. The second one matters because its span is different
+//! (800 → 6500, so a 712.5 step) and its peak sits on a different point, so it is a second test
+//! rather than the first one repeated. The rows carry their rpm now.
 //!
 //! # Two things this screen has already got wrong
 //!
@@ -126,11 +130,10 @@ const fn got(label: &'static str, unit: &'static str, source: Source) -> Param {
 /// stay listed rather than dropped — "the format has an aero section and this game does not store
 /// one" is a different statement from "there is no aero", and only the first is true.
 ///
-/// One deliberate departure: the design's torque section is eight rows labelled by rpm
-/// (`trq_1000`..`trq_8000`), generated from its own `rpmSteps`. The file holds **nine** magnitudes
-/// and **no rpm axis at all** — that absence is measured, not unsearched. Labelling nine numbers
-/// with eight invented rpms would be the one thing this screen exists not to do, so the rows are the
-/// file's own points instead.
+/// The torque section is the design's, at the file's own resolution: it draws eight rows from its
+/// `rpmSteps` and the file holds **nine** points, so there are nine here. Their rpm is real and not
+/// invented — idle to limiter in eight equal steps, confirmed against the game's dynamometer — so
+/// [`row_label`] puts each row's own rpm in front of it.
 static SECTIONS: &[Section] = &[
     Section {
         name: "[::VEHICLE]",
@@ -254,6 +257,12 @@ pub struct Car {
     rear_drive: f32,
     rpm: [f32; 3],
     torque_nm: [f32; 9],
+    /// The engine speed each torque point sits at, taken from
+    /// [`gizmo_nfs::CarHandling::torque_rpm`] rather than worked out here. The formula is short
+    /// enough to have been inlined into [`row_label`] and that is exactly why it should not be: it
+    /// is a claim about what the file means, so it belongs beside the bytes it is a claim about,
+    /// where `ug2` reads the same one.
+    torque_rpm: [f32; 9],
     tyre_width_mm: f32,
     steer_ratio: f32,
     /// One per upgrade level: final drive, gear count, and the forward ratios.
@@ -275,9 +284,26 @@ impl Car {
             rear_drive: h.rear_drive,
             rpm: [h.engine.idle_rpm, h.engine.red_line_rpm, h.engine.limiter_rpm],
             torque_nm: h.torque_nm,
+            torque_rpm: h.torque_rpm(),
             tyre_width_mm: h.tyre_width_m[0] * 1000.0,
             gearbox,
         }
+    }
+}
+
+/// A row's name, which for the torque points is the rpm they sit at.
+///
+/// The design labels its torque rows by rpm and this screen could not, because the axis was thought
+/// to be absent; it is not, so they do. Without a car there is no axis either — the rpm is that
+/// car's own idle and limiter — so with nothing open the rows keep the file's point number rather
+/// than showing a number that would be somebody's guess.
+fn row_label(param: &Param, car: Option<&Car>) -> String {
+    match (param.source, car) {
+        (Source::Torque(i), Some(c)) => match c.torque_rpm.get(i) {
+            Some(rpm) => format!("{rpm:.0} rpm"),
+            None => param.label.to_string(),
+        },
+        _ => param.label.to_string(),
     }
 }
 
@@ -578,7 +604,7 @@ fn table_panel(
 
                     for param in section.params {
                         ui.label(
-                            RichText::new(param.label)
+                            RichText::new(row_label(param, car))
                                 .font(theme::font::mono(d.mono_size()))
                                 .color(token::TEXT),
                         );
@@ -623,9 +649,10 @@ mod tests {
     #[test]
     fn the_screen_carries_the_designs_whole_table() {
         assert_eq!(SECTIONS.len(), 9, "the design draws nine sections");
-        // 40 rows: the design's 39, plus one, because its torque section is eight rows labelled by
-        // rpm and the file holds nine magnitudes with no rpm axis. Labelling nine numbers with
-        // eight invented rpms is the one thing this screen exists not to do.
+        // 40 rows: the design's 39, plus one, because its torque section generates eight rows from
+        // its own `rpmSteps` and the file holds nine points. The rows are labelled by rpm the way
+        // the design labels them — the axis is real, see `torque_rows_are_labelled_by_rpm` — but at
+        // the file's resolution rather than the design's.
         assert_eq!(total(), 40, "thirty-nine design rows, with the torque curve at the file's nine");
         assert_eq!(SECTIONS[3].params.len(), 9, "the file's nine torque points");
     }
@@ -711,6 +738,33 @@ mod tests {
         assert_eq!(cell(row, Some(&car), 0).as_deref(), Some("RWD"));
     }
 
+    /// The torque rows carry engine speeds, and only when a car is open.
+    ///
+    /// The nine values are written out rather than recomputed from `rpm`, so this says what the
+    /// labels *should* read for a 240SX instead of re-running the screen's own arithmetic against
+    /// itself. Whether the axis is the right one is settled next door, in `gizmo_nfs::globalb`.
+    #[test]
+    fn torque_rows_are_labelled_by_rpm() {
+        let torque = SECTIONS[3].params;
+        let car = sample();
+        let labels: Vec<String> = torque.iter().map(|p| row_label(p, Some(&car))).collect();
+        assert_eq!(
+            labels,
+            [
+                "800 rpm", "1575 rpm", "2350 rpm", "3125 rpm", "3900 rpm", "4675 rpm", "5450 rpm",
+                "6225 rpm", "7000 rpm"
+            ]
+        );
+
+        // With nothing open there is no axis, so the rows keep the design's own key. An earlier
+        // draft would have printed `NaN rpm` here, which is worse than saying nothing.
+        assert_eq!(row_label(&torque[0], None), "trq_pt_1");
+        // And every other row is its label whether or not a car is open.
+        let mass = &SECTIONS[1].params[0];
+        assert_eq!(row_label(mass, Some(&car)), "mass");
+        assert_eq!(row_label(mass, None), "mass");
+    }
+
     /// A stand-in shaped like the 240SX's record: a stock five-speed that gains a sixth by L3.
     fn sample() -> Car {
         let five = (4.0, 5, [3.321, 1.902, 1.308, 1.0, 0.9, 0.0]);
@@ -721,6 +775,9 @@ mod tests {
             rear_drive: 1.0,
             rpm: [800.0, 6500.0, 7000.0],
             torque_nm: [140.0, 150.0, 160.0, 180.0, 200.0, 216.0, 203.0, 170.0, 150.0],
+            torque_rpm: [
+                800.0, 1575.0, 2350.0, 3125.0, 3900.0, 4675.0, 5450.0, 6225.0, 7000.0,
+            ],
             tyre_width_mm: 205.0,
             steer_ratio: 1.1,
             gearbox: [five, five, five, six],

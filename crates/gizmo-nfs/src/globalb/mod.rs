@@ -105,9 +105,13 @@ impl Gearbox {
 /// What a car's physics record says about how it drives.
 ///
 /// Read from the same `CarTypeInfo` record as the rest — see the module note for what is in there
-/// and, just as importantly, what is not. Aero, brakes, tyre grip and the torque curve's
-/// rpm axis are **not in this file**; they are absent rather than unread, and this struct does not
-/// pretend otherwise by carrying zeroed fields for them.
+/// and, just as importantly, what is not. Aero, brakes and tyre grip are **not in this file**; they
+/// are absent rather than unread, and this struct does not pretend otherwise by carrying zeroed
+/// fields for them.
+///
+/// The torque curve's rpm axis is a third thing again: not stored, and not lost either. It is
+/// *derived* from two fields that are — see [`Self::torque_rpm`], which is a method rather than a
+/// field for exactly that reason.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -115,9 +119,10 @@ pub struct CarHandling {
     /// The rpm limits.
     pub engine: Engine,
     /// Nine points of the torque curve in **N·m**, stored in the file as kN·m the same way mass is
-    /// stored in tonnes. It rises to an interior peak and falls again in all 46 records. **The rpm
-    /// axis is not stored** — only these nine magnitudes — so anything that plots it is choosing an
-    /// axis, not reading one.
+    /// stored in tonnes. It rises to an interior peak and falls again in all 46 records.
+    ///
+    /// The rpm they sit at is **not stored beside them** and is not missing either: see
+    /// [`CarHandling::torque_rpm`].
     pub torque_nm: [f32; 9],
     /// Stock, then the three upgrade levels, in the order the game's tuning screen offers them.
     pub gearbox: [Gearbox; 4],
@@ -146,6 +151,125 @@ pub struct CarHandling {
     /// and that supports a multiplier on steering response and not the precise quantity a name
     /// implies.
     pub steer_ratio: f32,
+}
+
+/// Radians per second per rpm — `2π/60`, the conversion torque needs to become power.
+const RAD_PER_RPM: f32 = std::f32::consts::TAU / 60.0;
+
+/// Watts in one mechanical horsepower (550 ft·lbf/s), to the precision an `f32` can hold.
+const W_PER_HP: f32 = 745.699_9;
+
+/// The number of *intervals* the torque curve's nine points span. See [`CarHandling::torque_rpm`].
+const TORQUE_INTERVALS: f32 = 8.0;
+
+/// A point on a car's power curve: where it is, and how much it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PowerPoint {
+    /// Engine speed, in rpm.
+    pub rpm: f32,
+    /// Power in watts: `torque × rpm × 2π/60`.
+    pub watts: f32,
+}
+
+impl PowerPoint {
+    /// The same figure in kilowatts, which is the unit this game's dynamometer reads in.
+    #[must_use]
+    pub fn kw(&self) -> f32 {
+        self.watts / 1000.0
+    }
+
+    /// …and in mechanical horsepower, which is the unit its car-select screen reads in.
+    #[must_use]
+    pub fn hp(&self) -> f32 {
+        self.watts / W_PER_HP
+    }
+}
+
+impl CarHandling {
+    /// The rpm each of [`Self::torque_nm`]'s nine points sits at: **idle to limiter in eight equal
+    /// steps**.
+    ///
+    /// This is a method and not a field because the file does not contain it. The nine values are
+    /// nowhere in the 8 MB bundle — not as `f32`, `u32`, `i32` or `u16` — and neither the 240SX's
+    /// step (775) nor its peak-power speed (5450) appears anywhere in its own 2,192-byte record. An
+    /// earlier sweep of every 4-aligned lane of all 46 records looked for a nine-wide increasing
+    /// run and found none, and that sweep was right: the axis is not a run of stored numbers, it is
+    /// arithmetic over two fields that *are* stored.
+    ///
+    /// **Locked by driving, on two cars.** The game's own dynamometer reads a stock 240SX at
+    /// 115.8 kW and a stock Mustang GT at 223.6 kW. This axis reproduces both; the three other
+    /// readings anyone would try reproduce neither, so the pair picks one candidate out of four
+    /// rather than merely failing to contradict it:
+    ///
+    /// | axis | 240SX (game: 115.8) | Mustang GT (game: 223.6) |
+    /// |---|---|---|
+    /// | **idle → limiter, 8 steps** | **115.86 @ 5450** | **223.64 @ 5788** |
+    /// | idle → red line, 8 steps | 107.88 @ 5075 | 206.66 @ 5350 |
+    /// | 0 → limiter, 8 steps | 111.61 @ 5250 | 219.84 @ 5688 |
+    /// | idle → limiter, 9 steps | 104.87 @ 4933 | 202.24 @ 5233 |
+    ///
+    /// The second car is **not the first one twice**. Its span is 800 → 6500 where the 240SX's is
+    /// 800 → 7000, so the step is 712.5 rather than 775 and its peak falls on index 7 rather than
+    /// index 6. A formula that happened to fit one span at one index had to fit a different span at
+    /// a different index to survive that.
+    ///
+    /// It also settles the one loose end the first reading left. 115.86 kW displayed as `115.8`,
+    /// which looked like the axis being 0.06 out; the Mustang's 223.64 displays as `223.6`, and
+    /// **truncation fits both readouts where rounding fits only one**. The gap was the readout
+    /// cutting a digit, not the arithmetic. (Only the 240SX says so — the Mustang's figure shows
+    /// the same either way.)
+    ///
+    /// What this is *not* is 46 confirmations. Two cars were driven; the other 44 are this formula
+    /// applied to their own two numbers, and they are unchecked against a dynamometer.
+    #[must_use]
+    pub fn torque_rpm(&self) -> [f32; 9] {
+        let idle = self.engine.idle_rpm;
+        let step = (self.engine.limiter_rpm - idle) / TORQUE_INTERVALS;
+        let mut out = [0.0f32; 9];
+        for (i, rpm) in out.iter_mut().enumerate() {
+            *rpm = idle + i as f32 * step;
+        }
+        out
+    }
+
+    /// The curve as `(rpm, N·m)` pairs — [`Self::torque_rpm`] against [`Self::torque_nm`].
+    #[must_use]
+    pub fn torque_curve(&self) -> [(f32, f32); 9] {
+        let rpm = self.torque_rpm();
+        let mut out = [(0.0, 0.0); 9];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = (rpm[i], self.torque_nm[i]);
+        }
+        out
+    }
+
+    /// The highest-power point **of the nine**, which is what confirmed the axis.
+    ///
+    /// "Of the nine" is a stated convention rather than a discovered one. If the game reads the
+    /// curve as nine samples, this is its peak; if it interpolates linearly between them, power is
+    /// piecewise quadratic and its maximum can fall *between* two points — which, measured over
+    /// this install, it would for 8 of the 46 cars. The 240SX is not one of them: on both segments
+    /// either side of point 6 the parabola's own vertex lies outside the segment, so the peak sits
+    /// on the node whichever way the game evaluates it. The one dynamometer reading available
+    /// therefore cannot tell the two conventions apart, and this reports the one the file's own
+    /// nine points support.
+    #[must_use]
+    pub fn peak_power(&self) -> PowerPoint {
+        let curve = self.torque_curve();
+        // Seeded from the first point rather than from zero, so a car whose curve is all zeroes —
+        // or a record holding a NaN — still names a point instead of an rpm nothing sits at.
+        let (rpm, torque) = curve[0];
+        let mut best = PowerPoint { rpm, watts: torque * rpm * RAD_PER_RPM };
+        for &(rpm, torque) in curve.iter().skip(1) {
+            let watts = torque * rpm * RAD_PER_RPM;
+            if watts > best.watts {
+                best = PowerPoint { rpm, watts };
+            }
+        }
+        best
+    }
 }
 
 /// The subset of a `CarTypeInfo` record needed to place and size a car: its name, the four
@@ -347,6 +471,103 @@ mod tests {
         assert!((c.wheels[0].radius - 0.34).abs() < 1e-4);
         assert_eq!(find_car(&b, "TESTX").as_ref(), Some(c));
         assert!(find_car(&b, "NOPE").is_none());
+    }
+
+    /// Build a record carrying just an engine: the three rpm limits, and nine torque magnitudes in
+    /// the **kN·m** the file stores them in.
+    fn engine_record(idle: f32, red: f32, limiter: f32, torque_knm: [f32; 9]) -> CarHandling {
+        let mut b = vec![0u8; REC_SIZE + 16];
+        b[..5].copy_from_slice(b"TESTX");
+        b[OFF_NAME2..OFF_NAME2 + 5].copy_from_slice(b"TESTX");
+        let path = b"CARS\\TESTX\\GEOMETRY.BIN";
+        b[OFF_PATH..OFF_PATH + path.len()].copy_from_slice(path);
+        let put = |b: &mut [u8], o: usize, v: f32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut b, OFF_RPM, idle);
+        put(&mut b, OFF_RPM + 4, red);
+        put(&mut b, OFF_RPM + 8, limiter);
+        for (i, t) in torque_knm.into_iter().enumerate() {
+            put(&mut b, OFF_TORQUE + i * 4, t);
+        }
+        find_car(&b, "TESTX").expect("the synthetic record parses").handling
+    }
+
+    /// A record shaped like the 240SX's engine, read back through the parser and then asked for the
+    /// axis the file does not store.
+    ///
+    /// The numbers are the ones the dynamometer check was run on — idle 800, limiter 7000 and the
+    /// nine magnitudes that peak at 216 N·m — so this is that check, minus the driving.
+    #[test]
+    fn the_torque_axis_is_idle_to_limiter_in_eight_steps() {
+        let h = engine_record(
+            800.0,
+            6500.0,
+            7000.0,
+            [0.140, 0.150, 0.160, 0.180, 0.200, 0.216, 0.203, 0.170, 0.150],
+        );
+        assert_eq!(
+            h.torque_rpm(),
+            [800.0, 1575.0, 2350.0, 3125.0, 3900.0, 4675.0, 5450.0, 6225.0, 7000.0]
+        );
+        // The two ends are the two fields it is built from, exactly — the step divides by 8, which
+        // in binary floating point is an exponent shift and loses nothing.
+        let axis = h.torque_rpm();
+        assert_eq!(axis[0], h.engine.idle_rpm, "the curve starts at idle");
+        assert_eq!(axis[8], h.engine.limiter_rpm, "and ends at the limiter");
+        assert!(axis.windows(2).all(|w| w[0] < w[1]), "strictly increasing");
+
+        // Peak *torque* is at index 5 (4675 rpm) and peak *power* at index 6 (5450). That the two
+        // fall apart is the whole reason one dynamometer reading could pick an axis out of four —
+        // if they coincided, every candidate would put the peak on the torque peak and only the
+        // rpm printed beside it would differ.
+        let peak_torque =
+            h.torque_nm.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        assert_eq!(peak_torque, 5, "the curve's largest magnitude is its sixth point");
+        let peak = h.peak_power();
+        assert_eq!(peak.rpm, 5450.0, "one point past that, where torque is already falling");
+        assert!((peak.kw() - 115.86).abs() < 0.01, "{} kW against the dyno's 115.8", peak.kw());
+        assert!((peak.hp() - 155.4).abs() < 0.1, "{} hp", peak.hp());
+
+        let curve = h.torque_curve();
+        assert_eq!(curve[0], (800.0, 140.0));
+        assert_eq!(curve[8].0, 7000.0);
+        assert!((curve[5].1 - 216.0).abs() < 0.01, "kN·m came back as N·m");
+    }
+
+    /// The second car that was driven, and the reason it is worth a test of its own.
+    ///
+    /// A Mustang GT's span is 800 → 6500 where the 240SX's is 800 → 7000, so the step is 712.5
+    /// rather than 775, and its peak power falls on index **7** rather than index 6. Had the axis
+    /// been fitted to the first car it would have had to survive a different span at a different
+    /// point, and the game's dynamometer reads exactly what this computes: 223.6 kW.
+    #[test]
+    fn a_second_span_lands_on_its_own_dynamometer_reading() {
+        let h = engine_record(
+            800.0,
+            6000.0,
+            6500.0,
+            [0.250, 0.280, 0.320, 0.350, 0.390, 0.425, 0.390, 0.369, 0.320],
+        );
+        let axis = h.torque_rpm();
+        assert_eq!(axis[1] - axis[0], 712.5, "a different step from the 240SX's 775");
+        assert_eq!(axis[0], 800.0);
+        assert_eq!(axis[8], 6500.0);
+
+        let peak = h.peak_power();
+        assert_eq!(peak.rpm, 5787.5, "index 7, where the 240SX peaks at index 6");
+        assert!((peak.kw() - 223.638).abs() < 0.01, "{} kW against the dyno's 223.6", peak.kw());
+
+        // And the readout **truncates**: 223.638 shows as 223.6 either way, but the 240SX's
+        // 115.8567 shows as 115.8 and would show 115.9 if the game rounded. One digit, and it is
+        // the difference between "the axis is 0.06 out" and "the axis is exact".
+        let trunc = |kw: f32| (kw * 10.0).floor() / 10.0;
+        assert_eq!(trunc(peak.kw()), 223.6);
+        let s14 = engine_record(
+            800.0,
+            6500.0,
+            7000.0,
+            [0.140, 0.150, 0.160, 0.180, 0.200, 0.216, 0.203, 0.170, 0.150],
+        );
+        assert_eq!(trunc(s14.peak_power().kw()), 115.8, "as the game showed it");
     }
 
     #[test]

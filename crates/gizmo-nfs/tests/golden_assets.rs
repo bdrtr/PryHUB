@@ -1567,6 +1567,7 @@ fn handling_reads_the_real_records() {
     assert_eq!(cars.len(), 46, "the install ships 46 CarTypeInfo records");
 
     let (mut rising, mut fifties, mut unimodal, mut blocks, mut playable) = (0, 0, 0, 0, 0);
+    let (mut spanned, mut power_past_torque) = (0, 0);
     for car in &cars {
         let e = car.handling.engine;
         if e.idle_rpm < e.red_line_rpm && e.red_line_rpm < e.limiter_rpm {
@@ -1588,6 +1589,21 @@ fn handling_reads_the_real_records() {
             unimodal += 1;
         }
 
+        // The rpm axis is derived, so what can be checked here is that it spans exactly what it
+        // claims to: the first point is idle and the ninth is the limiter, to the bit. Dividing by
+        // eight is an exponent shift in binary floating point, so nothing is lost on the way.
+        let axis = car.handling.torque_rpm();
+        if axis[0] == e.idle_rpm && axis[8] == e.limiter_rpm && axis.windows(2).all(|w| w[0] < w[1])
+        {
+            spanned += 1;
+        }
+        // And that peak power lands strictly *past* peak torque. That is not forced by the
+        // arithmetic — a curve falling steeply enough after its torque peak would put both at the
+        // same point — so it is a fact about how these 46 engines are shaped.
+        if car.handling.peak_power().rpm > axis[peak] {
+            power_past_torque += 1;
+        }
+
         for g in &car.handling.gearbox {
             let gears = g.gears();
             let ok = g.reverse < 0.0
@@ -1605,6 +1621,8 @@ fn handling_reads_the_real_records() {
     assert_eq!(unimodal, 46, "every torque curve rises to an interior peak and falls");
     assert_eq!(playable, 31, "31 cars have the 500 rpm gap; the other 15 are traffic");
     assert_eq!(blocks, 46 * 4, "all 184 transmission blocks are well formed");
+    assert_eq!(spanned, 46, "every torque axis runs idle to limiter, exactly");
+    assert_eq!(power_past_torque, 46, "peak power is past peak torque in every car");
 
     // The body box is not read from a lane that merely looks right: the inertia tensor beside it is
     // the closed form for a uniform cuboid, so mass and L/W/H together have to reproduce it.
@@ -1629,6 +1647,32 @@ fn handling_reads_the_real_records() {
     assert_eq!(h.body_m, [4.52, 1.69, 1.29], "the S14's box, in metres");
     let peak = h.torque_nm.iter().copied().fold(f32::MIN, f32::max);
     assert!((peak - 216.0).abs() < 0.5, "peak torque {peak} N·m");
+    // The rpm axis the file does not carry, against the one car whose dynamometer reading settled
+    // it: 115.8 kW at 5450. Written out rather than recomputed here, because re-deriving the axis
+    // in the test would only prove the test and the parser agree about the arithmetic.
+    assert_eq!(
+        h.torque_rpm(),
+        [800.0, 1575.0, 2350.0, 3125.0, 3900.0, 4675.0, 5450.0, 6225.0, 7000.0],
+        "the 240SX's nine engine speeds"
+    );
+    let power = h.peak_power();
+    assert_eq!(power.rpm, 5450.0, "peak power is a point past peak torque");
+    assert!((power.kw() - 115.86).abs() < 0.01, "{} kW against the dyno's 115.8", power.kw());
+
+    // The second car that was driven, and the one that makes the axis more than a curve fit: the
+    // Mustang spans 800 → 6500 rather than 800 → 7000, so its step is 712.5 and its peak falls on
+    // index 7 rather than 6. The game's dynamometer reads 223.6 kW; this reads 223.638, and the
+    // readout truncates — which is also why the 240SX's 115.8567 showed as 115.8 and not 115.9.
+    let gt = cars.iter().find(|c| c.name == "MUSTANGGT").expect("the Mustang is in the roster");
+    let gt_axis = gt.handling.torque_rpm();
+    assert_eq!(gt_axis[1] - gt_axis[0], 712.5, "a different step from the 240SX's 775");
+    let gt_power = gt.handling.peak_power();
+    assert_eq!(gt_power.rpm, 5787.5);
+    let gt_kw = gt_power.kw();
+    assert!((gt_kw - 223.638).abs() < 0.01, "{gt_kw} kW against the dyno's 223.6");
+    let truncated = |kw: f32| (kw * 10.0).floor() / 10.0;
+    assert_eq!(truncated(gt_power.kw()), 223.6, "as the game showed it");
+    assert_eq!(truncated(power.kw()), 115.8, "and as it showed the 240SX");
     // Stock is a five-speed; the third transmission upgrade adds a sixth gear and shortens the
     // final drive. That progression is the design's four columns, in the file.
     assert_eq!(h.gearbox[0].count, 5);

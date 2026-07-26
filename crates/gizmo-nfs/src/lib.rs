@@ -67,7 +67,9 @@ pub use profile::Profile;
 // `CarHandling` and its two parts come with `CarTypeInfo` — they are a field of it — so a consumer
 // that can name the record from the root should be able to name what it contains without reaching
 // into the module. Added rather than moved: `globalb::CarHandling` still resolves.
-pub use globalb::{parse_cartypeinfos, CarHandling, CarTypeInfo, Engine, Gearbox, WheelSpec};
+pub use globalb::{
+    parse_cartypeinfos, CarHandling, CarTypeInfo, Engine, Gearbox, PowerPoint, WheelSpec,
+};
 pub use parts::{group_of, select_car, select_stock_car, CarConfig, Grp};
 pub use texture::{Tpk, TpkEntry};
 pub use types::{

@@ -396,8 +396,10 @@ static TR: Strings = Strings {
     cp_not_located: "bu oyunun dosyalarında yok",
     cp_write_note: "NFSU2 bir CARP.BIN göndermiyor; veri GLOBALB.BUN'daki 0x00034600 kaydında \
 (46 × 2192 bayt). Motor, tork eğrisi ve vites kutusu oradan okunuyor — vites kutusu dört \
-yükseltme sütununun tamamıyla, çünkü dosyada dört kez saklanan tek şey o. Aero, fren ve \
-direksiyon bu oyunun dosyalarında yok: arandı ve bulunmadığı gösterildi.",
+yükseltme sütununun tamamıyla, çünkü dosyada dört kez saklanan tek şey o. Tork noktalarının \
+devirleri dosyada yazmıyor: rölantiden devir kesiciye sekiz eşit adım, oyunun kendi \
+dinamometresine karşı doğrulandı. Aero ve fren bu oyunun dosyalarında yok; direksiyondan yalnızca \
+çarpan var, o da sürülerek doğrulandı.",
     cp_no_install: "Kurulum bulunamadı — GLOBALB.BUN okunamadı",
     cp_no_record: "GLOBALB.BUN'da bu ada sahip araç kaydı yok",
     cp_from_globalb: "GLOBALB",
@@ -617,8 +619,10 @@ static EN: Strings = Strings {
     cp_not_located: "not in this game's files",
     cp_write_note: "NFSU2 ships no CARP.BIN; the data is in GLOBALB.BUN's 0x00034600 record \
 (46 × 2192 bytes). Engine limits, the torque curve and the gearbox are read from it — the gearbox \
-across all four upgrade columns, since it is the only thing the record stores four times. Aero, \
-brakes and steering are not in this game's files: they were searched for and shown to be absent.",
+across all four upgrade columns, since it is the only thing the record stores four times. The rpm \
+each torque point sits at is not stored: it is idle to limiter in eight equal steps, checked \
+against the game's own dynamometer. Aero and brakes are not in this game's files; of the steering \
+only the multiplier is, and that one was settled by driving it.",
     cp_no_install: "No install found — GLOBALB.BUN was not readable",
     cp_no_record: "GLOBALB.BUN holds no car record under this name",
     cp_from_globalb: "GLOBALB",

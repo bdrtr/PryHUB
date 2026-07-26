@@ -97,8 +97,14 @@ fn car_parts(file: &Path, bytes: &[u8], filter: Option<&str>) -> Result<()> {
 /// What the record says about how each car drives.
 ///
 /// The gearbox is printed once per upgrade level because it is the one thing the record stores four
-/// times; everything else it stores once. The torque curve is nine magnitudes with **no rpm axis in
-/// the file**, so it is printed as the points it is rather than against invented engine speeds.
+/// times; everything else it stores once.
+///
+/// The torque curve gets two aligned rows rather than one, because the rpm row is a different kind
+/// of number from the row under it: the magnitudes are read out of the file and the speeds are
+/// [`gizmo_nfs::CarHandling::torque_rpm`]'s arithmetic over idle and the limiter, which the file
+/// does not store. The peak-power line is printed for the same reason the axis is trusted at all —
+/// it is the figure the game's own dynamometer shows, so anyone with the game can hold this output
+/// up against it and say whether this crate is wrong.
 fn show_handling(cars: &[gizmo_nfs::CarTypeInfo], filter: Option<&str>) -> Result<()> {
     for c in cars.iter().filter(|c| filter.is_none_or(|f| c.name.contains(f))) {
         let h = &c.handling;
@@ -120,9 +126,16 @@ fn show_handling(cars: &[gizmo_nfs::CarTypeInfo], filter: Option<&str>) -> Resul
             h.engine.red_line_rpm,
             h.engine.limiter_rpm
         );
-        let peak = h.torque_nm.iter().copied().fold(f32::MIN, f32::max);
-        let curve: Vec<String> = h.torque_nm.iter().map(|t| format!("{t:.0}")).collect();
-        outln!("   torque {} Nm  (peak {peak:.0}, 9 points, no rpm axis in the file)", curve.join(" "));
+        // Both rows are laid out in the same cell width so a magnitude sits under its own engine
+        // speed. Widest thing either row holds is a five-digit rpm.
+        let speeds: Vec<String> = h.torque_rpm().iter().map(|r| format!("{r:>6.0}")).collect();
+        let curve: Vec<String> = h.torque_nm.iter().map(|t| format!("{t:>6.0}")).collect();
+        let axis_note = "(idle → limiter in 8 steps; derived, not stored)";
+        outln!("   curve {}   rpm   {axis_note}", speeds.join(""));
+        let peak_torque = h.torque_nm.iter().copied().fold(f32::MIN, f32::max);
+        outln!("         {}   Nm    (peak {peak_torque:.0})", curve.join(""));
+        let p = h.peak_power();
+        outln!("   power  peak {:.1} kW / {:.0} hp at {:.0} rpm", p.kw(), p.hp(), p.rpm);
         for (level, g) in h.gearbox.iter().enumerate() {
             let ratios: Vec<String> = g.gears().iter().map(|r| format!("{r:.3}")).collect();
             let name = ["stock", "L1", "L2", "L3"][level];
