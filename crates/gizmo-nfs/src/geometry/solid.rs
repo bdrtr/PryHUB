@@ -62,12 +62,20 @@ pub(super) fn parse_solid(
         return Ok(Err(SkipReason::EmptyMesh));
     }
     let vbuf_len = vbuf.data(root).len();
-    if !vertex::standard_vertex_layout(vert_count, vbuf_len) {
+    // Two layouts, chosen by what fits — see `vertex::Layout`. The packed one used to be a skip,
+    // and that skip is why `STREAM*.BUN` (all of Bayview) decoded to nothing.
+    let Some(layout) = vertex::layout_for(vert_count, vbuf_len) else {
         return Ok(Err(SkipReason::PackedVertexLayout { vert_count, vbuf_len }));
-    }
+    };
 
-    let (positions, normals, colours, uvs) = vertex::parse_vertices(vbuf.data(root), vert_count)?;
+    let (positions, mut normals, colours, uvs) =
+        vertex::parse_vertices_with(vbuf.data(root), vert_count, layout)?;
     let indices = index::parse_indices(ibuf.data(root), tri_count, vert_count)?;
+    // The packed record has no normal. Deriving it needs the winding, which lives in the index
+    // buffer, so it happens here rather than in the vertex reader — the one place both are in hand.
+    if layout == vertex::Layout::Packed {
+        normals = vertex::normals_from_triangles(&positions, &indices);
+    }
 
     // Name / role / LOD / transform from the solid header (optional but usually present).
     let (part, transform) = match solid.find(SOLID_HEADER) {
