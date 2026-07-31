@@ -40,6 +40,7 @@ mod probe;
 mod profile;
 mod replace;
 mod textures;
+mod tune;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -194,6 +195,40 @@ enum Command {
         #[arg(short, long, value_name = "FILE", default_value = "GLOBALB.BUN")]
         out: PathBuf,
     },
+    /// Change a car's handling by name — mass, rpm, the torque curves, the four gearboxes — and
+    /// install it where the game will read it.
+    ///
+    /// The named counterpart of `poke`: that one writes a lane by hex offset and refuses to say what
+    /// it is, because finding out is its purpose. This writes only lanes this crate already reads.
+    /// Run it without `--set` to see a car's fields and what they are called.
+    Tune {
+        /// The game root, its `GLOBAL` folder, a car directory, or either bundle file.
+        path: PathBuf,
+        /// Which car's record, by the name it carries. Omit it to read **every** car — a lane is
+        /// named by how it varies, and one car's number on its own says very little.
+        #[arg(long, value_name = "NAME")]
+        car: Option<String>,
+        /// With no `--car`: one row per car with every field, for sorting somewhere else.
+        #[arg(long)]
+        csv: bool,
+        /// `field=value`, repeatable — `--set idle_rpm=900 --set gear6@3=0.80`.
+        #[arg(long = "set", value_name = "FIELD=VALUE")]
+        sets: Vec<String>,
+        /// Write into the game's own `GLOBAL/` files, taking a `.bak` of each first.
+        #[arg(long)]
+        install: bool,
+        /// Write the edited bundle here instead, decompressed.
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// With `--install`, put `GlobalB.lzc` back as JDLZ rather than plain. Plain is the default
+        /// because plain is what has been installed and driven; the game picks the codec by magic
+        /// bytes, not by the extension.
+        #[arg(long)]
+        jdlz: bool,
+        /// Put the `.bak` files back and stop.
+        #[arg(long)]
+        restore: bool,
+    },
     /// Read a player profile: which performance products a car has fitted, and their totals.
     Profile {
         /// The profile file, or the directory holding it.
@@ -297,6 +332,15 @@ fn main() -> ExitCode {
         Command::Textures { car, filter } => textures::run(&car, filter.as_deref()),
         Command::Globalb { path, filter, parts, handling } => {
             globalb::run(&path, filter.as_deref(), parts, handling)
+        }
+        Command::Tune { path, car, sets, install, out, jdlz, restore, csv } => {
+            let target = match (install, out) {
+                (true, Some(_)) => Err("--install and -o name two different places".to_string()),
+                (true, None) => Ok(tune::Target::Install),
+                (false, Some(out)) => Ok(tune::Target::File(out)),
+                (false, None) => Ok(tune::Target::DryRun),
+            };
+            target.and_then(|t| tune::run(&path, car.as_deref(), &sets, t, jdlz, restore, csv))
         }
         Command::Profile { path } => profile::run(&path),
         Command::Poke { path, car, at, set, out } => {

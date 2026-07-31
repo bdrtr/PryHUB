@@ -18,13 +18,24 @@
 //! driven and felt like nothing at all, and the same edit to the same lane of the same record in
 //! `GlobalB.lzc` produced a car that could barely get off the line.
 //!
-//! The `.lzc` is **not compressed**, whatever its name says — it opens with a plain `0x00135200`
-//! chunk header, which is exactly why [`crate::compression::detect`] picks a codec by magic bytes
-//! and never by extension. So it takes the same in-place four-byte write as its twin.
-//!
 //! That is worth a paragraph because of what it costs to not know it: an edit to the wrong file
 //! produces silence, and silence is also what a lane that does nothing produces. Every null result
 //! against `GLOBALB.BUN` before this was established means nothing at all.
+//!
+//! **The `.lzc` is compressed, and this note used to say it was not.** It is JDLZ — a pristine one
+//! is 5,145,778 bytes opening with the ASCII magic, and it decompresses byte-for-byte to the
+//! 8,008,064-byte `.BUN`. What was actually being looked at when the old claim was written is the
+//! plain `0x00135200` chunk header of a file *this command had already written*: `run` below
+//! decompresses before it edits and writes the result out uncompressed, so the `.lzc` installed
+//! during that experiment was a decompressed one, and reading it back found no compression. That is
+//! reading your own output for the original.
+//!
+//! Two things survive the correction and one is new. The experiment stands, because it was about
+//! *which file*, not about the codec. The write below stands, because it decompresses first and
+//! [`crate::compression::detect`] picks a codec by magic bytes and never by extension. And the new
+//! part is evidence worth having: the game read a **plain** `.lzc` quite happily, which is why
+//! [`crate::globalb::install`] writes one by default rather than trusting this crate's encoder with
+//! somebody's install.
 //!
 //! **A one-car coincidence is not a pattern.** The nine values at `+0x530` are exactly a quarter of
 //! the 240SX's torque curve, which made it look derived; over all 46 records 371 of 414 points
