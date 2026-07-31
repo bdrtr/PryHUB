@@ -24,6 +24,7 @@ mod screens;
 mod settings;
 mod shot;
 mod theme;
+mod tune;
 mod widget;
 
 fn main() -> eframe::Result {

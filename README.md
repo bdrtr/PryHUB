@@ -27,6 +27,7 @@ it, PryHUB leans on what it can do differently:
 | Silent failure | **Validation** — every check says what it examined, so "no findings" is never confused with "nobody looked" |
 | Mostly OBJ | glTF (`.glb`, self-contained) + OBJ/MTL + PNG |
 | Read-only for textures | **Writes them back** — a PNG into a pack, in place or by relocating it |
+| Read-only for handling | **Writes that back as well** — the CARP screen edits mass, rpm, both torque curves and the four gearboxes, and saves into the `GlobalB.lzc` the game actually opens |
 
 ## Build & run
 
@@ -47,6 +48,8 @@ $UG2 export  "$NFSU2_ROOT/CARS"  -o out/          # every car: .glb + OBJ/MTL + 
 $UG2 diff    A.BIN B.BIN                          # chunk-by-chunk comparison
 $UG2 dump    "$NFSU2_ROOT/CARS/240SX/GEOMETRY.BIN"
 $UG2 replace "$NFSU2_ROOT/CARS/240SX" --texture 240SX_BADGING --png new.png -o out.BIN
+$UG2 tune    "$NFSU2_ROOT" --car 240SX                  # every field, and what the four levels make
+$UG2 tune    "$NFSU2_ROOT" --car 240SX --set idle_rpm=900 --set gear6@3=0.80 --install
 ```
 
 Flags worth knowing: `--tab 3d|hex|texture`, `--screen validation|discovery|diff|dictionary|replace`,

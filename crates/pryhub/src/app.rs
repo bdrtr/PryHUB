@@ -208,11 +208,22 @@ pub struct PryHub {
     pub wire: bool,
     /// The game's paint palette, read from `GLOBALB.BUN` on first need. `None` until asked for.
     pub palette: Option<Vec<gizmo_nfs::Colour>>,
-    /// The open car's `CarTypeInfo`. Outer `None` = not asked yet, inner `None` = asked and the
-    /// install (or the record) was not there. The CARP screen needs both to tell the user which.
-    pub car_spec: Option<Option<Box<gizmo_nfs::CarTypeInfo>>>,
-    /// Which CARP section is selected, and which upgrade level is highlighted.
+    /// Every car record in the install's bundle. `None` = not asked yet; `Some` of an empty list =
+    /// asked, and there was no install to read. The CARP screen needs both to tell the user which,
+    /// and the whole list because it offers a car picker over it.
+    pub cars: Option<std::sync::Arc<Vec<gizmo_nfs::CarTypeInfo>>>,
+    /// Which record the open file *is*, if it is one. Only decides which car the screen opens on.
+    pub car_opened: Option<String>,
+    /// The bundle that record came out of — the file a Save would write. `None` until the job has
+    /// landed, or when there is no install to have read one from.
+    pub car_bundle: Option<std::path::PathBuf>,
+    /// Which CARP section is selected, which upgrade level is highlighted, and every number the
+    /// user has changed but not yet written.
     pub carp: crate::screens::carp::State,
+    /// What the last handling save did, or why it did not. Shown in the CARP header rather than
+    /// only in the log — a Save whose only feedback is a line in another panel reads as one that
+    /// did nothing.
+    pub carp_saved: Option<Result<crate::tune::Done, String>>,
     /// The colour the body is painted, or `None` for the material group's own.
     pub paint: Option<gizmo_nfs::Colour>,
     /// Parts the assembly tab has switched **off**, by display key. Off rather than on, so a file
@@ -297,8 +308,11 @@ impl PryHub {
             camera: crate::panels::viewport3d::Camera::default(),
             wire: false,
             palette: None,
-            car_spec: None,
+            cars: None,
+            car_opened: None,
+            car_bundle: None,
             carp: crate::screens::carp::State::default(),
+            carp_saved: None,
             paint: None,
             unmounted: std::collections::HashSet::new(),
             names: crate::names::Names::load(),
@@ -427,7 +441,11 @@ impl PryHub {
                     }
                 }
                 Outcome::Palette(colours) => self.palette = Some(colours),
-                Outcome::CarSpec(spec) => self.car_spec = Some(spec),
+                Outcome::CarSpec { cars, bundle, opened } => {
+                    self.cars = Some(cars);
+                    self.car_bundle = bundle;
+                    self.car_opened = opened;
+                }
                 Outcome::Exported(result) => self.report_export(result),
                 // A write that landed for a file the user has since closed is reported anyway — it
                 // happened, and the log is what happened — but only the document it was for gets
@@ -436,6 +454,7 @@ impl PryHub {
                     let mine = self.doc.as_ref().is_some_and(|d| d.path == for_path);
                     self.report_replace(*result, mine);
                 }
+                Outcome::Tuned(result) => self.report_tune(*result),
                 // `poll` keeps progress to itself; this arm exists so the compiler says something
                 // if that ever changes.
                 Outcome::Progress { .. } => {}
@@ -506,14 +525,14 @@ impl PryHub {
         }
     }
 
-    /// Ask for the open car's `CarTypeInfo`, unless it is here or already coming.
+    /// Ask for the install's car records, unless they are here or already coming.
     pub fn want_car_spec(&mut self) {
-        if self.car_spec.is_some() {
+        if self.cars.is_some() {
             return;
         }
         if let Some(doc) = &self.doc {
-            // Marked as asked by answering it "not found" now; the job overwrites that when it lands.
-            self.car_spec = Some(None);
+            // Marked as asked by answering it empty now; the job overwrites that when it lands.
+            self.cars = Some(std::sync::Arc::new(Vec::new()));
             self.jobs.send(crate::jobs::Request::CarSpec { beside: doc.path.clone() });
         }
     }
@@ -894,6 +913,58 @@ impl PryHub {
             },
         };
         self.log.push(note);
+    }
+
+    /// Send the CARP screen's pending edits to the worker.
+    ///
+    /// The car is the *record's* own name rather than the directory's, so a save cannot land on a
+    /// neighbouring car because someone renamed a folder. Nothing is cleared here: the edits stay
+    /// pending until the write comes back saying it happened, for the same reason the texture set
+    /// does — a set that could not be written is still the set the user built.
+    pub fn save_handling(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        let Some(car) = self.carp.selected().map(str::to_owned) else { return };
+        let edits = self.carp.pending();
+        if edits.is_empty() {
+            return;
+        }
+        self.carp_saved = None;
+        self.jobs.send(crate::jobs::Request::Tune(Box::new(crate::tune::Spec {
+            beside: doc.path.clone(),
+            car,
+            edits,
+        })));
+    }
+
+    /// Take in what a save did.
+    ///
+    /// On success the record is **re-read from disk** rather than assumed: the numbers on screen
+    /// then come from the file the game will open, so a lane that did not go in the way it was meant
+    /// to shows here instead of in the car.
+    fn report_tune(&mut self, result: Result<crate::tune::Done, String>) {
+        let note = match &result {
+            Ok(done) => {
+                self.carp.clear_edits();
+                self.cars = None; // re-read on the next frame the screen draws
+                for bak in &done.backups {
+                    log::info!(target: "jobs", "backed up to {}", bak.display());
+                }
+                format!(
+                    "{}: {} lane(s) written to {}",
+                    done.car,
+                    done.changed,
+                    done.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
+                )
+            }
+            Err(e) => format!("handling not written: {e}"),
+        };
+        self.log.push(Note {
+            level: if result.is_ok() { Level::Info } else { Level::Error },
+            chunk: None,
+            chunk_id: String::new(),
+            kind: NoteKind::Diagnostic(note),
+        });
+        self.carp_saved = Some(result);
     }
 }
 

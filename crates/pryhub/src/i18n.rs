@@ -103,6 +103,7 @@ pub struct Strings {
     pub nav_carp: &'static str,
     pub job_car_spec: &'static str,
     pub job_replace: &'static str,
+    pub job_tune: &'static str,
     pub cp_not_chunk: &'static str,
     pub cp_raw: &'static str,
     pub cp_raw_sub: &'static str,
@@ -115,13 +116,37 @@ pub struct Strings {
     pub cp_unit: &'static str,
     /// Drawn in a cell whose value this install does not carry.
     pub cp_not_located: &'static str,
-    /// The panel note. The design promises the write path lands here; it cannot, so this says what
-    /// is actually true instead.
+    /// The panel note: what this screen reads, what it could not find, and where Save puts it. It
+    /// used to end by saying the design's write path could not land here. It has.
     pub cp_write_note: &'static str,
     pub cp_no_install: &'static str,
     pub cp_no_record: &'static str,
     pub cp_from_globalb: &'static str,
     pub cp_located_of: &'static str,
+    /// The count beside Save: how many numbers differ from the file.
+    pub cp_changed: &'static str,
+    /// The tag before the path Save will write.
+    pub cp_writes_to: &'static str,
+    /// What the tooltip on that path says about backups.
+    pub cp_backup_note: &'static str,
+    /// Drawn where the path would be, when there is no install to write into.
+    pub cp_no_install_write: &'static str,
+    /// After a save: `<car> · <n> <this>`.
+    pub cp_saved_lanes: &'static str,
+    /// After a save that found nothing to do.
+    pub cp_saved_nothing: &'static str,
+    pub cp_save_failed: &'static str,
+    /// The caption over the live torque curve.
+    pub cp_power: &'static str,
+    /// The label before the car picker.
+    pub cp_car: &'static str,
+    /// After a count of other cars holding unsaved edits.
+    pub cp_other_cars: &'static str,
+    pub cp_other_cars_note: &'static str,
+    /// The tooltip on a candidate cell, and on the candidate count.
+    pub cp_candidate: &'static str,
+    /// The word after that count.
+    pub cp_candidates: &'static str,
     pub p_tree: &'static str,
     pub p_inspector: &'static str,
     pub p_log: &'static str,
@@ -383,6 +408,7 @@ static TR: Strings = Strings {
     nav_carp: "CARP",
     job_car_spec: "araç kaydı okunuyor",
     job_replace: "doku yazılıyor",
+    job_tune: "araç kaydı yazılıyor",
     cp_not_chunk: "chunk formatı değil — ayrı parser",
     cp_raw: "HAM CARP",
     cp_raw_sub: "tüm bölümler ve parametreler",
@@ -395,15 +421,35 @@ static TR: Strings = Strings {
     cp_unit: "birim",
     cp_not_located: "bu oyunun dosyalarında yok",
     cp_write_note: "NFSU2 bir CARP.BIN göndermiyor; veri GLOBALB.BUN'daki 0x00034600 kaydında \
-(46 × 2192 bayt). Motor, tork eğrisi ve vites kutusu oradan okunuyor — vites kutusu dört \
-yükseltme sütununun tamamıyla, çünkü dosyada dört kez saklanan tek şey o. Tork noktalarının \
-devirleri dosyada yazmıyor: rölantiden devir kesiciye sekiz eşit adım, oyunun kendi \
-dinamometresine karşı doğrulandı. Aero arandı ve yok. Frende doğrulanmamış bir aday var, o yüzden \
-satırlar boş duruyor. Direksiyondan yalnızca çarpan burada, o da sürülerek doğrulandı.",
+(46 × 2192 bayt). Motor, tork eğrisi ve vites kutusu oradan okunuyor. Dört yükseltme sütununu \
+dolduran iki bölüm var, çünkü dosyanın dört kez sakladığı iki şey var: vites kutusu, ve +0x530 \
+ile başlayan dört tork tablosu — oynanabilir 31 aracın hepsinde bir üst tablonun %34'ü ve %68'i. \
+Bunlar kazanç olarak okunuyor, sütunlarda stok + kazanç gösteriliyor. Tork noktalarının devirleri \
+dosyada yazmıyor: rölantiden devir kesiciye sekiz eşit adım, oyunun kendi dinamometresine karşı \
+doğrulandı. Aero arandı ve yok. Frende doğrulanmamış bir aday var, o yüzden satırlar boş duruyor. \
+Direksiyondan yalnızca çarpan burada, o da sürülerek doğrulandı. Kaydet, oyunun okuduğu \
+GlobalB.lzc dosyasına yazar ve önce bir .bak yedeği alır.",
     cp_no_install: "Kurulum bulunamadı — GLOBALB.BUN okunamadı",
     cp_no_record: "GLOBALB.BUN'da bu ada sahip araç kaydı yok",
     cp_from_globalb: "GLOBALB",
     cp_located_of: "parametrenin karşılığı bulundu",
+    cp_changed: "değişiklik",
+    cp_writes_to: "yazılacak dosya",
+    cp_backup_note: "İlk kayıtta her dosyanın yanına bir .bak yedeği bırakılır ve bir daha \
+üzerine yazılmaz — yanındaki yedek her zaman oyunun kendi dosyasıdır.",
+    cp_no_install_write: "Kurulum bulunamadı — yazacak GlobalB.lzc yok",
+    cp_saved_lanes: "değer yazıldı",
+    cp_saved_nothing: "yazılacak bir şey yoktu — dosya zaten bu değerleri tutuyor",
+    cp_save_failed: "yazılamadı",
+    cp_power: "GÜÇ",
+    cp_car: "Araç",
+    cp_other_cars: "başka araçta",
+    cp_other_cars_note: "Başka araçlarda da kaydedilmemiş değişiklik var. Kaydet yalnızca \
+seçili aracı yazar; ötekiler listede bir nokta ile işaretli ve sen o araca geçene kadar duruyor.",
+    cp_candidate: "ADAY — bu lane makul okunuyor ama kanıtlanmadı. Ne olduğunu ancak değiştirip \
+kurup sürmek söyler; hücre tam bu yüzden düzenlenebilir. Gerekçesi ve hangi deneyin karar \
+vereceği gizmo_nfs::Unproven içinde yazıyor.",
+    cp_candidates: "aday",
     p_tree: "AĞAÇ",
     p_inspector: "DENETÇİ",
     p_log: "GÜNLÜK",
@@ -606,6 +652,7 @@ static EN: Strings = Strings {
     nav_carp: "CARP",
     job_car_spec: "reading the car record",
     job_replace: "writing a texture",
+    job_tune: "writing the car record",
     cp_not_chunk: "not a chunk format — separate parser",
     cp_raw: "RAW CARP",
     cp_raw_sub: "all sections and params",
@@ -618,16 +665,35 @@ static EN: Strings = Strings {
     cp_unit: "unit",
     cp_not_located: "not in this game's files",
     cp_write_note: "NFSU2 ships no CARP.BIN; the data is in GLOBALB.BUN's 0x00034600 record \
-(46 × 2192 bytes). Engine limits, the torque curve and the gearbox are read from it — the gearbox \
-across all four upgrade columns, since it is the only thing the record stores four times. The rpm \
-each torque point sits at is not stored: it is idle to limiter in eight equal steps, checked \
-against the game's own dynamometer. Aero was swept for and is absent. Brakes have a live candidate \
-that is not confirmed, so the rows stay empty. Of the steering only the multiplier is here, and \
-that one was settled by driving it.",
+(46 × 2192 bytes). Engine limits, the torque curve and the gearbox are read from it. Two sections \
+fill all four upgrade columns, because the record stores two things four times: the transmissions, \
+and four torque tables from +0x530 — graduated 34 % and 68 % of the top one in every playable car. \
+They read as gains, so the columns show stock + gain. The rpm each torque point sits at is not \
+stored: it is idle to limiter in eight equal steps, checked against the game's own dynamometer. \
+Aero was swept for and is absent. Brakes have a live candidate that is not confirmed, so the rows \
+stay empty. Of the steering only the multiplier is here, and that one was settled by driving it. \
+Save writes GlobalB.lzc, which is the file the game opens, taking a .bak first.",
     cp_no_install: "No install found — GLOBALB.BUN was not readable",
     cp_no_record: "GLOBALB.BUN holds no car record under this name",
     cp_from_globalb: "GLOBALB",
     cp_located_of: "params have a value here",
+    cp_changed: "changed",
+    cp_writes_to: "writes to",
+    cp_backup_note: "The first save leaves a .bak beside each file and never replaces it — what \
+is next to the bundle is always the install's own.",
+    cp_no_install_write: "No install found — there is no GlobalB.lzc to write",
+    cp_saved_lanes: "value(s) written",
+    cp_saved_nothing: "nothing to write — the file already holds these values",
+    cp_save_failed: "not written",
+    cp_power: "POWER",
+    cp_car: "Car",
+    cp_other_cars: "on other cars",
+    cp_other_cars_note: "Other cars are holding unsaved changes too. Save writes only the \
+selected car; the rest are marked with a dot in the list and keep their edits until you go there.",
+    cp_candidate: "CANDIDATE — this lane reads plausibly and is not proved. Only changing it, \
+installing it and driving says what it is, which is exactly why the cell is editable. The evidence \
+and the experiment that would settle it are in gizmo_nfs::Unproven.",
+    cp_candidates: "candidate",
     p_tree: "TREE",
     p_inspector: "INSPECTOR",
     p_log: "LOG",

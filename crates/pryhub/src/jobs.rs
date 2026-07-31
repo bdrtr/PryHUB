@@ -50,8 +50,13 @@ pub enum Request {
     /// A job because that bundle is 8 MB and holds 12,167 parts: the palette is worth a swatch row,
     /// not a stutter.
     Palette { beside: PathBuf },
-    /// The open car's `CarTypeInfo` record out of `GLOBALB.BUN`. Same bundle as [`Self::Palette`]
-    /// and the same 8 MB read, so it is a job for the same reason.
+    /// **Every** car record in the install's bundle, found from the open file. Same bundle as
+    /// [`Self::Palette`] and the same 8 MB read, so it is a job for the same reason.
+    ///
+    /// All of them rather than the open one, because the 46 records are in a single file and reading
+    /// it 46 times to look at 46 cars would be 46 times the work for none of the benefit. It is what
+    /// lets the CARP screen offer a car list instead of making someone open another `GEOMETRY.BIN`
+    /// to see another car's numbers.
     CarSpec { beside: PathBuf },
     /// Put a PNG into the open pack. Boxed for the same reason [`Outcome::Opened`] is — it carries
     /// three paths and this enum travels through a channel.
@@ -60,6 +65,10 @@ pub enum Request {
     /// re-encoded, a re-compression, and then the written pack decoded again to check it. On a
     /// 512² vinyl that is not a frame's worth of work.
     Replace(Box<crate::replace::Spec>),
+    /// Write the CARP screen's edits into the install's own car database. Boxed like
+    /// [`Self::Replace`], and a job for the same reasons: an 8 MB read, a set of lane writes, a
+    /// re-parse to check them, and two files written.
+    Tune(Box<crate::tune::Spec>),
 }
 
 /// What came back.
@@ -77,6 +86,10 @@ pub enum Outcome {
     /// does: this one changes what is on screen, so landing it against a file the user has since
     /// replaced would repaint the wrong pack's contact sheet.
     Replaced { for_path: PathBuf, result: Box<Result<crate::replace::Done, String>> },
+    /// A car's handling written back. Carries no document identity: the bundle belongs to the
+    /// *install*, not to the open file, so a save that lands after the user opened another car is
+    /// still true and still worth reporting.
+    Tuned(Box<Result<crate::tune::Done, String>>),
     /// A job saying how far along it is. Intercepted by [`Jobs::poll`] rather than handed on: it is
     /// a fact about the *worker*, not about the document.
     Progress { done: usize, total: usize },
@@ -85,7 +98,18 @@ pub enum Outcome {
     Palette(Vec<gizmo_nfs::Colour>),
     /// The open car's record. `None` means the bundle was not found *or* holds no record under
     /// that name — the CARP screen says which by also knowing whether an install was reachable.
-    CarSpec(Option<Box<gizmo_nfs::CarTypeInfo>>),
+    CarSpec {
+        /// Every record in the bundle, in file order. Empty when no install was reachable.
+        cars: Arc<Vec<gizmo_nfs::CarTypeInfo>>,
+        /// The file they were read out of — `GlobalB.lzc` where there is one. The CARP screen names
+        /// it beside its Save button, so that the file about to be written is one the user was shown
+        /// rather than one they find out about afterwards.
+        bundle: Option<PathBuf>,
+        /// Which of them the open file *is*, by the name of the directory it sits in. `None` when
+        /// the open file is not a car, or is a car the bundle does not list — both of which are
+        /// ordinary, and neither of which should stop the other 46 being browsable.
+        opened: Option<String>,
+    },
     /// A job panicked. The parser is panic-free by contract, but this layer is not the place to
     /// find out the hard way: the worker survives and says so.
     Failed(String),
@@ -106,6 +130,7 @@ pub enum Kind {
     Palette,
     CarSpec,
     Replace,
+    Tune,
 }
 
 impl Kind {
@@ -119,6 +144,7 @@ impl Kind {
             Self::Palette => "palette",
             Self::CarSpec => "car spec",
             Self::Replace => "replace",
+            Self::Tune => "tune",
         }
     }
 }
@@ -140,6 +166,7 @@ impl Outcome {
             Request::Palette { .. } => Kind::Palette,
             Request::CarSpec { .. } => Kind::CarSpec,
             Request::Replace(_) => Kind::Replace,
+            Request::Tune(_) => Kind::Tune,
         }
     }
 }
@@ -249,6 +276,9 @@ fn describe(request: &Request) -> String {
         Request::Replace(spec) => {
             format!("{} edits into {}", spec.edits.len(), spec.pack.display())
         }
+        Request::Tune(spec) => {
+            format!("{} lanes of {} beside {}", spec.edits.len(), spec.car, spec.beside.display())
+        }
     }
 }
 
@@ -280,8 +310,12 @@ fn run(request: Request, tell: &dyn Fn(usize, usize)) -> Outcome {
             let for_path = spec.doc.clone();
             Outcome::Replaced { for_path, result: Box::new(crate::replace::run(&spec)) }
         }
+        Request::Tune(spec) => Outcome::Tuned(Box::new(crate::tune::run(&spec))),
         Request::Palette { beside } => Outcome::Palette(palette(&beside)),
-        Request::CarSpec { beside } => Outcome::CarSpec(car_spec(&beside).map(Box::new)),
+        Request::CarSpec { beside } => {
+            let (cars, bundle, opened) = car_spec(&beside);
+            Outcome::CarSpec { cars: Arc::new(cars), bundle, opened }
+        }
     }
 }
 
@@ -325,19 +359,42 @@ fn palette(beside: &std::path::Path) -> Vec<gizmo_nfs::Colour> {
     Vec::new()
 }
 
-/// The open car's `CarTypeInfo` record, matched by the name of the directory it sits in.
+/// Every car record in the install's bundle, the file they came out of, and which one the open file
+/// is.
 ///
 /// `CARS/240SX/GEOMETRY.BIN` is the record called `240SX`. That is the only link there is: the
-/// record carries no path, and the directory name is what `ug2 globalb <car>` matches on too.
-fn car_spec(beside: &std::path::Path) -> Option<gizmo_nfs::CarTypeInfo> {
-    let car = beside.parent()?.file_name()?.to_str()?.to_ascii_uppercase();
-    let (path, bytes) = globalb_bytes(beside)?;
-    let found = gizmo_nfs::globalb::find_car(&bytes, &car);
+/// record carries no path, and the directory name is what `ug2 globalb <car>` matches on too. It
+/// decides which car the screen *opens* on and nothing else — every other record is read anyway, so
+/// a `GEOMETRY.BIN` copied out of an install still browses all 46.
+///
+/// **Read from `GlobalB.lzc` first**, which is the file the game opens — and, since the CARP screen
+/// can now write, the one that has to be shown. The two ship identical and stay identical while
+/// nothing edits them; the moment something does, reading the `.BUN` would show the car that is not
+/// being driven. The `.BUN` remains the fallback for a `GEOMETRY.BIN` that has been copied out of an
+/// install and put beside a lone bundle, which is an ordinary thing to have done.
+fn car_spec(
+    beside: &std::path::Path,
+) -> (Vec<gizmo_nfs::CarTypeInfo>, Option<std::path::PathBuf>, Option<String>) {
+    let opened = beside
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_ascii_uppercase());
+    let from_install = gizmo_nfs::globalb::install::find(beside).and_then(|bundle| {
+        gizmo_nfs::globalb::install::read(&bundle).ok().map(|bytes| (bundle.lzc, bytes))
+    });
+    let Some((path, bytes)) = from_install.or_else(|| globalb_bytes(beside)) else {
+        return (Vec::new(), None, opened);
+    };
+    let cars = gizmo_nfs::globalb::parse_cartypeinfos(&bytes);
+    // The open file names a record only if the bundle actually holds one under that name.
+    let opened = opened.filter(|want| cars.iter().any(|c| &c.name == want));
     log::debug!(
         target: "jobs",
-        "car spec: {car} {} in {}",
-        if found.is_some() { "found" } else { "not found" },
-        path.display()
+        "car spec: {} records in {}, open file is {}",
+        cars.len(),
+        path.display(),
+        opened.as_deref().unwrap_or("not one of them")
     );
-    found
+    (cars, Some(path), opened)
 }
