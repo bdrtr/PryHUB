@@ -76,6 +76,14 @@ pub enum NfsError {
         /// Name of the unimplemented feature.
         feature: &'static str,
     },
+    /// A bundle was asked for a car record it does not hold.
+    ///
+    /// Carries a `String` where the rest of this enum keeps `&'static str`, because the thing that
+    /// went wrong *is* the name the caller typed and quoting it back is the whole of the message.
+    NoSuchCar {
+        /// The collection name that was looked for.
+        name: String,
+    },
     /// A geometry triangle index referenced a vertex outside the vertex buffer.
     IndexOutOfRange {
         /// The offending index.
@@ -119,6 +127,7 @@ impl std::fmt::Display for NfsError {
                 write!(f, "refused or failed to allocate {requested} byte(s)")
             }
             NfsError::NotImplemented { feature } => write!(f, "not implemented yet: {feature}"),
+            NfsError::NoSuchCar { name } => write!(f, "no car record named {name}"),
             NfsError::IndexOutOfRange { index, vertex_count } => {
                 write!(f, "triangle index {index} out of range ({vertex_count} vertices)")
             }

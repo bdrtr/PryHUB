@@ -12,6 +12,8 @@
 //! (track, + left − right), **RideHeight = vertical**, **Diameter = wheel radius (metres)**.
 
 pub mod carparts;
+pub mod edit;
+pub mod install;
 
 const REC_SIZE: usize = 0x890;
 const OFF_NAME2: usize = 0x20;
@@ -37,11 +39,24 @@ const OFF_TORQUE: usize = 0x310; // 9 × f32, kN·m
 const OFF_STEER: usize = 0x380;
 /// The four transmission blocks: stock, then the three upgrade levels.
 const GEARBOX_AT: [usize; 4] = [0x2C0, 0x460, 0x4A0, 0x4E0];
+/// The four nine-point torque tables that sit past the transmissions — see
+/// [`CarHandling::torque_gain_nm`] for what they are and how that was established.
+const TORQUE_GAIN_AT: [usize; 4] = [0x530, 0x570, 0x5B0, 0x5F0];
 // Field offsets within one transmission block.
 const G_FINAL_DRIVE: usize = 0x08;
 const G_REAR_DRIVE: usize = 0x10; // 0 = FWD, 1 = RWD; only the stock block is read
 const G_COUNT: usize = 0x18;
 const G_RATIOS: usize = 0x20; // reverse, neutral, then up to six forward
+
+// Lanes with a *candidate* meaning and no proof. See `Unproven`, which is where each one's
+// evidence, its rival readings and the experiment that would settle it are written down.
+const U_ANGLE_284: usize = 0x284;
+const U_CG_HEIGHT: usize = 0x388;
+const U_BRAKE_BIAS: usize = 0x38C;
+/// Two eight-lane blocks, read as front then rear.
+const U_SUSPENSION_AT: [usize; 2] = [0x1E0, 0x200];
+const U_SPRING: usize = 0x0C;
+const U_DAMPER: usize = 0x10;
 
 /// One wheel's mount, in NFSU2 car space (metres).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,6 +139,35 @@ pub struct CarHandling {
     /// The rpm they sit at is **not stored beside them** and is not missing either: see
     /// [`CarHandling::torque_rpm`].
     pub torque_nm: [f32; 9],
+    /// Four more nine-point torque tables, in the same **N·m** as [`Self::torque_nm`], which the
+    /// record keeps past its transmissions at `+0x530`, `+0x570`, `+0x5B0` and `+0x5F0`.
+    ///
+    /// **What the file says, over all 46 records.** Take each table's best-fit multiple of the car's
+    /// own stock curve. Then in every one of the 31 playable cars, without exception:
+    /// `k[1] / k[3]` is `0.340` and `k[2] / k[3]` is `0.680`, and table 0 is table 3 **byte for
+    /// byte**. The 15 traffic vehicles have no torque curve at all and these are zero there too. A
+    /// graduated 34 % / 68 % / 100 % series is what an upgrade ladder looks like and is not what a
+    /// coincidence looks like, three decimal places wide across 31 cars.
+    ///
+    /// **They are stored curves, not a stored scalar.** For most cars the shape is the stock one
+    /// scaled, which is why the multiple fits at all — but A3's worst point is 26 % off its own
+    /// best fit and SKYLINE's is 51 % off, so the game cannot be reconstructing these from one
+    /// number per car. That also settles a warning left in `ug2 poke`: the table at `+0x530` is a
+    /// quarter of the 240SX's curve, and reading that one car as the pattern would have named a
+    /// scalar where there are four tables.
+    ///
+    /// **Read as a gain rather than a replacement**, because the sizes leave nothing else: a 240SX's
+    /// largest is 25 % of its own curve, an ESCALADE's 5 %. A car whose curve was *replaced* by
+    /// table 3 would lose three quarters of its engine on its last upgrade. Added, a fully built
+    /// 240SX makes 1.25× its stock torque, which is the size of gain NFSU2's engine packages are
+    /// sold as.
+    ///
+    /// **What is not proved here is which upgrade drives which table.** That the ladder exists is a
+    /// fact about the file; that index `n` is the game's engine level `n` is a reading of it, and
+    /// the experiment that settles it is the one `ug2 poke` was built for — change one, install,
+    /// and look at the dynamometer with the package fitted. [`Self::torque_at`] applies the reading
+    /// so that it can be checked rather than assumed.
+    pub torque_gain_nm: [[f32; 9]; 4],
     /// Stock, then the three upgrade levels, in the order the game's tuning screen offers them.
     pub gearbox: [Gearbox; 4],
     /// Fraction of drive to the rear axle: `0.0` front-wheel drive, `1.0` rear, between the two
@@ -159,8 +203,118 @@ pub struct CarHandling {
     /// the game now, and neither is borrowed.
     ///
     /// That text also places this field: it is one of **ten tuning sliders** the game names, and it
-    /// is the first of them found in this record. The others are worth looking for nearby.
+    /// is the first of them found in this record. The others are worth looking for nearby — and
+    /// looking for them by name is what produced [`Unproven`], which is where the rest of that list
+    /// has got to.
     pub steer_ratio: f32,
+    /// Lanes that read plausibly and are not proved. Behind a type whose name says so.
+    pub unproven: Unproven,
+}
+
+/// Lanes that read plausibly and are **not proved**.
+///
+/// Everything else this module exposes is either measured across the install or was settled by
+/// driving. These five were not, and they are a separate struct rather than five more fields of
+/// [`CarHandling`] for exactly that reason: a consumer has to reach past a type whose name says
+/// "unproven" to show one, so an unproven number cannot be printed beside a proved one by accident.
+///
+/// **One has already left.** `+0x284` was read as a steering lock, and the experiment refused it —
+/// see [`Self::angle_284_deg`], which keeps the lane and the refutation rather than deleting both.
+/// That is the point of this struct: a candidate that survives contact is promoted, a candidate that
+/// does not leaves a record of having been tried, and neither outcome is a number quietly printed
+/// beside a measured one.
+///
+/// **They exist because the game says they should.** `LANGUAGES/English.bin` carries the tuning
+/// screen's help text, and it names ten sliders: front and rear springs, front and rear shocks,
+/// front and rear sway bars, steering ratio, tyre grip, downforce, ride height, brake bias, gear
+/// ratios and final drive. Only two of those — the steering ratio and the gearboxes — are proved
+/// here. The rest have to be somewhere, and looking for a *named* thing is a different search from
+/// sweeping 222 unread lanes for something interesting.
+///
+/// **Two of them were found by someone else, and the cross-check cut both ways.**
+/// [NFSU2Forge](https://github.com/justlucasgomes/NFSU2Forge) reads this same record with offsets
+/// relative to the manufacturer string, which is `+0xC0` here, so its claims translate directly.
+/// Where it agrees with this crate — mass, the rpm limits, the torque curve — two independent reads
+/// landing on one lane is worth having. Where it does not, the disagreements were checkable and
+/// three of them resolve against it: it calls `+0x380` a brake force, which is the steering
+/// multiplier settled by driving; it calls a wheel-entry lane front and rear *grip*, which reads
+/// `+0.730, −0.730, −0.730, +0.730` across the four corners and so is a mirrored coordinate rather
+/// than a grip, and whose "rear" is the front-right wheel; and its reverse ratio is the first lane
+/// of the *next* transmission block. What survived that is below.
+///
+/// None of these is claimed. Each one names what would settle it, which is always the same
+/// experiment: change it with `ug2 tune`, install, drive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Unproven {
+    /// `+0x284`, in what look like degrees. Named for its offset because the one name anybody has
+    /// proposed for it has been **tested and refused**.
+    ///
+    /// It was read as a steering lock, and that reading is now dead three times over:
+    ///
+    /// * The 240SX's was set from 37 to **12** — a third of the angle — installed, and driven. The
+    ///   car steered exactly as before.
+    /// * The 14 traffic vehicles all read exactly **100.0** while a BUS reads **75**. A taxi does
+    ///   not out-lock a bus.
+    /// * A HUMMER reads 60 where a PEUGOT 106 reads 27, which is the wrong way round: small cars
+    ///   have more lock, not less.
+    ///
+    /// The null is worth more than a null usually is here, because it was run against a **positive
+    /// control** in the same session. This crate had never actually confirmed that the game reads
+    /// the plain `.lzc` it writes — that was inherited from an older note which turned out to be
+    /// describing its own output. So the 240SX's mass was tripled to 3,660 kg alongside this edit,
+    /// installed together, and driven: the car was unmistakably heavy. The channel carries, the car
+    /// was the right one, and the steering did not move. Compare the earlier brake-bias null, which
+    /// has none of that behind it and is why [`Self::brake_bias_f`] is still a candidate.
+    ///
+    /// What remains true is that the lane is **not nothing**: 27 to 60 over the playable cars, 15
+    /// distinct values, and a second angle-shaped lane four on at `+0x290` (20–45) that moves with
+    /// it. Something reads these. It is not the player's steering.
+    pub angle_284_deg: f32,
+    /// `+0x388` — the middle of a triple of fractions at `+0x384`, `+0x388`, `+0x38C`.
+    ///
+    /// **For:** the strongest ordering of any lane here. 0.39 (COROLLA) to 0.67 (HUMMER) over the
+    /// playable cars, and every traffic vehicle is exactly 0.300 — a per-class default. Sorted, it
+    /// puts the SUVs at the top and the hatchbacks at the bottom, which is what a centre-of-gravity
+    /// height does and what very little else does.
+    ///
+    /// **Against:** nothing measured. It is unproved only because nobody has driven it.
+    ///
+    /// **Settles it:** halve it on a HUMMER. A car that stops rolling over is a `cg_height`.
+    pub cg_height: f32,
+    /// `+0x38C`, the third of that triple.
+    ///
+    /// **For:** 0.47–0.60 in all 46 records — a *front fraction* just over half — and it orders by
+    /// drivetrain: FWD 0.564, RWD 0.531, AWD 0.530. Front-heavy cars getting more front brake is
+    /// what a bias does. The game's own text agrees on the concept: "Brake bias controls how much
+    /// braking the front tires do verses the rears."
+    ///
+    /// **Against:** it was set to 0.02 on a real 240SX, installed and driven, and braking was
+    /// unchanged. That is the reason this is still not claimed — but it is a weak reason, because a
+    /// bias moves force between axles and does not change **stopping distance**, so the experiment
+    /// very likely watched the wrong thing.
+    ///
+    /// **Settles it:** set it to 0.02 again and brake hard mid-corner. A car that spins is a bias.
+    pub brake_bias_f: f32,
+    /// `+0x1EC` and `+0x20C` — the fourth lane of two eight-lane blocks at `+0x1E0` and `+0x200`,
+    /// read as front then rear.
+    ///
+    /// **For:** the game names "Front Springs" and "Rear Springs" as two of its ten sliders, so
+    /// there are two of these to find. The blocks are identical in shape (`12.0, 1.0, 1.0, x, y,
+    /// 0, 0, 0`), differ only in the two lanes read here, and 17 and 18 distinct values run 1.43 to
+    /// 1.90 with every traffic vehicle above the playable range — a bus at 3.0.
+    ///
+    /// **Against:** which block is the front axle is an assumption, not a reading. A second, higher
+    /// pair sits at `+0x650`/`+0x670` (1.88 / 1.65 where these are 1.70 / 1.40), which may be the
+    /// upgraded suspension the game sells — or may be something else entirely.
+    ///
+    /// **Settles it:** set one to 5.0 and drive over a kerb. Front and rear are told apart by which
+    /// end of the car stops absorbing it.
+    pub spring: [f32; 2],
+    /// `+0x1F0` and `+0x210`, the lane after each spring. The game's "Front Shocks" and "Rear
+    /// Shocks". Same evidence and the same doubt as [`Self::spring`], which it sits beside.
+    pub damper: [f32; 2],
 }
 
 /// Radians per second per rpm — `2π/60`, the conversion torque needs to become power.
@@ -258,6 +412,40 @@ impl CarHandling {
             *slot = (rpm[i], self.torque_nm[i]);
         }
         out
+    }
+
+    /// The torque curve at engine upgrade `level`: `0` stock, `1`–`3` with the matching table of
+    /// [`Self::torque_gain_nm`] added.
+    ///
+    /// The addition is the *reading* set out on that field, applied in one place so that a drive can
+    /// disagree with it. Level 0 is the stock curve unchanged, which is the one case that is not a
+    /// reading of anything. Anything above 3 is clamped to 3 rather than indexing off the end.
+    #[must_use]
+    pub fn torque_at(&self, level: usize) -> [f32; 9] {
+        let mut out = self.torque_nm;
+        if level == 0 {
+            return out;
+        }
+        let gain = self.torque_gain_nm[level.min(3)];
+        for (t, g) in out.iter_mut().zip(gain.iter()) {
+            *t += g;
+        }
+        out
+    }
+
+    /// [`Self::peak_power`] for the curve at engine upgrade `level`.
+    #[must_use]
+    pub fn peak_power_at(&self, level: usize) -> PowerPoint {
+        let rpm = self.torque_rpm();
+        let torque = self.torque_at(level);
+        let mut best = PowerPoint { rpm: rpm[0], watts: torque[0] * rpm[0] * RAD_PER_RPM };
+        for i in 1..9 {
+            let watts = torque[i] * rpm[i] * RAD_PER_RPM;
+            if watts > best.watts {
+                best = PowerPoint { rpm: rpm[i], watts };
+            }
+        }
+        best
     }
 
     /// The highest-power point **of the nine**, which is what confirmed the axis.
@@ -389,6 +577,13 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
     for (i, g) in gearbox.iter_mut().enumerate() {
         *g = read_gearbox(b, rec + GEARBOX_AT[i])?;
     }
+    let mut torque_gain_nm = [[0.0f32; 9]; 4];
+    for (block, table) in torque_gain_nm.iter_mut().enumerate() {
+        for (i, t) in table.iter_mut().enumerate() {
+            // Same kilo convention as the stock curve beside them.
+            *t = le_f32(b, rec + TORQUE_GAIN_AT[block] + i * 4)? * 1000.0;
+        }
+    }
     let mut tyre_width_m = [0.0f32; 4];
     for (i, w) in tyre_width_m.iter_mut().enumerate() {
         *w = le_f32(b, rec + OFF_WHEELS + i * WHEEL_STRIDE + W_TYRE_WIDTH)?;
@@ -400,6 +595,7 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
             limiter_rpm: le_f32(b, rec + OFF_RPM + 8)?,
         },
         torque_nm,
+        torque_gain_nm,
         gearbox,
         rear_drive: le_f32(b, rec + GEARBOX_AT[0] + G_REAR_DRIVE)?,
         body_m: [
@@ -409,6 +605,19 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
         ],
         tyre_width_m,
         steer_ratio: le_f32(b, rec + OFF_STEER)?,
+        unproven: Unproven {
+            angle_284_deg: le_f32(b, rec + U_ANGLE_284)?,
+            cg_height: le_f32(b, rec + U_CG_HEIGHT)?,
+            brake_bias_f: le_f32(b, rec + U_BRAKE_BIAS)?,
+            spring: [
+                le_f32(b, rec + U_SUSPENSION_AT[0] + U_SPRING)?,
+                le_f32(b, rec + U_SUSPENSION_AT[1] + U_SPRING)?,
+            ],
+            damper: [
+                le_f32(b, rec + U_SUSPENSION_AT[0] + U_DAMPER)?,
+                le_f32(b, rec + U_SUSPENSION_AT[1] + U_DAMPER)?,
+            ],
+        },
     })
 }
 
@@ -419,6 +628,17 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
 /// database chunks without decoding them.
 #[must_use]
 pub fn parse_cartypeinfos(globalb: &[u8]) -> Vec<CarTypeInfo> {
+    located_cartypeinfos(globalb).into_iter().map(|(_, info)| info).collect()
+}
+
+/// Every record, with the byte offset it begins at.
+///
+/// The offsets exist for the write path in [`edit`], which has to put a number back exactly where it
+/// read one. They are deliberately produced by the **same scan** the reader uses rather than by the
+/// `0x00034600` chunk's own arithmetic: two ways of locating the same record are two chances to
+/// disagree, and a disagreement here writes into the car next door.
+#[must_use]
+pub fn located_cartypeinfos(globalb: &[u8]) -> Vec<(usize, CarTypeInfo)> {
     let mut out = Vec::new();
     let mut seen_end = 0usize; // avoid overlapping matches
     let needle = b"CARS";
@@ -443,7 +663,7 @@ pub fn parse_cartypeinfos(globalb: &[u8]) -> Vec<CarTypeInfo> {
         }
         if let Some(info) = read_record(globalb, rec) {
             seen_end = rec + REC_SIZE;
-            out.push(info);
+            out.push((rec, info));
         }
     }
     out
@@ -453,6 +673,12 @@ pub fn parse_cartypeinfos(globalb: &[u8]) -> Vec<CarTypeInfo> {
 #[must_use]
 pub fn find_car(globalb: &[u8], name: &str) -> Option<CarTypeInfo> {
     parse_cartypeinfos(globalb).into_iter().find(|c| c.name == name)
+}
+
+/// Where one car's record begins, by collection name.
+#[must_use]
+pub fn find_record(globalb: &[u8], name: &str) -> Option<usize> {
+    located_cartypeinfos(globalb).into_iter().find(|(_, c)| c.name == name).map(|(at, _)| at)
 }
 
 #[cfg(test)]

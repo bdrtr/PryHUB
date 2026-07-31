@@ -68,8 +68,11 @@ pub use profile::Profile;
 // that can name the record from the root should be able to name what it contains without reaching
 // into the module. Added rather than moved: `globalb::CarHandling` still resolves.
 pub use globalb::{
-    parse_cartypeinfos, CarHandling, CarTypeInfo, Engine, Gearbox, PowerPoint, WheelSpec,
+    parse_cartypeinfos, CarHandling, CarTypeInfo, Engine, Gearbox, PowerPoint, Unproven, WheelSpec,
 };
+// The write path's vocabulary. A consumer that can read a record from the root should be able to
+// name the lane it wants to change from there too.
+pub use globalb::edit::{Field as CarField, Store as CarFieldStore};
 pub use parts::{group_of, select_car, select_stock_car, CarConfig, Grp};
 pub use texture::{Tpk, TpkEntry};
 pub use types::{
