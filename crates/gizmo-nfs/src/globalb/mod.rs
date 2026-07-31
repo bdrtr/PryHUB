@@ -279,9 +279,23 @@ pub struct Unproven {
     /// puts the SUVs at the top and the hatchbacks at the bottom, which is what a centre-of-gravity
     /// height does and what very little else does.
     ///
-    /// **Against:** nothing measured. It is unproved only because nobody has driven it.
+    /// **Against:** a 240SX's was raised from 0.50 to **1.40** — nearly roof height — installed
+    /// and driven, and cornering felt unchanged. The drive carried its own control this time: the
+    /// rev limiter was cut to 3,200 in the same write, and the car audibly stopped at 3,200, so
+    /// the file did reach the game and the null is not a plumbing null.
     ///
-    /// **Settles it:** halve it on a HUMMER. A car that stops rolling over is a `cg_height`.
+    /// **Why the row stays a candidate anyway, and this is the honest reading rather than the
+    /// convenient one.** "Cornering felt unchanged" is a statement about what NFSU2's handling
+    /// model *does with* a centre of gravity, not about what the lane is. This game does not let a
+    /// car roll over in ordinary driving at all, so the most obvious consequence of a high centre
+    /// of gravity is one it may simply never express. That is the same shape of error as the
+    /// brake-bias null next door, which watched stopping distance when a bias moves force between
+    /// axles — a real measurement of the wrong observable. Set against it, the file evidence is
+    /// the strongest of any lane here.
+    ///
+    /// **What would settle it now:** something that shows weight *transfer* rather than roll —
+    /// nose-dive under hard braking, squat under acceleration, or how a drift breaks away — with
+    /// the value driven to both extremes rather than raised once.
     pub cg_height: f32,
     /// `+0x38C`, the third of that triple.
     ///
