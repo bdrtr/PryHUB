@@ -41,6 +41,7 @@ mod profile;
 mod replace;
 mod textures;
 mod tune;
+mod world;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -264,6 +265,18 @@ enum Command {
         #[arg(long)]
         matrices: bool,
     },
+    /// What a city bundle declares: objects, vertex/triangle totals, and the checks that say
+    /// whether the reader is right (`0x11` filler widths, identity/placed split, determinant signs).
+    ///
+    /// Decodes no geometry — it reads the `0x00134011` headers and the 68-byte mesh headers and
+    /// stops, so a 120 MB bundle costs a walk rather than its vertex data.
+    World {
+        /// A `STREAM*.BUN`, or the `TRACKS` directory to do all of them.
+        path: PathBuf,
+        /// Emit one CSV row per bundle instead of the readable report.
+        #[arg(long)]
+        csv: bool,
+    },
     /// Compare two asset files chunk by chunk.
     Diff {
         /// The file to read as the "before".
@@ -360,6 +373,7 @@ fn main() -> ExitCode {
             axes.and_then(|a| import::run(&file, &obj, part.as_deref(), &out, force, a))
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
+        Command::World { path, csv } => world::run(&path, csv),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
             export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)
