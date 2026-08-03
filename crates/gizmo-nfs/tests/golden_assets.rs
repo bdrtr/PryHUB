@@ -1080,12 +1080,17 @@ fn tool_compiled_packs_relocate_too() {
 
 /// The one tool-made shape that is *not* an ordinary pack, and is refused rather than guessed at.
 ///
-/// `PEUGOT/TEXTURES.BIN` has no `0x33320002`: its directory is followed by raw compressed blocks,
+/// A pack of this shape has no `0x33320002`: its directory is followed by raw compressed blocks,
 /// and the tolerant walk reads the first block's `JDLZ` magic as a chunk id. Four packs made on
 /// purpose with NFS-CarToolkit do not look like this, so it is a rarer variant rather than "what a
-/// compiler does". It is a third-party mod, downloaded rather than built, so what wrote it cannot be
-/// asked and a second sample cannot be produced — which is why it stays refused rather than being
-/// supported on one artefact.
+/// compiler does". The sample it was measured on is a third-party mod, downloaded rather than
+/// built, so what wrote it cannot be asked and a second sample cannot be produced — which is why it
+/// stays refused rather than being supported on one artefact.
+///
+/// It is looked for under `CARS/PEUGOT/`, where that mod installs, but **identified by shape**. A
+/// stock `PEUGOT` pack has the blob chunk and relocates like any other, so an install that never
+/// had the mod has nothing here to refuse. Demanding the refusal on the strength of the path alone
+/// made this test pass or fail on which copy of the game it ran against.
 #[test]
 fn the_chunkless_pack_is_refused_by_name() {
     let Some(root) = root() else {
@@ -1096,6 +1101,15 @@ fn the_chunkless_pack_is_refused_by_name() {
         eprintln!("no PEUGOT pack in this install — skipping");
         return;
     };
+    // Ask what `relocate` asks, through the walk options it uses: is the blob chunk there? If it
+    // is, this copy is an ordinary pack and there is no refusal to demand.
+    const BLOBS: u32 = 0x3332_0002;
+    let opts = gizmo_nfs::chunk::WalkOptions { stop_on_overrun: true, ..Default::default() };
+    let roots = gizmo_nfs::chunk::ChunkNode::parse_with(&bytes, opts).expect("parse chunk tree");
+    if roots.iter().any(|r| r.header.id == BLOBS || r.find(BLOBS).is_some()) {
+        eprintln!("this install's PEUGOT pack has a {BLOBS:#010x} chunk — an ordinary pack, not the chunkless variant; skipping");
+        return;
+    }
     // It still *reads*: the directory is a normal one and every texture decodes.
     let tpk = gizmo_nfs::texture::Tpk::parse(&bytes).expect("a chunkless pack still parses");
     assert!(!tpk.textures.is_empty(), "its textures decode");
@@ -1690,4 +1704,78 @@ fn handling_reads_the_real_records() {
     // Front-wheel drive reads as the other end of the same lane.
     let civic = cars.iter().find(|c| c.name == "CIVIC").expect("the CIVIC is in the roster");
     assert_eq!(civic.handling.rear_drive, 0.0);
+}
+
+/// The city's solid headers, against the two regions small enough to state exactly.
+///
+/// What this pins is not a count but a *reading*. A `STREAM*.BUN` prefixes the `0x00134011` record
+/// with `0x11` filler on most of its objects, and a reader that ignores it still returns a matrix —
+/// built from the wrong floats. The tell is the matrix's last element, which the format fixes at
+/// `1.0`: read correctly it is `1.0` in all 175 of `STREAML4RH`'s headers, read at the nominal
+/// offsets in only the 46 that had no filler. Asserting the identity/placed split is how that stays
+/// true, because the wrong read reports `(44 identity, 131 placed)` where the right one reports
+/// `(169, 6)` — both plausible for a city, only one correct.
+///
+/// The names carry their own proof: `bStringHash(name)` equals the stored hash in every header of
+/// these two regions, which locks the name offset and the hash offset against each other. Regions
+/// with longer names do not reach 100 % — `STREAML4RC` is 639 of 772 — and that is truncation, not
+/// a bad read, which is what `name_is_whole` exists to say.
+#[test]
+fn world_solid_headers_read_through_their_filler() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping world header goldens");
+        return;
+    };
+    use gizmo_nfs::chunk::ChunkNode;
+    use std::collections::BTreeMap;
+
+    // (region, objects, identity, placed, names whole)
+    for &(region, objects, identity, placed, whole) in
+        &[("STREAML4RH", 175usize, 169usize, 6usize, 175usize), ("STREAML4RR", 482, 480, 2, 482)]
+    {
+        let path = root.join(format!("TRACKS/{region}.BUN"));
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        let roots = ChunkNode::parse(&bytes).expect("parse chunk tree");
+        let mut headers = Vec::new();
+        for r in &roots {
+            for n in std::iter::once(r).chain(r.find_all(0x0013_4011)) {
+                if n.header.id == 0x0013_4011 {
+                    headers.push(gizmo_nfs::world::read_header(n.data(&bytes)).expect("header"));
+                }
+            }
+        }
+
+        assert_eq!(headers.len(), objects, "{region}: object count");
+        let n_placed = headers.iter().filter(|h| h.is_placed()).count();
+        assert_eq!((headers.len() - n_placed, n_placed), (identity, placed), "{region}: placement");
+        assert_eq!(
+            headers.iter().filter(|h| h.name_is_whole()).count(),
+            whole,
+            "{region}: names proved by their own hash"
+        );
+        // Every matrix's last element is 1.0 — the discriminator itself, asserted directly.
+        assert!(
+            headers.iter().all(|h| h.matrix[3][3] == 1.0),
+            "{region}: a header's matrix did not end in 1.0, so the filler was not skipped"
+        );
+
+        // Filler widths are a property of the file, so state them: L4RH is 46/36/49/44.
+        if region == "STREAML4RH" {
+            let mut hist: BTreeMap<usize, usize> = BTreeMap::new();
+            for r in &roots {
+                for n in r.find_all(0x0013_4011) {
+                    let p = n.data(&bytes);
+                    *hist.entry(p.len() - 192).or_default() += 1;
+                }
+            }
+            assert_eq!(
+                hist.into_iter().collect::<Vec<_>>(),
+                vec![(0, 46), (4, 36), (8, 49), (12, 44)],
+                "{region}: filler histogram"
+            );
+        }
+    }
 }
