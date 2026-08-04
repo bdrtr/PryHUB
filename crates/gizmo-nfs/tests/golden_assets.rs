@@ -1779,3 +1779,106 @@ fn world_solid_headers_read_through_their_filler() {
         }
     }
 }
+
+/// Every region's manifest, in exact numbers.
+///
+/// This is the whole city stated once: 28,985 objects, 3,667,007 vertices and 2,544,154 triangles
+/// across eight bundles and 324 MB, read without decoding a vertex. The totals are the reason the
+/// engine work is sequenced the way it is — 3.67 M vertices is 84 MB at the file's 24-byte stride
+/// and 322 MB expanded to a 92-byte one, so the city fits in memory and what it strains is draw
+/// calls, not RAM.
+///
+/// The per-region splits are here because they are what catches a reader that regressed rather than
+/// broke. `identity` counts objects whose vertices are already world-space (road and terrain);
+/// `placed` counts those carrying a transform. A reader that stopped skipping the `0x11` filler
+/// still returns numbers, and they are still plausible — L4RH would read `(44, 131)` instead of
+/// `(169, 6)` — so the split is asserted rather than just the total.
+///
+/// `truncated` is a property of the data, not a defect: the name field is fixed-width, and 8,495 of
+/// the city's names do not fit it. Two regions have none, which is what makes the other six's
+/// counts meaningful.
+#[test]
+fn world_manifest_counts_hold_for_every_region() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping world manifest goldens");
+        return;
+    };
+
+    struct Region {
+        name: &'static str,
+        objects: usize,
+        vertices: u64,
+        triangles: u64,
+        identity: usize,
+        placed: usize,
+        negative_det: usize,
+        truncated: usize,
+    }
+    const REGIONS: &[Region] = &[
+        Region { name: "STREAML4RA", objects: 10735, vertices: 1_304_563, triangles: 899_273,
+                 identity: 4393, placed: 6342, negative_det: 45, truncated: 3428 },
+        Region { name: "STREAML4RB", objects: 2642, vertices: 384_527, triangles: 280_673,
+                 identity: 1543, placed: 1099, negative_det: 8, truncated: 868 },
+        Region { name: "STREAML4RC", objects: 772, vertices: 143_054, triangles: 104_958,
+                 identity: 394, placed: 378, negative_det: 3, truncated: 133 },
+        Region { name: "STREAML4RD", objects: 11135, vertices: 1_367_985, triangles: 941_066,
+                 identity: 4406, placed: 6729, negative_det: 49, truncated: 3488 },
+        Region { name: "STREAML4RF", objects: 773, vertices: 135_284, triangles: 93_526,
+                 identity: 49, placed: 724, negative_det: 1, truncated: 41 },
+        Region { name: "STREAML4RG", objects: 2271, vertices: 245_114, triangles: 183_538,
+                 identity: 1480, placed: 791, negative_det: 0, truncated: 537 },
+        Region { name: "STREAML4RH", objects: 175, vertices: 20_610, triangles: 10_832,
+                 identity: 169, placed: 6, negative_det: 0, truncated: 0 },
+        Region { name: "STREAML4RR", objects: 482, vertices: 65_870, triangles: 30_288,
+                 identity: 480, placed: 2, negative_det: 0, truncated: 0 },
+    ];
+
+    let (mut seen, mut all_objects, mut all_verts, mut all_tris) = (0usize, 0usize, 0u64, 0u64);
+    for reg in REGIONS {
+        let (region, objects, vertices, triangles) =
+            (reg.name, reg.objects, reg.vertices, reg.triangles);
+        let (identity, placed, neg_det, truncated) =
+            (reg.identity, reg.placed, reg.negative_det, reg.truncated);
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let m = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+
+        assert_eq!(m.len(), objects, "{region}: objects");
+        assert_eq!(m.iter().map(|o| u64::from(o.vertices)).sum::<u64>(), vertices, "{region}: verts");
+        assert_eq!(m.iter().map(|o| u64::from(o.triangles)).sum::<u64>(), triangles, "{region}: tris");
+
+        let n_placed = m.iter().filter(|o| o.header.is_placed()).count();
+        assert_eq!((m.len() - n_placed, n_placed), (identity, placed), "{region}: placement split");
+        assert_eq!(
+            m.iter().filter(|o| o.header.basis_determinant() < 0.0).count(),
+            neg_det,
+            "{region}: mirrored objects — `should_place` would drop these on the origin"
+        );
+        assert_eq!(
+            m.iter().filter(|o| !o.header.name_is_whole()).count(),
+            truncated,
+            "{region}: names the fixed-width field cut short"
+        );
+
+        // Filler is only ever a whole number of 0x11 words, and only these four widths.
+        assert!(
+            m.iter().all(|o| matches!(o.filler, 0 | 4 | 8 | 12)),
+            "{region}: a header carried a filler width the format has not shown before"
+        );
+
+        all_objects += m.len();
+        all_verts += m.iter().map(|o| u64::from(o.vertices)).sum::<u64>();
+        all_tris += m.iter().map(|o| u64::from(o.triangles)).sum::<u64>();
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(all_objects, 28_985, "the city's objects");
+        assert_eq!(all_verts, 3_667_007, "the city's vertices");
+        assert_eq!(all_tris, 2_544_154, "the city's triangles");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}

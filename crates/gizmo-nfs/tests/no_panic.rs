@@ -219,3 +219,40 @@ proptest! {
         prop_assert_eq!(compression::huff::decompress(&packed).expect("decompress"), data);
     }
 }
+
+/// A chunk-shaped bundle with an arbitrary payload, so the walk actually reaches the readers
+/// instead of bouncing off a bad header on byte one. Uniform random bytes almost never form a
+/// valid chunk stream, and a no-panic test the parser never enters proves nothing.
+fn bundle_with(id: u32, payload: &[u8]) -> Vec<u8> {
+    let mut file = id.to_le_bytes().to_vec();
+    file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    file.extend_from_slice(payload);
+    file
+}
+
+proptest! {
+    /// The city's headers come from a sector-padded file the walk has to resync through, so this
+    /// reader sees misaligned bytes as a matter of course rather than as an attack.
+    #[test]
+    fn world_read_header_never_panics(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+        let _ = gizmo_nfs::world::read_header(&data);
+    }
+
+    #[test]
+    fn world_manifest_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _ = gizmo_nfs::world::manifest(&data);
+    }
+
+    /// The same, reached through a real `0x00134011` chunk header: the length is the file's to
+    /// state, so a record claiming more than it has must be refused rather than read past.
+    #[test]
+    fn world_manifest_never_panics_on_a_wellformed_wrapper(
+        payload in proptest::collection::vec(any::<u8>(), 0..512)
+    ) {
+        let _ = gizmo_nfs::world::manifest(&bundle_with(0x0013_4011, &payload));
+        let _ = gizmo_nfs::world::manifest(&bundle_with(0x0013_4900, &payload));
+        // Nested the way a bundle nests it, so `manifest` pairs a header with a mesh header.
+        let solid = bundle_with(0x0013_4011, &payload);
+        let _ = gizmo_nfs::world::manifest(&bundle_with(0x8013_4010, &solid));
+    }
+}
