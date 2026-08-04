@@ -21,8 +21,10 @@
 
 use crate::chunk::{walk, Visit};
 use crate::error::NfsResult;
-use crate::geometry::format::{MESH_HEADER, SOLID_HEADER};
+use crate::geometry::format::{MATERIAL_LIST, MESH_HEADER, SOLID_HEADER};
+use crate::geometry::material::ordered_hashes;
 use crate::geometry::{mesh_field, skip_leading_filler, PACKED_VERTEX_STRIDE};
+use crate::types::AssetHash;
 
 use super::header::{read_header, WorldSolidHeader};
 
@@ -46,6 +48,19 @@ pub struct WorldObjectInfo {
     pub vertices: u32,
     /// Triangle count from the mesh header.
     pub triangles: u32,
+    /// The solid's `0x00134012` texture-slot list, **in file order and with nothing dropped**.
+    ///
+    /// Order is what makes it usable: a `0x00134B02` material group names its texture by *index*
+    /// into this list at `+0x1C`, so the link is a lookup rather than a search. Measured over the
+    /// city: every one of the 28,985 solids carries the chunk, every payload is a whole number of
+    /// 8-byte entries, and not one of the 70,439 entries has a zero key or a non-zero second word
+    /// — unlike a car, where zero slots do occur. 79 solids carry the chunk empty.
+    ///
+    /// A key resolves against a [`super::TrackPack`]'s records. Which packs to try, and what to do
+    /// when none of them has it, is the caller's: 98.17 % of city slots resolve in their own
+    /// bundle's packs, the rest live in `TRACKS/LOC4DYNTEX.BIN` or `GLOBAL/`, and 111 references
+    /// resolve nowhere in the install at all.
+    pub texture_slots: Vec<AssetHash>,
 }
 
 impl WorldObjectInfo {
@@ -92,7 +107,13 @@ pub fn manifest(bundle: &[u8]) -> NfsResult<Vec<WorldObjectInfo>> {
                         filler: data.len() - skip_leading_filler(data).len(),
                         vertices: 0,
                         triangles: 0,
+                        texture_slots: Vec::new(),
                     });
+                }
+                MATERIAL_LIST => {
+                    if let Some(last) = objects.last_mut() {
+                        last.texture_slots = ordered_hashes(data);
+                    }
                 }
                 MESH_HEADER => {
                     if let Some(last) = objects.last_mut() {
@@ -152,6 +173,24 @@ mod tests {
         p
     }
 
+    /// A `0x00134012` payload: 8 bytes per slot, `(u32 key, u32 0)`.
+    fn slots(keys: &[u32]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(keys.len() * 8);
+        for k in keys {
+            v.extend_from_slice(&k.to_le_bytes());
+            v.extend_from_slice(&0u32.to_le_bytes());
+        }
+        v
+    }
+
+    /// One object, built the way a bundle nests it: solid → header + slots + (geometry → mesh).
+    fn solid_with_slots(name: &str, filler: usize, tris: u32, verts: u32, keys: &[u32]) -> Vec<u8> {
+        let mut inner = chunk(SOLID_HEADER, &solid_header(name, filler));
+        inner.extend_from_slice(&chunk(MATERIAL_LIST, &slots(keys)));
+        inner.extend_from_slice(&chunk(0x8013_4100, &chunk(MESH_HEADER, &mesh_header(tris, verts, filler))));
+        chunk(0x8013_4010, &inner)
+    }
+
     /// One object, built the way a bundle nests it: solid → header + (geometry → mesh header).
     fn solid(name: &str, filler: usize, tris: u32, verts: u32) -> Vec<u8> {
         let mut inner = chunk(SOLID_HEADER, &solid_header(name, filler));
@@ -193,5 +232,32 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!((m[0].triangles, m[0].vertices), (0, 0));
         assert_eq!(m[0].vertex_bytes(), 0);
+    }
+
+    /// The slot list keeps file order, because a material group names a texture by position in it
+    /// rather than by value — reordering or deduplicating would silently retexture the city.
+    #[test]
+    fn the_texture_slot_list_keeps_its_order_and_its_repeats() {
+        let keys = [0xDEAD_BEEFu32, 0x1234_5678, 0xDEAD_BEEF];
+        let bundle = chunk(0x8013_4000, &solid_with_slots("TRN_ROADA", 8, 2, 8, &keys));
+        let m = manifest(&bundle).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].texture_slots.iter().map(|h| h.0).collect::<Vec<_>>(),
+            keys,
+            "order and repeats are both load-bearing"
+        );
+        // The counts still arrive: the slot list sits between the header and the mesh header.
+        assert_eq!((m[0].triangles, m[0].vertices), (2, 8));
+    }
+
+    /// A solid with no `0x00134012` gets an empty list, not a missing object — 79 of the city's
+    /// 28,985 carry the chunk empty.
+    #[test]
+    fn a_solid_without_slots_is_still_an_object() {
+        let bundle = chunk(0x8013_4000, &solid("TRN_TERRAINA", 0, 1, 3));
+        let m = manifest(&bundle).unwrap();
+        assert_eq!(m.len(), 1);
+        assert!(m[0].texture_slots.is_empty());
     }
 }

@@ -2018,3 +2018,103 @@ fn l4rh_texture_pack_reads_field_for_field() {
     let key = pack.textures[1].key;
     assert_eq!(pack.get(key).map(|t| t.name.as_str()), Some("TRN_GRASSC"));
 }
+
+/// The mesh → texture link, region by region.
+///
+/// The link is an index, not a search: a solid's `0x00134012` is an ordered list of keys and a
+/// `0x00134B02` group names one of them by position. So what the parser owes a caller is the list
+/// *in file order with nothing dropped*, and this pins that — every city solid carries the chunk,
+/// every payload is a whole number of 8-byte entries, and unlike a car not one of the 70,439
+/// entries is a zero key.
+///
+/// The resolution figures are the other half, and they are the reason the tier order is the
+/// caller's business rather than this crate's. 98.17 % of slots resolve in their own bundle's
+/// packs; the rest are in `TRACKS/LOC4DYNTEX.BIN` (which is the *car* pack variant) or under
+/// `GLOBAL/`, and 111 references resolve nowhere in the install at all. L4RH looks broken at 66 %
+/// and is not: 88 of its 272 slots want one key that exists in no pack anywhere.
+#[test]
+fn city_texture_slots_resolve_against_their_own_bundle() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping texture-slot goldens");
+        return;
+    };
+    // region, slots, slots resolving in that bundle's own packs
+    const REGIONS: &[(&str, usize, usize)] = &[
+        ("STREAML4RA", 27_987, 27_443),
+        ("STREAML4RB", 5_265, 5_189),
+        ("STREAML4RC", 1_834, 1_809),
+        ("STREAML4RD", 28_855, 28_425),
+        ("STREAML4RF", 2_184, 2_110),
+        ("STREAML4RG", 3_558, 3_514),
+        ("STREAML4RH", 272, 180),
+        ("STREAML4RR", 484, 480),
+    ];
+
+    let (mut seen, mut all_slots, mut all_hit, mut empty) = (0usize, 0usize, 0usize, 0usize);
+    for &(region, slots, resolving) in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let objects = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+
+        // Every solid declares the chunk, so the list is never absent — only sometimes empty.
+        let n_slots: usize = objects.iter().map(|o| o.texture_slots.len()).sum();
+        assert_eq!(n_slots, slots, "{region}: texture slots");
+        empty += objects.iter().filter(|o| o.texture_slots.is_empty()).count();
+        assert!(
+            objects.iter().all(|o| o.texture_slots.iter().all(|k| k.0 != 0)),
+            "{region}: a zero key — cars have those, the city does not"
+        );
+
+        let hit = objects
+            .iter()
+            .flat_map(|o| &o.texture_slots)
+            .filter(|k| packs.iter().any(|p| p.get(**k).is_some()))
+            .count();
+        assert_eq!(hit, resolving, "{region}: slots resolving in their own bundle");
+
+        all_slots += n_slots;
+        all_hit += hit;
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(all_slots, 70_439, "the city's texture slots");
+        assert_eq!(all_hit, 69_150, "slots resolving bundle-locally");
+        assert_eq!(empty, 79, "solids whose slot list is present but empty");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}
+
+/// `TRACKS/LOC4DYNTEX.BIN` is the **car** pack variant, and the existing reader already handles it.
+///
+/// Worth a test because it is the one place the two pack shapes meet: the city's own packs have no
+/// `0x33310003` and this shared one has nothing else, so a resolver walking the tiers has to try
+/// both readers rather than assume a directory implies a format. It holds the two keys both
+/// `SKYDOME` objects in every region ask for.
+#[test]
+fn the_shared_track_pack_is_the_car_variant() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping LOC4DYNTEX test");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/LOC4DYNTEX.BIN")) else {
+        eprintln!("no LOC4DYNTEX.BIN in this install — skipping");
+        return;
+    };
+    // The city reader finds nothing here: there is no `0x33310004` at all.
+    assert!(
+        gizmo_nfs::world::packs(&bytes).expect("packs").is_empty(),
+        "LOC4DYNTEX has no track-variant record table"
+    );
+    // The car reader reads all of it.
+    let entries = gizmo_nfs::texture::Tpk::directory(&bytes).expect("car-variant directory");
+    assert_eq!(entries.len(), 58, "descriptors");
+    let keys: Vec<u32> = entries.iter().map(|e| e.hash.0).collect();
+    for skydome in [0x2414A01Eu32, 0x5FB8BCD1] {
+        assert!(keys.contains(&skydome), "{skydome:#010X}: the skydome key is here");
+    }
+}

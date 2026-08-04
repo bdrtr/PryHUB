@@ -29,7 +29,7 @@
 pub mod format;
 pub mod write;
 mod index;
-mod material;
+pub(crate) mod material;
 mod name;
 mod solid;
 mod vertex;
