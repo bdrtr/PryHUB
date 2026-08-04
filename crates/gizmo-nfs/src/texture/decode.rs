@@ -10,7 +10,7 @@ use crate::types::{NfsTexture, PixelFormat, TexFormat};
 const RGBA: usize = 4;
 
 /// `ImageCompressionType` codes (embedded `OldTextureInfo`, byte at `P+38`).
-pub(super) mod fmt {
+pub(crate) mod fmt {
     pub const RGBA8888: u8 = 0x20; // 32bpp, stored B,G,R,A
     pub const DXT1: u8 = 0x22;
     pub const DXT3: u8 = 0x24;
@@ -21,7 +21,7 @@ pub(super) mod fmt {
 }
 
 /// Is this one of the three tags that store one palette index per pixel?
-pub(super) const fn is_palettised(comp: u8) -> bool {
+pub(crate) const fn is_palettised(comp: u8) -> bool {
     matches!(comp, fmt::P8 | fmt::P8_16 | fmt::P8_64)
 }
 
@@ -52,10 +52,10 @@ pub(super) const fn is_palettised(comp: u8) -> bool {
 /// [`palette_of`] checks it against this rather than trusting it — a pack that says otherwise is a
 /// pack this arm has not been shown, and decoding it against the wrong length would silently read a
 /// neighbouring mip as colours.
-pub(super) const PALETTE_BYTES: usize = 256 * 4;
+pub(crate) const PALETTE_BYTES: usize = 256 * 4;
 
 /// The largest texture dimension we will decode (guards allocation from a corrupt header).
-pub(super) const MAX_DIM: usize = 4096;
+pub(crate) const MAX_DIM: usize = 4096;
 
 /// Bytes of the embedded header this module reads, and the constant that finds it.
 ///
@@ -179,7 +179,7 @@ pub(super) fn decode_texture(file: &[u8], e: &TpkEntry) -> NfsResult<NfsTexture>
 /// have a name, because `Unknown` next to a texture we have just finished unpacking tells the
 /// interface, the exporter and the next reader that we did not recognise it. Every tag named here
 /// now decodes.
-fn named_format(comp: u8) -> Option<TexFormat> {
+pub(crate) fn named_format(comp: u8) -> Option<TexFormat> {
     Some(match comp {
         fmt::DXT1 => TexFormat::Dxt1,
         fmt::DXT3 => TexFormat::Dxt3,
@@ -201,7 +201,7 @@ fn named_format(comp: u8) -> Option<TexFormat> {
 /// with it: the same arithmetic that says where the top mip ends says where every level below it
 /// does, and the two sides must agree or a re-encoded texture would write its second level over
 /// the tail of its first.
-pub(super) fn level_size(width: usize, height: usize, comp: u8) -> Option<usize> {
+pub(crate) fn level_size(width: usize, height: usize, comp: u8) -> Option<usize> {
     let blocks = width.div_ceil(4) * height.div_ceil(4);
     match comp {
         fmt::DXT1 => Some(blocks * 8),
@@ -283,7 +283,7 @@ pub(super) fn palette_at(hdr: &[u8], top: usize) -> NfsResult<usize> {
 ///
 /// `src` may be shorter than the image only if the blob was truncated, in which case the tail stays
 /// the zero the buffer was allocated with rather than reading whatever follows.
-fn unpack_palettised(
+pub(crate) fn unpack_palettised(
     src: &[u8],
     palette: &[u8; PALETTE_BYTES],
     width: usize,
@@ -303,7 +303,7 @@ fn unpack_palettised(
 }
 
 /// Unpack the `0x20` format: 32-bit source stored B,G,R,A → RGBA8, alpha preserved.
-fn unpack_bgra(src: &[u8], width: usize, height: usize) -> Vec<u8> {
+pub(crate) fn unpack_bgra(src: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = vec![0u8; width * height * RGBA];
     for (dst, s) in out.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         dst.copy_from_slice(&[s[2], s[1], s[0], s[3]]);

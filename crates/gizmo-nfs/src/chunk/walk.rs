@@ -48,7 +48,9 @@ where
     C: FnMut(u32, BinSectionHeader) -> NfsResult<Visit>,
     L: FnMut(u32, BinSectionHeader, &[u8]) -> NfsResult<()>,
 {
-    walk_inner(buf, 0, WalkOptions::default(), &mut on_container, &mut on_leaf)
+    walk_inner(buf, 0, 0, WalkOptions::default(), &mut on_container, &mut |d, h, _at, data| {
+        on_leaf(d, h, data)
+    })
 }
 
 /// Like [`walk`] but with explicit [`WalkOptions`].
@@ -62,11 +64,37 @@ where
     C: FnMut(u32, BinSectionHeader) -> NfsResult<Visit>,
     L: FnMut(u32, BinSectionHeader, &[u8]) -> NfsResult<()>,
 {
-    walk_inner(buf, 0, opts, &mut on_container, &mut on_leaf)
+    walk_inner(buf, 0, 0, opts, &mut on_container, &mut |d, h, _at, data| on_leaf(d, h, data))
+}
+
+/// Like [`walk_with`], but the leaf visitor is also told **where** the payload is: its offset from
+/// the start of `buf`.
+///
+/// The walker has always known this and had no way to say it. A visitor that wants to keep a
+/// payload — rather than read it and move on — needs the offset, because the `&[u8]` it is handed
+/// carries the callback's lifetime and not the buffer's, and recovering the position by comparing
+/// slice bases is arithmetic on pointers that only happens to work. [`super::ChunkNode`] exposes
+/// the same thing as `data_offset`; this is the visitor path catching up.
+///
+/// # Errors
+///
+/// The same as [`walk_with`].
+pub fn walk_positions<C, L>(
+    buf: &[u8],
+    opts: WalkOptions,
+    mut on_container: C,
+    mut on_leaf: L,
+) -> NfsResult<()>
+where
+    C: FnMut(u32, BinSectionHeader) -> NfsResult<Visit>,
+    L: FnMut(u32, BinSectionHeader, usize, &[u8]) -> NfsResult<()>,
+{
+    walk_inner(buf, 0, 0, opts, &mut on_container, &mut on_leaf)
 }
 
 fn walk_inner<C, L>(
     buf: &[u8],
+    base: usize,
     depth: u32,
     opts: WalkOptions,
     on_container: &mut C,
@@ -74,7 +102,7 @@ fn walk_inner<C, L>(
 ) -> NfsResult<()>
 where
     C: FnMut(u32, BinSectionHeader) -> NfsResult<Visit>,
-    L: FnMut(u32, BinSectionHeader, &[u8]) -> NfsResult<()>,
+    L: FnMut(u32, BinSectionHeader, usize, &[u8]) -> NfsResult<()>,
 {
     let mut r = ByteReader::new(buf);
     while r.remaining() >= 8 {
@@ -96,14 +124,14 @@ where
         let payload = r.take(size_usize)?;
         match header.kind() {
             ChunkKind::Padding => {}
-            ChunkKind::Leaf => on_leaf(depth, header, payload)?,
+            ChunkKind::Leaf => on_leaf(depth, header, base + start + 8, payload)?,
             ChunkKind::Container => {
                 if on_container(depth, header)? == Visit::Descend {
                     let next_depth = depth + 1;
                     if next_depth > opts.max_depth {
                         return Err(NfsError::MaxDepthExceeded { max_depth: opts.max_depth });
                     }
-                    walk_inner(payload, next_depth, opts, on_container, on_leaf)?;
+                    walk_inner(payload, base + start + 8, next_depth, opts, on_container, on_leaf)?;
                 }
             }
         }

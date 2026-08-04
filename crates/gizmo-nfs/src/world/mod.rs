@@ -19,12 +19,15 @@
 //!
 //! ## Status
 //!
-//! [`header`] reads the `0x00134011` solid header, which is the manifest layer: every object's
-//! hash, extent and placement, with no vertex decoded. Geometry, the track texture-pack variant and
-//! the route files are not here yet.
+//! [`header`] reads the `0x00134011` solid header and [`manifest`] walks a bundle for every one of
+//! them plus its vertex and triangle counts — the manifest layer, with no vertex decoded. [`tpk`]
+//! reads the city's own texture-pack variant, whose records state pixel format and dimensions
+//! outright. Vertex buffers and the route files are not here yet.
 
 pub mod header;
 pub mod manifest;
+pub mod tpk;
 
 pub use header::{read_header, WorldSolidHeader};
 pub use manifest::{manifest, WorldObjectInfo};
+pub use tpk::{packs, records, TrackPack, TrackTexture};

@@ -1882,3 +1882,139 @@ fn world_manifest_counts_hold_for_every_region() {
         eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
     }
 }
+
+/// The city's texture packs, and every one of its textures decoded.
+///
+/// The point is that nothing here is inferred. The record states width, height, mip count and the
+/// pixel format, so this asserts what the file says and then checks the file against itself: the
+/// `+0x40` top-mip size must equal `level_size(width, height, +0x4A)` for every record, and the
+/// furthest extent in a pack must land exactly on the end of its filler-stripped pool. Both of
+/// those fail loudly if the pool base or a field offset is off by so much as a byte, where a
+/// plausible-looking image would not.
+///
+/// Decoding all 5,087 is the other half. A format read rather than guessed at is only worth
+/// something if every tag the city uses is one the crate can actually unpack.
+#[test]
+fn every_city_texture_decodes_from_a_stated_format() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city texture goldens");
+        return;
+    };
+    const REGIONS: &[&str] = &[
+        "STREAML4RA", "STREAML4RB", "STREAML4RC", "STREAML4RD",
+        "STREAML4RF", "STREAML4RG", "STREAML4RH", "STREAML4RR",
+    ];
+
+    let (mut seen, mut packs_n, mut records_n, mut decoded, mut whole) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut tags: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+
+    for region in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+        packs_n += packs.len();
+
+        for pack in &packs {
+            // Every pack strips the same 120 bytes of `0x11`.
+            assert_eq!(pack.filler, 120, "{region}: pool filler");
+            // The furthest extent lands exactly on the pool's end — the proof that the base is
+            // the filler-stripped payload and not the raw one.
+            let furthest = pack
+                .textures
+                .iter()
+                .map(|t| {
+                    let img = t.image_offset as usize + t.image_size as usize;
+                    let pal = if t.palette_size == 0 {
+                        0
+                    } else {
+                        t.palette_offset as usize + t.palette_size as usize
+                    };
+                    img.max(pal)
+                })
+                .max()
+                .unwrap_or(0);
+            assert_eq!(furthest, pack.pixels.len(), "{region}: pool does not close exactly");
+
+            for tex in &pack.textures {
+                records_n += 1;
+                *tags.entry(tex.compression).or_default() += 1;
+                if tex.name_is_whole() {
+                    whole += 1;
+                }
+                // Both statements of the top mip's size agree, so `top_mip` cannot refuse one.
+                let image = pack.image(tex).expect("image in the pool");
+                assert!(image.len() >= tex.top_mip_size as usize, "top mip fits in the chain");
+
+                let out = pack.decode(tex).expect("every city texture decodes");
+                assert_eq!((out.width, out.height), (u32::from(tex.width), u32::from(tex.height)));
+                assert_eq!(out.rgba.len(), tex.rgba_bytes() as usize);
+                decoded += 1;
+            }
+        }
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(packs_n, 502, "texture packs in the city");
+        assert_eq!(records_n, 5_087, "textures the city declares");
+        assert_eq!(decoded, 5_087, "textures that decode");
+        // Three tags, all of them ones `texture::decode` already names. No DXT5 in the city.
+        assert_eq!(
+            tags.into_iter().collect::<Vec<_>>(),
+            vec![(0x08, 91), (0x22, 4_464), (0x24, 532)],
+            "the stated pixel formats"
+        );
+        assert_eq!(whole, 4_635, "names that survived the 23-character field");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}
+
+/// The smallest pack, stated record by record — the one place the whole layout is written out.
+#[test]
+fn l4rh_texture_pack_reads_field_for_field() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping L4RH pack golden");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/STREAML4RH.BUN")) else {
+        eprintln!("no STREAML4RH in this install — skipping");
+        return;
+    };
+    let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+    assert_eq!(packs.len(), 1, "L4RH carries one pack");
+    let pack = &packs[0];
+    assert_eq!(pack.textures.len(), 4);
+
+    // name, format tag, width, height — and the P8 one is first, ahead of three DXT1.
+    let got: Vec<(&str, u8, u16, u16)> = pack
+        .textures
+        .iter()
+        .map(|t| (t.name.as_str(), t.compression, t.width, t.height))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("RDP_PARKING_NL_AA_KT", 0x08, 64, 64),
+            ("TRN_GRASSC", 0x22, 256, 256),
+            ("OBJ_BLKPLAS", 0x22, 128, 128),
+            ("OBJ_PYLON", 0x22, 64, 128),
+        ],
+        "the four records, in file order"
+    );
+    // Not every city texture is square — the assumption a size-inferring reader has to make.
+    assert_ne!(pack.textures[3].width, pack.textures[3].height);
+
+    // The palettised record has a palette and the others do not, whatever `+0x34` says on them.
+    assert!(pack.palette(&pack.textures[0]).unwrap().is_some());
+    for t in &pack.textures[1..] {
+        assert_eq!(pack.palette(t).unwrap(), None, "{}: no palette", t.name);
+        assert_eq!(t.palette_offset, 0x400, "{}: stale offset is still stored", t.name);
+    }
+
+    // Lookup by the key a mesh's `0x00134012` slot names, not by the name.
+    let key = pack.textures[1].key;
+    assert_eq!(pack.get(key).map(|t| t.name.as_str()), Some("TRN_GRASSC"));
+}
