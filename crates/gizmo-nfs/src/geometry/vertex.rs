@@ -71,7 +71,7 @@ pub fn standard_vertex_layout(vert_count: usize, vbuf_len: usize) -> bool {
 /// here would be a claim this file cannot support. Callers that need them derive them from the
 /// triangles, where the winding is.
 #[allow(clippy::type_complexity)]
-pub(super) fn parse_vertices_with(
+pub(crate) fn parse_vertices_with(
     vbuf: &[u8],
     count: usize,
     layout: Layout,
@@ -151,7 +151,7 @@ fn parse_packed(
 /// A vertex no triangle references — and a degenerate triangle, whose cross product is zero —
 /// leaves `+Y`. A zero normal is worse than a wrong one: it makes the surface unlit rather than
 /// lit oddly, and it propagates as `NaN` through any normalisation downstream.
-pub(super) fn normals_from_triangles(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+pub(crate) fn normals_from_triangles(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut out = vec![[0.0f32; 3]; positions.len()];
     for tri in indices.chunks_exact(3) {
         let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);

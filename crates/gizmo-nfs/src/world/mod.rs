@@ -26,8 +26,10 @@
 
 pub mod header;
 pub mod manifest;
+pub mod object;
 pub mod tpk;
 
 pub use header::{read_header, WorldSolidHeader};
 pub use manifest::{manifest, WorldObjectInfo};
+pub use object::{meshes, WorldMesh};
 pub use tpk::{packs, records, TrackPack, TrackTexture};

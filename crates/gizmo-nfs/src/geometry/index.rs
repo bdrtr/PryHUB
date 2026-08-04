@@ -9,7 +9,7 @@ use crate::error::{NfsError, NfsResult};
 /// of trailing pad bytes, and a tail read would swallow the first real index and pull in the
 /// trailing pad — shifting every triangle by one vertex and shredding the mesh into shards. Every
 /// index is validated against the vertex count.
-pub(super) fn parse_indices(ibuf: &[u8], tri_count: usize, vert_count: usize) -> NfsResult<Vec<u32>> {
+pub(crate) fn parse_indices(ibuf: &[u8], tri_count: usize, vert_count: usize) -> NfsResult<Vec<u32>> {
     let index_count = tri_count
         .checked_mul(3)
         .ok_or(NfsError::BufferSizeMismatch { detail: "triangle count overflow" })?;

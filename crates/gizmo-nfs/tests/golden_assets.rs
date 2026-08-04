@@ -2118,3 +2118,116 @@ fn the_shared_track_pack_is_the_car_variant() {
         assert!(keys.contains(&skydome), "{skydome:#010X}: the skydome key is here");
     }
 }
+
+/// The city's geometry, read region by region and checked against its own manifest.
+///
+/// The manifest reads counters and the mesh reader reads buffers, so making the two agree is the
+/// test: every object must come back, in the same order, with exactly the vertices and triangles
+/// the mesh header declared. A stride that was inferred rather than checked, or a filler that was
+/// not skipped, breaks that agreement instead of producing a plausible mesh.
+///
+/// The two smallest regions are read in full. The four big ones are not: `STREAML4RD` alone is
+/// 1.37 M vertices, and expanding all eight at once is several hundred megabytes for no more proof.
+#[test]
+fn city_geometry_agrees_with_its_own_manifest() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city geometry goldens");
+        return;
+    };
+    // region, objects, vertices, triangles — the same numbers the manifest golden pins.
+    const REGIONS: &[(&str, usize, usize, usize)] = &[
+        ("STREAML4RH", 175, 20_610, 10_832),
+        ("STREAML4RR", 482, 65_870, 30_288),
+        ("STREAML4RC", 772, 143_054, 104_958),
+    ];
+
+    for &(region, objects, vertices, triangles) in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        let info = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let meshes = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+
+        assert_eq!(meshes.len(), objects, "{region}: objects");
+        assert_eq!(meshes.len(), info.len(), "{region}: mesh and manifest disagree on the count");
+
+        let mut n_verts = 0usize;
+        let mut n_tris = 0usize;
+        for (m, i) in meshes.iter().zip(&info) {
+            assert_eq!(m.header, i.header, "{region}: the two readers disagree on an object");
+            // Every declared vertex was read, at the 24-byte stride, with its filler skipped.
+            assert_eq!(
+                m.positions.len(),
+                i.vertices as usize,
+                "{region}/{}: vertices read vs declared",
+                m.header.name
+            );
+            assert_eq!(m.triangles(), i.triangles as usize, "{region}/{}", m.header.name);
+            // Every parallel array is the same length — a short one would texture or light wrong.
+            assert_eq!(m.normals.len(), m.positions.len(), "{region}: normals");
+            assert_eq!(m.colours.len(), m.positions.len(), "{region}: colours");
+            assert_eq!(m.uvs.len(), m.positions.len(), "{region}: uvs");
+            // Indices address the vertices they belong to.
+            assert!(
+                m.indices.iter().all(|&x| (x as usize) < m.positions.len().max(1)),
+                "{region}/{}: an index past the end of its own buffer",
+                m.header.name
+            );
+            // Every run lies inside the index buffer it splits.
+            for g in &m.groups {
+                assert!(
+                    g.index_offset + g.index_count <= m.indices.len(),
+                    "{region}/{}: a material run past the index buffer",
+                    m.header.name
+                );
+                // The city ships no shaders, so none is ever claimed.
+                assert_eq!(g.shader.0, 0, "{region}: a shader hash the city does not have");
+            }
+            n_verts += m.positions.len();
+            n_tris += m.triangles();
+        }
+        assert_eq!(n_verts, vertices, "{region}: vertices");
+        assert_eq!(n_tris, triangles, "{region}: triangles");
+    }
+}
+
+/// The city's vertices are where the city is, which is what says the stride was read right.
+///
+/// A wrong stride still yields floats. What it does not yield is a coherent world: read at 36 the
+/// positions scatter across `1e38`, and read at 24 they sit inside a bounded box a city fits in.
+/// `STREAML4RH` is the arena region, so its span is small and stated exactly.
+#[test]
+fn city_positions_land_inside_the_world() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city bounds golden");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/STREAML4RH.BUN")) else {
+        eprintln!("no STREAML4RH in this install — skipping");
+        return;
+    };
+    let meshes = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for m in &meshes {
+        for p in &m.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+    }
+    for a in 0..3 {
+        assert!(lo[a].is_finite() && hi[a].is_finite(), "axis {a}: not finite");
+        assert!(
+            lo[a] > -20_000.0 && hi[a] < 20_000.0,
+            "axis {a} spans {}..{} — a city does not, so the stride is wrong",
+            lo[a],
+            hi[a]
+        );
+    }
+    // Z is up in this file's frame, and a region is far flatter than it is wide.
+    let (wide, tall) = ((hi[0] - lo[0]).max(hi[1] - lo[1]), hi[2] - lo[2]);
+    assert!(tall < wide, "the Z span ({tall}) is not the short axis ({wide}) — axes swapped?");
+}

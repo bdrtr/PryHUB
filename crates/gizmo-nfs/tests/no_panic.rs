@@ -256,3 +256,22 @@ proptest! {
         let _ = gizmo_nfs::world::manifest(&bundle_with(0x8013_4010, &solid));
     }
 }
+
+proptest! {
+    #[test]
+    fn world_meshes_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _ = gizmo_nfs::world::meshes(&data);
+    }
+
+    #[test]
+    fn world_packs_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _ = gizmo_nfs::world::packs(&data);
+    }
+
+    /// The record table is the one place a file-supplied count meets an allocation, so it is
+    /// handed lengths a real pack would never have.
+    #[test]
+    fn world_tpk_records_never_panics(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+        let _ = gizmo_nfs::world::records(&data);
+    }
+}

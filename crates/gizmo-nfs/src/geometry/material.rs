@@ -29,7 +29,7 @@ pub(crate) fn ordered_hashes(data: &[u8]) -> Vec<AssetHash> {
 /// `matidx` into `ordered` (the solid's `0x00134012` hash list). The entries are the trailing
 /// `n * 60` bytes; leading bytes are `0x11` alignment filler. Runs whose slice falls outside
 /// the index buffer are skipped rather than trusted (panic-free against untrusted input).
-pub(super) fn material_ranges(
+pub(crate) fn material_ranges(
     data: &[u8],
     ordered: &[AssetHash],
     shaders: &[AssetHash],

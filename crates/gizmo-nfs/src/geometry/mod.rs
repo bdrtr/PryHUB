@@ -28,11 +28,11 @@
 
 pub mod format;
 pub mod write;
-mod index;
+pub(crate) mod index;
 pub(crate) mod material;
 mod name;
 mod solid;
-mod vertex;
+pub(crate) mod vertex;
 
 pub use format::VERTEX_STRIDE;
 pub use name::{part_name, read_matrix};
