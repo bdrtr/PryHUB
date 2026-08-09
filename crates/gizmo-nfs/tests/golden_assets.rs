@@ -2231,3 +2231,79 @@ fn city_positions_land_inside_the_world() {
     let (wide, tall) = ((hi[0] - lo[0]).max(hi[1] - lo[1]), hi[2] - lo[2]);
     assert!(tall < wide, "the Z span ({tall}) is not the short axis ({wide}) — axes swapped?");
 }
+
+/// **The city reads whole:** every solid decodes to exactly the geometry its own header declares.
+///
+/// This is the check that did not exist, and its absence is measured rather than supposed. 234 of
+/// the install's 28,985 city solids use the standard 36-byte vertex record while `world::object`
+/// demanded exactly 24, so every one of them came back with empty arrays — and an empty object is
+/// skipped without comment by everything downstream, so the city lost its road signs, median poles
+/// and chevrons and no number anywhere moved. Reintroducing that bug makes this test fail with 234
+/// named solids; it was tried, to be sure the test can fail at all.
+///
+/// It leans on the promise `world::meshes` makes in its own doc — an unreadable solid is returned
+/// with empty arrays *rather than dropped* — so the comparison is a zip. That promise is asserted
+/// first, because a zip over lists that have drifted compares unrelated solids and finds nothing.
+#[test]
+fn the_city_decodes_to_what_it_declares() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city read-whole test");
+        return;
+    };
+    let tracks = root.join("TRACKS");
+    let mut bundles: Vec<PathBuf> = std::fs::read_dir(&tracks)
+        .expect("read TRACKS")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("STREAM") && n.ends_with(".BUN"))
+        })
+        .collect();
+    bundles.sort();
+    assert!(!bundles.is_empty(), "no STREAM*.BUN under {}", tracks.display());
+
+    let (mut solids, mut declared_v, mut decoded_v) = (0usize, 0u64, 0u64);
+    for bundle in &bundles {
+        let bytes = std::fs::read(bundle).expect("read bundle");
+        let name = bundle.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+
+        let declared = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let decoded = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+        assert_eq!(
+            declared.len(),
+            decoded.len(),
+            "{name}: manifest and reader disagree on how many solids there are, \
+             so the one-to-one alignment they both promise is gone"
+        );
+
+        for (info, mesh) in declared.iter().zip(&decoded) {
+            assert_eq!(
+                mesh.positions.len(),
+                info.vertices as usize,
+                "{name}: {} declares {} vertices and decoded {}",
+                info.header.name,
+                info.vertices,
+                mesh.positions.len()
+            );
+            assert_eq!(
+                mesh.triangles(),
+                info.triangles as usize,
+                "{name}: {} declares {} triangles and decoded {}",
+                info.header.name,
+                info.triangles,
+                mesh.triangles()
+            );
+        }
+        solids += declared.len();
+        declared_v += declared.iter().map(|o| u64::from(o.vertices)).sum::<u64>();
+        decoded_v += decoded.iter().map(|m| m.positions.len() as u64).sum::<u64>();
+    }
+
+    // A floor on the totals as well as the per-solid equality: an install that somehow declared
+    // nothing would satisfy every assertion above and mean the test read no city at all.
+    assert_eq!(declared_v, decoded_v, "city-wide vertex totals disagree");
+    assert!(solids > 20_000, "only {solids} city solids — this install is not whole");
+    assert!(declared_v > 3_000_000, "only {declared_v} city vertices — this install is not whole");
+}

@@ -79,7 +79,7 @@ pub fn run(path: &Path, csv: bool) -> Result<()> {
 }
 
 /// One bundle, or every `STREAM*.BUN` in a directory, in name order.
-fn collect(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+pub(super) fn collect(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }

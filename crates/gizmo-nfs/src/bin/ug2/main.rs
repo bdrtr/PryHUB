@@ -41,6 +41,7 @@ mod profile;
 mod replace;
 mod textures;
 mod tune;
+mod verify;
 mod world;
 
 use clap::{Parser, Subcommand};
@@ -277,6 +278,17 @@ enum Command {
         #[arg(long)]
         csv: bool,
     },
+    /// Decode every solid of a city bundle and check it against what the file declares.
+    ///
+    /// `world` reads the headers and stops; this one also reads the buffers, so it can answer the
+    /// question that matters — did anything go missing on the way in. Exits non-zero if it did.
+    Verify {
+        /// A `STREAM*.BUN`, or the `TRACKS` directory to do all of them.
+        path: PathBuf,
+        /// How many offending solids to name before summarising.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        list: usize,
+    },
     /// Compare two asset files chunk by chunk.
     Diff {
         /// The file to read as the "before".
@@ -374,6 +386,7 @@ fn main() -> ExitCode {
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::World { path, csv } => world::run(&path, csv),
+        Command::Verify { path, list } => verify::run(&path, list),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
             export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)
