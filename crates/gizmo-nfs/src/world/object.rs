@@ -8,15 +8,27 @@
 //! [`crate::geometry`]'s readers do the work unchanged: the vertex record, the `u16` triangle list,
 //! and the 60-byte run table. What this module adds is the three places the city is not a car.
 //!
-//! **The stride is 24 and is checked, not chosen.** [`crate::geometry::layout_for`] picks between
-//! the two layouts by asking which fits, trying 36 first because "a buffer big enough for 36 is not
-//! evidence of 24". That is the right rule for a car and the wrong one to lean on here: every city
-//! buffer is exactly `vertices × 24` after its filler, in every solid of every region, so this asks
-//! for that and reports a buffer that is not rather than quietly reading it as something else.
+//! **The stride is matched exactly, not inferred.** [`crate::geometry::layout_for`] picks between
+//! the two layouts by asking which *fits*, trying 36 first because "a buffer big enough for 36 is
+//! not evidence of 24". That is the right rule for a car and the wrong one to lean on here, where
+//! a buffer's size is known to the byte — so [`world_layout`] demands exact equality with one
+//! stride or the other and reports anything else rather than quietly reading it as something.
 //!
-//! **There are no normals in the file.** The 24-byte record has position, colour and uv and stops;
-//! `parse_packed` returns zeroed normals rather than inventing any. They are derived here from the
-//! triangles, where the winding is — the same thing the car path does for its packed solids.
+//! This module used to say something stronger and wrong: that *every* city buffer is exactly
+//! `vertices × 24`, "in every solid of every region". Measured over all eight `STREAM*.BUN`, every
+//! solid that declares vertices is at exactly one of two sizes — **28,672 at 24 B and 234 at 36 B**,
+//! with no third size anywhere. The 234 are `XS_*`/`XO_*` street furniture: road signs, median
+//! poles, chevrons, airport taxi signs. Demanding 24 returned an empty object for every one of
+//! them, and because an empty object is skipped without comment by everything downstream, the
+//! signs simply were not in the world. (The old claim was checked against L4RH, L4RR and L4RC —
+//! three of the four bundles that contain no 36-byte solid at all, so the evidence could not have
+//! contradicted it. The 234 live in L4RA, L4RD, L4RF and L4RB.)
+//!
+//! **Normals are in the file only for the wider record.** The 24-byte record has position, colour
+//! and uv and stops; `parse_packed` returns zeroed normals rather than inventing any, and they are
+//! derived here from the triangles, where the winding is — the same thing the car path does for its
+//! packed solids. The 36-byte record carries real normals, and those are used as they are, because
+//! a normal that was authored beats one re-derived from a triangle soup.
 //!
 //! **There is no shader.** A run's `+0x20` word is the `0x00134013` index, and `0x00134013` exists
 //! on 3,440 of the city's 28,985 solids; 62,270 of 70,548 runs carry a `0xFF` sentinel instead. So
@@ -27,6 +39,7 @@ use crate::chunk::{walk_positions, Visit, WalkOptions};
 use crate::error::{NfsError, NfsResult};
 use crate::geometry::format::{
     INDEX_BUFFER, MATERIAL_LIST, MATERIAL_RANGES, MESH_HEADER, SOLID_HEADER, VERTEX_BUFFER,
+    VERTEX_STRIDE,
 };
 use crate::geometry::index::parse_indices;
 use crate::geometry::material::{material_ranges, ordered_hashes};
@@ -46,7 +59,8 @@ pub struct WorldMesh {
     /// Positions, in the file's own frame (Z-up) and, for a road or terrain chunk, already in
     /// world space — see [`WorldSolidHeader::is_placed`].
     pub positions: Vec<[f32; 3]>,
-    /// Derived from the triangles, because the record carries none.
+    /// The file's own for a solid at the 36-byte stride; derived from the triangle winding for one
+    /// at the 24-byte stride, whose record carries none. See [`world_layout`].
     pub normals: Vec<[f32; 3]>,
     /// Per-vertex RGBA8. For the city this is the baked lighting: a static world stores its light
     /// here rather than recomputing it, which is why the scenery needs no normal to look right.
@@ -180,21 +194,21 @@ fn build(
         return empty();
     }
 
-    // The stride is asked for rather than inferred: `layout_for` would try 36 first, and the point
-    // of this module is that the city says 24 and every buffer in it agrees.
     let body = skip_leading_filler(vbuf);
-    let Some(needed) = verts.checked_mul(PACKED_VERTEX_STRIDE) else { return empty() };
-    if body.len() != needed {
-        return empty();
-    }
+    let Ok(layout) = world_layout(verts, vbuf) else { return empty() };
 
-    let Ok((positions, _, colours, uvs)) = parse_vertices_with(body, verts, Layout::Packed) else {
+    let Ok((positions, file_normals, colours, uvs)) = parse_vertices_with(body, verts, layout)
+    else {
         return empty();
     };
     let Ok(indices) = parse_indices(skip_leading_filler(ibuf), tris, verts) else {
         return empty();
     };
-    let normals = normals_from_triangles(&positions, &indices);
+    // Only the packed record has no normal to read, and then the winding supplies one.
+    let normals = match layout {
+        Layout::Standard => file_normals,
+        Layout::Packed => normals_from_triangles(&positions, &indices),
+    };
     // No shaders in the city, so nothing is handed one: `material_ranges` dereferences the shader
     // list by index and an empty list gives every run `AssetHash(0)`, which is the honest answer.
     let groups = material_ranges(skip_leading_filler(runs), slots, &[], indices.len());
@@ -211,11 +225,40 @@ fn build(
     }
 }
 
+/// Which vertex layout a city solid's buffer is, by exact size.
+///
+/// This is the check that decides whether [`meshes`] can read a solid: anything it rejects comes
+/// back as an object with empty arrays. It asks for **exact** equality with one stride or the
+/// other rather than using [`crate::geometry::layout_for`], which asks which layout a buffer is
+/// merely large enough for — on a 24-byte buffer carrying trailing slack that would answer 36 and
+/// read the wrong record.
+///
+/// Both layouts are real here. Across all eight `STREAM*.BUN`, 28,672 solids are `vertices × 24`
+/// and 234 are `vertices × 36`; nothing is anything else.
+///
+/// # Errors
+///
+/// [`NfsError::BufferSizeMismatch`] if the buffer is neither stride at the declared count, or if
+/// the count times a stride overflows.
+pub fn world_layout(vertices: usize, vbuf: &[u8]) -> NfsResult<Layout> {
+    let body = skip_leading_filler(vbuf);
+    let fits = |stride: usize| vertices.checked_mul(stride).is_some_and(|n| n == body.len());
+    if fits(PACKED_VERTEX_STRIDE) {
+        Ok(Layout::Packed)
+    } else if fits(VERTEX_STRIDE) {
+        Ok(Layout::Standard)
+    } else {
+        Err(NfsError::BufferSizeMismatch {
+            detail: "world vertex buffer is not the declared count at either the 24- or 36-byte stride",
+        })
+    }
+}
+
 /// Whether a solid's vertex buffer is the city's 24-byte layout at the declared count.
 ///
-/// Exposed because it is the check a caller wants before deciding a bundle is readable at all:
-/// `true` for every solid of every region measured, and a `false` is the one thing that would make
-/// [`meshes`] return an object with empty arrays.
+/// The narrow question, kept because "is this the packed record" is worth being able to ask on its
+/// own. It is **not** the readability check — a solid at the 36-byte stride is perfectly readable
+/// and this returns an error for it. Use [`world_layout`] for that.
 ///
 /// # Errors
 ///
@@ -320,6 +363,45 @@ mod tests {
         chunk(0x8013_4010, &inner)
     }
 
+    /// The same three vertices at the 36-byte record: pos, normal, BGRA, uv.
+    ///
+    /// The normals are `+Y`, which the winding of this triangle could never produce — it lies in
+    /// the XY plane, so a derived normal is `±Z`. That is what lets a test tell "read from the
+    /// file" apart from "re-derived".
+    fn vbuf_wide(filler: usize) -> Vec<u8> {
+        /// One wide vertex as a test writes it: position, normal, BGRA, uv.
+        type WideVertex = ([f32; 3], [f32; 3], [u8; 4], [f32; 2]);
+
+        let mut v = vec![0x11u8; filler];
+        let verts: [WideVertex; 3] = [
+            ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [10, 20, 30, 255], [0.0, 0.0]),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [11, 21, 31, 255], [1.0, 0.0]),
+            ([0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [12, 22, 32, 255], [0.0, 1.0]),
+        ];
+        for (p, n, c, uv) in verts {
+            for f in p.into_iter().chain(n) {
+                v.extend_from_slice(&f.to_le_bytes());
+            }
+            v.extend_from_slice(&c); // stored B,G,R,A
+            for f in uv {
+                v.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        v
+    }
+
+    /// A solid whose vertex buffer is the wide record — the `XS_*`/`XO_*` street-furniture shape.
+    fn solid_wide(name: &str, filler: usize, keys: &[u32]) -> Vec<u8> {
+        let mut inner = chunk(SOLID_HEADER, &solid_header(name));
+        inner.extend_from_slice(&chunk(MATERIAL_LIST, &slots(keys)));
+        let mut geom = chunk(MESH_HEADER, &mesh_header(1, 3));
+        geom.extend_from_slice(&chunk(VERTEX_BUFFER, &vbuf_wide(filler)));
+        geom.extend_from_slice(&chunk(MATERIAL_RANGES, &runs(3, 0)));
+        geom.extend_from_slice(&chunk(INDEX_BUFFER, &ibuf()));
+        inner.extend_from_slice(&chunk(0x8013_4100, &geom));
+        chunk(0x8013_4010, &inner)
+    }
+
     #[test]
     fn a_city_solid_reads_at_the_packed_stride_whatever_its_filler() {
         for filler in [0usize, 4, 8, 12] {
@@ -372,6 +454,46 @@ mod tests {
         assert!(check_packed_stride(4, &vbuf(8)).is_err(), "too few bytes for four vertices");
         assert!(check_packed_stride(2, &vbuf(8)).is_err(), "slack is not silently ignored");
         assert!(check_packed_stride(usize::MAX, &vbuf(0)).is_err(), "overflow is caught");
+    }
+
+    /// The city ships **both** records. 234 of its 28,985 solids are the 36-byte one — the
+    /// `XS_*`/`XO_*` signs, poles and chevrons — and demanding 24 returned an empty object for
+    /// every one of them, which everything downstream then skipped without a word.
+    #[test]
+    fn a_city_solid_at_the_wide_stride_is_read_rather_than_refused() {
+        for filler in [0usize, 4, 8, 12] {
+            let bundle = chunk(0x8013_4000, &solid_wide("XS_WARNWINDINGNP_1A_00", filler, &[3]));
+            let m = meshes(&bundle).unwrap();
+            assert_eq!(m.len(), 1, "{filler}: one object");
+            let mesh = &m[0];
+            assert_eq!(mesh.positions.len(), 3, "{filler}: the wide record is read, not refused");
+            assert_eq!(mesh.triangles(), 1, "{filler}: triangles");
+            assert_eq!(mesh.positions[1], [1.0, 0.0, 0.0], "{filler}: position");
+            assert_eq!(mesh.uvs[2], [0.0, 1.0], "{filler}: uv");
+            assert_eq!(mesh.colours[0], [30, 20, 10, 255], "{filler}: colour order");
+        }
+    }
+
+    /// And the wide record's normals are the file's, not re-derived: the triangle lies in the XY
+    /// plane, so anything derived from its winding is ±Z, and the file says +Y.
+    #[test]
+    fn the_wide_record_keeps_the_normals_the_file_carries() {
+        let bundle = chunk(0x8013_4000, &solid_wide("XO_SIGN", 8, &[1]));
+        let m = meshes(&bundle).unwrap();
+        assert_eq!(m[0].normals, vec![[0.0, 1.0, 0.0]; 3], "the file's normals, not the winding's");
+    }
+
+    #[test]
+    fn world_layout_names_both_strides_and_refuses_anything_else() {
+        // `vbuf` is three 24-byte vertices: 72 bytes once its filler is skipped.
+        assert_eq!(world_layout(3, &vbuf(8)).unwrap(), Layout::Packed);
+        assert_eq!(world_layout(3, &vbuf_wide(8)).unwrap(), Layout::Standard);
+        assert!(world_layout(4, &vbuf(8)).is_err(), "72 bytes is neither 4×24 nor 4×36");
+        assert!(world_layout(1, &vbuf(8)).is_err(), "slack is not silently ignored");
+        // 72 bytes is 3 × 24 **and** 2 × 36, so the declared count is the only thing separating
+        // them — which is why this matches exactly instead of asking which layout merely fits.
+        assert_eq!(world_layout(2, &vbuf(8)).unwrap(), Layout::Standard);
+        assert!(world_layout(usize::MAX, &vbuf(0)).is_err(), "overflow is caught");
     }
 
     /// An object whose geometry does not hold together still comes back, so the result lines up

@@ -51,7 +51,11 @@ pub fn run(path: &Path, csv: bool) -> Result<()> {
     if !csv && bundles.len() > 1 {
         outln!();
         outln!("── all {} bundles ──", bundles.len());
-        outln!("  objects            {:>12}", total.objects);
+        outln!(
+            "  objects            {:>12}{}",
+            total.objects,
+            count_note(total.no_mesh, "without a mesh")
+        );
         outln!("  vertices           {:>12}", total.vertices);
         outln!("  triangles          {:>12}", total.triangles);
         outln!(
@@ -64,7 +68,11 @@ pub fn run(path: &Path, csv: bool) -> Result<()> {
             ENGINE_VERTEX_STRIDE as f64 / PACKED_VERTEX_STRIDE as f64
         );
         outln!("  placed / identity  {:>12} / {}", total.placed, total.identity);
-        outln!("  duplicate keys     {:>12}", total.duplicate_keys);
+        // Summed per bundle, not recomputed over the union: a solid shipped by two regions is a
+        // duplicate no line here counts. Saying so beats a reader taking this for a city-wide
+        // figure — a consumer that dedups across all eight bundles at once drops far more than
+        // this, and the difference is not a bug in either.
+        outln!("  duplicate keys     {:>12}   (summed per bundle)", total.duplicate_keys);
         outln!("  truncated names    {:>12}", total.truncated);
     }
     Ok(())
@@ -92,6 +100,9 @@ fn collect(path: &Path) -> Result<Vec<std::path::PathBuf>> {
 #[derive(Default)]
 struct Totals {
     objects: usize,
+    /// Solids that declared no vertices. Carried into the totals for the same reason it is on the
+    /// per-bundle line: it is the one figure that says how much of a region did not become geometry.
+    no_mesh: usize,
     vertices: u64,
     triangles: u64,
     identity: usize,
@@ -103,6 +114,7 @@ struct Totals {
 impl Totals {
     fn add(&mut self, s: &Stats) {
         self.objects += s.objects;
+        self.no_mesh += s.no_mesh;
         self.vertices += s.vertices;
         self.triangles += s.triangles;
         self.identity += s.identity;
@@ -130,7 +142,13 @@ impl Stats {
         let mut filler: BTreeMap<usize, usize> = BTreeMap::new();
         // The dedup key is deliberately coarse-but-exact: an instanced prop at a different place
         // has a different matrix and survives, while a genuinely duplicated mesh does not.
-        let mut seen: BTreeMap<(u32, u32, u32, [u32; 6]), usize> = BTreeMap::new();
+        //
+        // The matrix has to be *in* the key for that sentence to be true, and it was not. The box
+        // does not stand in for it: `bbox_min`/`bbox_max` are in the solid's own frame, and a
+        // placed solid — 16,071 of the city's 28,985 — has a local box and a matrix that puts it
+        // somewhere. Two copies of one prop on two corners were counted as a duplicate.
+        type Key = (u32, u32, u32, [u32; 6], [[u32; 4]; 4]);
+        let mut seen: BTreeMap<Key, usize> = BTreeMap::new();
         let (mut identity, mut placed, mut neg, mut truncated, mut no_mesh) = (0, 0, 0, 0, 0);
         let (mut vertices, mut triangles) = (0u64, 0u64);
 
@@ -156,7 +174,8 @@ impl Stats {
             for (i, v) in o.header.bbox_min.iter().chain(&o.header.bbox_max).enumerate() {
                 bbox[i] = v.to_bits();
             }
-            *seen.entry((o.header.hash.0, o.vertices, o.triangles, bbox)).or_default() += 1;
+            let matrix = o.header.matrix.map(|row| row.map(f32::to_bits));
+            *seen.entry((o.header.hash.0, o.vertices, o.triangles, bbox, matrix)).or_default() += 1;
         }
         let duplicate_keys = seen.values().filter(|&&n| n > 1).map(|n| n - 1).sum();
 
@@ -184,7 +203,11 @@ impl Stats {
 
     fn print(&self, name: &str) {
         outln!("── {name} ──");
-        outln!("  objects            {:>12}{}", self.objects, note(self.no_mesh, "without a mesh"));
+        outln!(
+            "  objects            {:>12}{}",
+            self.objects,
+            count_note(self.no_mesh, "without a mesh")
+        );
         outln!("  vertices           {:>12}", self.vertices);
         outln!("  triangles          {:>12}", self.triangles);
         outln!(
@@ -202,16 +225,37 @@ impl Stats {
         );
         outln!("  negative det       {:>12}{}", self.negative_det, note(self.negative_det, "mirrored"));
         outln!("  truncated names    {:>12}{}", self.truncated, note(self.truncated, "name_is_whole() false"));
-        outln!("  duplicate keys     {:>12}{}", self.duplicate_keys, note(self.duplicate_keys, "same hash+counts+bbox"));
+        outln!(
+            "  duplicate keys     {:>12}{}",
+            self.duplicate_keys,
+            note(self.duplicate_keys, "same hash+counts+bbox+matrix")
+        );
         outln!();
     }
 }
 
+/// A trailing `(label)` when `n` is non-zero, for a statistic whose count already has its own
+/// column — `n` is only the test for whether the label is worth printing.
 fn note(n: usize, what: &str) -> String {
     if n == 0 {
         String::new()
     } else {
         format!("   ({what})")
+    }
+}
+
+/// A trailing `(n label)` when `n` is non-zero, for a statistic that has **no** column of its own.
+///
+/// `no_mesh` is the only one: it shares the `objects` line, whose `{:>12}` slot is taken by the
+/// object count. It used to be printed with [`note`], which takes `n` only to compare it against
+/// zero — so a bundle could say it had meshless solids but never how many, and the one number that
+/// says how much of a region this reader could not turn into geometry was unreportable. Ask for a
+/// count and the count travels with the label.
+fn count_note(n: usize, what: &str) -> String {
+    if n == 0 {
+        String::new()
+    } else {
+        format!("   ({n} {what})")
     }
 }
 
