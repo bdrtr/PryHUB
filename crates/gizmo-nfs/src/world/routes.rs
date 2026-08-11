@@ -255,6 +255,177 @@ pub fn check(nodes: &[RouteNode]) -> NodeCheck {
     c
 }
 
+/// The polygon-region leaf, `0x0003414A` — the largest one a route file carries.
+pub const REGION_CHUNK: u32 = 0x0003_414A;
+
+/// Fixed part of a region record: everything before its points.
+pub const REGION_HEAD: usize = 68;
+
+/// One polygonal region of a route: a place, a facing, and the ground it covers.
+///
+/// **What these are is not settled and the names here say only what was measured.** They are large
+/// — median area 8,073 m² — they lie on the road (198 of 200 sampled centres stand on drivable
+/// surface, and 97 % of their edges have road on both sides), and each carries a direction. That
+/// combination is what an "are you on the course, and facing the right way" test needs, and this
+/// install ships no barrier chunk, so it is the standing candidate for one. It is not proof.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RouteRegion {
+    /// `+0`: a small code, 14 distinct values across the install's 42,698 records. Uninterpreted.
+    pub kind: u32,
+    /// `+4`: a position in the world's own frame. Inside the polygon in most records but not all,
+    /// so it is carried as its own thing rather than called a centre.
+    pub origin: [f32; 2],
+    /// `+12`: a **unit** direction — `|heading| = 1` in all 42,698, which is one of the four things
+    /// that pins this layout.
+    pub heading: [f32; 2],
+    /// `+32`: the polygon's own bounding box, `[min x, min y, max x, max y]`.
+    pub bounds: [f32; 4],
+    /// `+48`: a small id, 445 distinct values, zero in 12,830 records. **Not** an object name hash —
+    /// none of the 445 matches any of the city's 29,515. Uninterpreted.
+    pub id: u32,
+    /// `+68`: the polygon's corners, in file order. Mostly four of them (33,772 of 42,698).
+    pub points: Vec<[f32; 2]>,
+}
+
+impl RouteRegion {
+    /// Whether the record's own box agrees with its own points.
+    ///
+    /// True in all 42,698 records of the install, which is why it is worth asking: a reader that
+    /// has drifted by a field cannot keep that true.
+    #[must_use]
+    pub fn bounds_match(&self) -> bool {
+        let Some(first) = self.points.first() else { return true };
+        let (mut lo, mut hi) = (*first, *first);
+        for p in &self.points {
+            lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+            hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+        }
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        near(lo[0], self.bounds[0])
+            && near(lo[1], self.bounds[1])
+            && near(hi[0], self.bounds[2])
+            && near(hi[1], self.bounds[3])
+    }
+
+    /// Whether `heading` is the unit vector the format says it is.
+    #[must_use]
+    pub fn heading_is_unit(&self) -> bool {
+        let l = self.heading[0].hypot(self.heading[1]);
+        (l - 1.0).abs() < 0.005
+    }
+}
+
+/// Read one `0x0003414A` payload into regions.
+///
+/// The record is **self-describing**, which is what makes this a walk rather than a guess: `+64` is
+/// the corner count and `+66` is the record's own length in bytes, and `length == 68 + 8 × count`
+/// holds in all 42,698 records of the install. Walking by that length lands exactly on the end of
+/// the payload in **112 of 112** chunks.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if a record's stated length disagrees with its corner count, if it
+/// runs past the payload, or if the walk does not consume the payload exactly. All three are the
+/// file contradicting itself, and all three are things the install never does — so a reader that
+/// tolerated them would be hiding a drift rather than surviving one.
+pub fn read_regions(payload: &[u8]) -> NfsResult<Vec<RouteRegion>> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at + REGION_HEAD <= payload.len() {
+        let mut r = ByteReader::at(payload, at + 64)?;
+        let count = r.u16_le()? as usize;
+        let size = r.u16_le()? as usize;
+        if size != REGION_HEAD + 8 * count {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x0003414A record length disagrees with its own corner count",
+            });
+        }
+        if at + size > payload.len() {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x0003414A record runs past the end of its payload",
+            });
+        }
+
+        let mut h = ByteReader::at(payload, at)?;
+        let kind = h.u32_le()?;
+        let origin = [h.f32_le()?, h.f32_le()?];
+        let heading = [h.f32_le()?, h.f32_le()?];
+        let mut b = ByteReader::at(payload, at + 32)?;
+        let bounds = [b.f32_le()?, b.f32_le()?, b.f32_le()?, b.f32_le()?];
+        let id = b.u32_le()?;
+
+        let mut p = ByteReader::at(payload, at + REGION_HEAD)?;
+        let mut points = Vec::with_capacity(count);
+        for _ in 0..count {
+            points.push([p.f32_le()?, p.f32_le()?]);
+        }
+
+        out.push(RouteRegion { kind, origin, heading, bounds, id, points });
+        at += size;
+    }
+    if at != payload.len() {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x0003414A walk did not consume the payload exactly",
+        });
+    }
+    Ok(out)
+}
+
+/// Every region a route file declares, in file order.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`read_regions`]'s.
+pub fn regions(file: &[u8]) -> NfsResult<Vec<RouteRegion>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == REGION_CHUNK && !data.is_empty() {
+                match read_regions(data) {
+                    Ok(mut r) => out.append(&mut r),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// What a set of regions checks out as. Both fields are zero across the install.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RegionCheck {
+    pub regions: usize,
+    /// **Must be zero.** A box that does not equal its own points' extent.
+    pub bounds_wrong: usize,
+    /// **Must be zero.** A heading that is not a unit vector.
+    pub heading_not_unit: usize,
+}
+
+impl RegionCheck {
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.bounds_wrong == 0 && self.heading_not_unit == 0
+    }
+}
+
+/// Ask a set of regions whether they read as ones.
+#[must_use]
+pub fn check_regions(regions: &[RouteRegion]) -> RegionCheck {
+    RegionCheck {
+        regions: regions.len(),
+        bounds_wrong: regions.iter().filter(|r| !r.bounds_match()).count(),
+        heading_not_unit: regions.iter().filter(|r| !r.heading_is_unit()).count(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +554,91 @@ mod tests {
     }
 
     /// Eight of the install's route files carry no node table at all.
+    fn region(kind: u32, heading: [f32; 2], pts: &[[f32; 2]]) -> Vec<u8> {
+        let (mut lo, mut hi) = (pts[0], pts[0]);
+        for p in pts {
+            lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+            hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+        }
+        let mut v = Vec::new();
+        v.extend_from_slice(&kind.to_le_bytes());
+        v.extend_from_slice(&0f32.to_le_bytes());
+        v.extend_from_slice(&0f32.to_le_bytes());
+        v.extend_from_slice(&heading[0].to_le_bytes());
+        v.extend_from_slice(&heading[1].to_le_bytes());
+        v.extend_from_slice(&[0u8; 12]);
+        for c in [lo[0], lo[1], hi[0], hi[1]] {
+            v.extend_from_slice(&c.to_le_bytes());
+        }
+        v.extend_from_slice(&7u32.to_le_bytes()); // id
+        v.extend_from_slice(&[0u8; 12]);
+        v.extend_from_slice(&(pts.len() as u16).to_le_bytes());
+        v.extend_from_slice(&((REGION_HEAD + 8 * pts.len()) as u16).to_le_bytes());
+        for p in pts {
+            v.extend_from_slice(&p[0].to_le_bytes());
+            v.extend_from_slice(&p[1].to_le_bytes());
+        }
+        assert_eq!(v.len(), REGION_HEAD + 8 * pts.len());
+        v
+    }
+
+    const QUAD: [[f32; 2]; 4] = [[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [0.0, 6.0]];
+
+    /// The record is self-describing: `+64` counts corners and `+66` is the record's own length.
+    /// Reading either at the wrong offset is what a walk over 42,698 records cannot survive.
+    #[test]
+    fn a_region_reads_at_its_stated_offsets() {
+        let r = read_regions(&region(13, [0.6, 0.8], &QUAD)).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].kind, 13);
+        assert_eq!(r[0].id, 7);
+        assert_eq!(r[0].points, QUAD.to_vec());
+        assert_eq!(r[0].bounds, [0.0, 0.0, 10.0, 6.0]);
+        assert!(r[0].bounds_match() && r[0].heading_is_unit());
+    }
+
+    /// Records are variable length and walked by that length, so two of different sizes in one
+    /// payload is the case worth asserting.
+    #[test]
+    fn records_of_different_lengths_walk_one_after_the_other() {
+        let mut payload = region(13, [1.0, 0.0], &QUAD);
+        payload.extend(region(6, [0.0, -1.0], &[[0.0, 0.0], [4.0, 0.0], [2.0, 9.0]]));
+        let r = read_regions(&payload).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].points.len(), r[1].points.len()), (4, 3));
+        assert_eq!(r[1].kind, 6);
+        assert!(check_regions(&r).is_clean());
+    }
+
+    /// The length field and the count field have to agree, and a payload has to be consumed
+    /// exactly. Both are true of every chunk in the install, so tolerating either would hide a
+    /// drift rather than survive one.
+    #[test]
+    fn a_record_that_contradicts_itself_is_refused() {
+        let mut bad = region(13, [1.0, 0.0], &QUAD);
+        bad[66..68].copy_from_slice(&((REGION_HEAD + 8 * 5) as u16).to_le_bytes());
+        assert!(read_regions(&bad).is_err(), "length must equal 68 + 8 * corners");
+
+        let mut short = region(13, [1.0, 0.0], &QUAD);
+        short.truncate(short.len() - 8);
+        assert!(read_regions(&short).is_err(), "a record may not run past its payload");
+
+        let mut trailing = region(13, [1.0, 0.0], &QUAD);
+        trailing.extend_from_slice(&[0u8; 4]);
+        assert!(read_regions(&trailing).is_err(), "the walk must land on the end");
+    }
+
+    /// The two checks have to fail on data that fails them, or they are not checks.
+    #[test]
+    fn a_box_that_does_not_match_its_points_is_reported() {
+        let mut r = read_regions(&region(13, [1.0, 0.0], &QUAD)).unwrap();
+        r[0].bounds[2] = 99.0;
+        r[0].heading = [1.0, 1.0];
+        let c = check_regions(&r);
+        assert_eq!((c.bounds_wrong, c.heading_not_unit), (1, 1));
+        assert!(!c.is_clean());
+    }
+
     #[test]
     fn a_file_without_a_node_table_reads_as_empty() {
         let file = chunk(0x8003_4147, &chunk(0x0003_414D, &[0u8; 36]));

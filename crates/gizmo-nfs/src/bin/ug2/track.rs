@@ -5,13 +5,20 @@
 //! from the record's own internal consistency instead — which turns out to be a stronger test than
 //! it sounds, because three of the six fields are indices into the very table they sit in.
 //!
-//! Four things are asserted, and the install passes all four:
+//! Six things are asserted, and the install passes all six:
 //!
 //! - a `+12`/`+14`/`+16` that is neither `0xFFFF` nor a valid index into its own file's table — 0
 //!   of 54,192 index reads,
 //! - a `+18` that is not zero — 0 of 18,064,
 //! - a path value that occupies more than one contiguous run — 2,923 runs over 2,923 values,
-//! - a gap in the path numbering — dense `0..k` in all 105 tables.
+//! - a gap in the path numbering — dense `0..k` in all 105 tables,
+//! - a region whose stated box is not its own corners' extent — 0 of 42,698,
+//! - a region whose heading is not a unit vector — 0 of 42,698.
+//!
+//! The region records are self-describing, so reading them is a walk rather than a guess: `+64` is
+//! the corner count, `+66` the record's own byte length, and `length == 68 + 8 × count` holds
+//! everywhere. Walking by it lands exactly on the end of the payload in 112 of 112 chunks — which
+//! [`gizmo_nfs::world::routes::read_regions`] refuses to do otherwise.
 //!
 //! A misaligned or misread field does not survive that. The links would have to be small enough, in
 //! every one of eighteen thousand records, to pass for an index into a table as short as five
@@ -34,7 +41,9 @@
 //! Exits non-zero if any check fails, so it can be a step in a script rather than something to read.
 
 use crate::paths::Result;
-use gizmo_nfs::world::routes::{check, nodes, paths, NodeCheck, RouteNode};
+use gizmo_nfs::world::routes::{
+    check, check_regions, nodes, paths, regions, NodeCheck, RegionCheck, RouteNode,
+};
 use std::path::{Path, PathBuf};
 
 /// Every `Paths*.bin` under a path, whether it names one file, a `ROUTES*` directory or `TRACKS`.
@@ -68,6 +77,8 @@ struct Tally {
     files: usize,
     files_without_nodes: usize,
     check: NodeCheck,
+    region: RegionCheck,
+    corners: Vec<usize>,
     steps: Vec<f32>,
     ratios: Vec<f32>,
 }
@@ -120,6 +131,12 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
     for file in &files {
         let bytes = crate::paths::read(file)?;
         let n = nodes(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let r = regions(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let rc = check_regions(&r);
+        tally.region.regions += rc.regions;
+        tally.region.bounds_wrong += rc.bounds_wrong;
+        tally.region.heading_not_unit += rc.heading_not_unit;
+        tally.corners.extend(r.iter().map(|x| x.points.len()));
         let name = file.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         tally.files += 1;
         if n.is_empty() {
@@ -172,14 +189,27 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         percentile(&tally.ratios, 0.95)
     );
 
+    tally.corners.sort_unstable();
+    let rg = tally.region;
+    println!(
+        "regions: {} · {} with a box that is not their points' extent · {} with a heading that is \
+         not a unit vector · corners p05 {} median {} p95 {}",
+        rg.regions,
+        rg.bounds_wrong,
+        rg.heading_not_unit,
+        tally.corners.first().copied().unwrap_or(0),
+        tally.corners.get(tally.corners.len() / 2).copied().unwrap_or(0),
+        tally.corners.get(tally.corners.len() * 19 / 20).copied().unwrap_or(0)
+    );
+
     for line in &offenders {
         println!("{line}");
     }
 
-    if c.is_clean() {
+    if c.is_clean() && rg.is_clean() {
         println!(
-            "OK — every link is a node of its own table or absent, every +18 is zero, and every \
-             path is one contiguous run"
+            "OK — every link is a node of its own table or absent, every +18 is zero, every path \
+             is one contiguous run, and every region's box is its own points' extent"
         );
         Ok(())
     } else {
