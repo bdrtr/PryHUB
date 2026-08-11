@@ -140,9 +140,16 @@ pub fn place_world_point(header: &crate::world::WorldSolidHeader, p: [f32; 3]) -
 
 /// Build the OBJ text for a set of world solids, naming each run's material via `material_for`.
 ///
-/// **No frame conversion.** The city is authored Z-up and Blender is Z-up, so the honest export is
-/// the file's own coordinates — a renderer that wants Y-up converts on its own side, and a modeller
-/// opening this gets the city standing the way the game's own tools saw it.
+/// **`y_up` is about the reader, not the data.** The city is authored Z-up and so is Blender's
+/// world, which is why this first shipped writing the file's own coordinates and calling the matter
+/// closed. It is not: OBJ carries no axis convention, so every importer picks one, and the ones
+/// that matter default to **Y-up** — Blender's arrives set to `Forward -Z, Up Y` and quietly turns
+/// a Z-up model on its side. The file was right and the city stood up sideways anyway.
+///
+/// So both are offered and neither is hidden. `false` keeps the game's own frame, where a vertex in
+/// the viewport is the same number `ug2` prints and the notes quote — which is worth something in a
+/// tool whose whole job is locating things. `true` rotates `(x, y, z)` to `(x, z, -y)`, which is
+/// what an importer left on its defaults expects, and the model comes in upright.
 ///
 /// `material_for(mesh, run_index)` returns the `newmtl` name to reference; a solid with no runs is
 /// emitted as one run with index 0 so geometry is never dropped for want of a material.
@@ -150,10 +157,15 @@ pub fn place_world_point(header: &crate::world::WorldSolidHeader, p: [f32; 3]) -
 pub fn write_world_obj(
     meshes: &[crate::world::WorldMesh],
     mtl_file: &str,
+    y_up: bool,
     material_for: impl Fn(&crate::world::WorldMesh, usize) -> String,
 ) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "# exported by gizmo-nfs — NFSU2 world coordinates, Z-up as authored");
+    let _ = writeln!(
+        s,
+        "# exported by gizmo-nfs — NFSU2 world coordinates, {}",
+        if y_up { "rotated to Y-up for importers left on their defaults" } else { "Z-up as authored" }
+    );
     let _ = writeln!(s, "mtllib {mtl_file}");
     let mut base = 1usize;
     for m in meshes {
@@ -163,6 +175,7 @@ pub fn write_world_obj(
         let _ = writeln!(s, "\no {}", m.header.name);
         for v in &m.positions {
             let g = place_world_point(&m.header, *v);
+            let g = if y_up { [g[0], g[2], -g[1]] } else { g };
             let _ = writeln!(s, "v {:.5} {:.5} {:.5}", g[0], g[1], g[2]);
         }
         for uv in &m.uvs {

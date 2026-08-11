@@ -281,6 +281,10 @@ enum Command {
         /// Write the city as OBJ + MTL + PNG into this directory instead of reporting.
         #[arg(long, value_name = "DIR")]
         export: Option<PathBuf>,
+        /// Rotate the export to Y-up, which is what an OBJ importer left on its defaults expects.
+        /// Without it the file keeps the game's own Z-up coordinates and Blender lays it on its side.
+        #[arg(long)]
+        y_up: bool,
     },
     /// Decode every solid of a city bundle and check it against what the file declares.
     ///
@@ -401,7 +405,7 @@ fn main() -> ExitCode {
             axes.and_then(|a| import::run(&file, &obj, part.as_deref(), &out, force, a))
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
-        Command::World { path, csv, export } => world::run(&path, csv, export.as_deref()),
+        Command::World { path, csv, export, y_up } => world::run(&path, csv, export.as_deref(), y_up),
         Command::Verify { path, list } => verify::run(&path, list),
         Command::Track { path, list } => track::run(&path, list),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),

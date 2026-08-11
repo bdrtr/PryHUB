@@ -26,12 +26,12 @@ const ENGINE_VERTEX_STRIDE: usize = 92;
 /// frame and are obvious the moment the geometry is in front of you. A modeller is the instrument
 /// that was missing.
 ///
-/// Exported in the file's own coordinates. NFSU2 is Z-up and Blender is Z-up, so there is nothing
-/// to convert and nothing to get wrong.
+/// `y_up` rotates the result for importers left on their defaults — see [`write_world_obj`] for why
+/// "NFSU2 is Z-up and so is Blender" is true and still lands the city on its side.
 ///
 /// Byte-identical repeats are dropped — 14,847 of the eight bundles' 28,985 objects are one, and
 /// leaving them in gives every surface a twin to z-fight with.
-fn export(path: &Path, out: &Path) -> Result<()> {
+fn export(path: &Path, out: &Path, y_up: bool) -> Result<()> {
     use gizmo_nfs::export::{png_bytes, png_name, write_mtl, write_world_obj, Material};
     use gizmo_nfs::types::AssetHash;
     use gizmo_nfs::world::{meshes, packs};
@@ -108,7 +108,7 @@ fn export(path: &Path, out: &Path) -> Result<()> {
     });
     println!("{} textures written, {} materials", images.len(), materials.len());
 
-    let obj = write_world_obj(&all, "city.mtl", |m, run| {
+    let obj = write_world_obj(&all, "city.mtl", y_up, |m, run| {
         key_of(m, run)
             .filter(|k| images.contains_key(&k.0))
             .map_or_else(|| "unresolved".to_string(), |k| format!("tex_{:08X}", k.0))
@@ -120,9 +120,9 @@ fn export(path: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run(path: &Path, csv: bool, out: Option<&Path>) -> Result<()> {
+pub fn run(path: &Path, csv: bool, out: Option<&Path>, y_up: bool) -> Result<()> {
     if let Some(out) = out {
-        return export(path, out);
+        return export(path, out, y_up);
     }
     let bundles = collect(path)?;
     if bundles.is_empty() {
