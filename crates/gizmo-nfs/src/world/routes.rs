@@ -337,6 +337,18 @@ impl RouteRegion {
 /// holds in all 42,698 records of the install. Walking by that length lands exactly on the end of
 /// the payload in **112 of 112** chunks.
 ///
+/// The length field has an independent witness. `yugecin/nfsu2-re`, a separate reverse-engineering
+/// project, reads this chunk in `nfsu2-re-binfiles/main.c` and walks it the same way —
+/// `part_size = *(short*)(pos + 0x42); pos += part_size;` — with the box at `0x20..0x2C` and the
+/// first corner at `0x44`, which are these offsets counted from the same place. Two readers
+/// arriving at one record boundary from different directions is worth more than either alone.
+///
+/// It also has the field before it wrong, which is the part worth keeping: it types `0x40` as
+/// `short radius`. It is the corner count, and `length == 68 + 8 × count` in all 42,698 records is
+/// how that is known rather than argued. That reader also prints only records whose first byte is
+/// `0x12` — one [`RouteRegion::kind`] of the fourteen, as it happens the 8 m marker — so the
+/// chunk's shape was never in view.
+///
 /// # Errors
 ///
 /// [`NfsError::CorruptArchive`] if a record's stated length disagrees with its corner count, if it
