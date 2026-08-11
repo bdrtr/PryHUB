@@ -120,75 +120,6 @@ pub fn write_mtl(materials: &[Material]) -> String {
     s
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::NfsMaterialRange;
-
-    fn part(name: &str) -> NfsMeshPart {
-        NfsMeshPart {
-            name: name.to_string(),
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            normals: vec![[0.0, 0.0, 1.0]; 3],
-            uvs: vec![[0.25, 0.75]; 3],
-            indices: vec![0, 1, 2],
-            transform: crate::types::IDENTITY,
-            ..NfsMeshPart::default()
-        }
-    }
-
-    #[test]
-    fn faces_are_one_based_and_run_on_after_the_first_part() {
-        let (a, b) = (part("A"), part("B"));
-        let obj = write_obj(&[&a, &b], "car.mtl", |_, _| "m".into());
-        assert!(obj.contains("f 1/1/1 2/2/2 3/3/3"), "{obj}");
-        // The second part's vertices continue the global numbering.
-        assert!(obj.contains("f 4/4/4 5/5/5 6/6/6"), "{obj}");
-    }
-
-    #[test]
-    fn each_material_run_gets_its_own_usemtl() {
-        let mut p = part("A");
-        p.indices = vec![0, 1, 2, 0, 1, 2];
-        let run = |offset, count| NfsMaterialRange {
-            index_offset: offset,
-            index_count: count,
-            ..NfsMaterialRange::default()
-        };
-        p.materials = vec![run(0, 3), run(3, 3)];
-        let obj = write_obj(&[&p], "car.mtl", |_, run| format!("m{run}"));
-        assert!(obj.contains("usemtl m0"));
-        assert!(obj.contains("usemtl m1"));
-    }
-
-    #[test]
-    fn v_axis_is_flipped_for_obj() {
-        let obj = write_obj(&[&part("A")], "car.mtl", |_, _| "m".into());
-        assert!(obj.contains("vt 0.25000 0.25000"), "{obj}");
-    }
-
-    #[test]
-    fn mtl_references_its_map_when_there_is_one() {
-        let mtl = write_mtl(&[
-            Material {
-                name: "tex".into(),
-                map: Some("tex/1.png".into()),
-                map_is_cutout: false,
-                diffuse: [1.0; 3],
-            },
-            Material {
-                name: "flat".into(),
-                map: None,
-                map_is_cutout: false,
-                diffuse: [0.1, 0.2, 0.3],
-            },
-        ]);
-        assert!(mtl.contains("newmtl tex") && mtl.contains("map_Kd tex/1.png"));
-        assert!(mtl.contains("newmtl flat") && mtl.contains("Kd 0.100 0.200 0.300"));
-        assert_eq!(mtl.matches("map_Kd").count(), 1);
-    }
-}
-
 /// Apply a world solid's own placement to one of its vertices.
 ///
 /// Row-vector convention, basis in rows 0-2 and translation in row 3, applied as-is: the layout is
@@ -262,4 +193,73 @@ pub fn write_world_obj(
         base += m.positions.len();
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::NfsMaterialRange;
+
+    fn part(name: &str) -> NfsMeshPart {
+        NfsMeshPart {
+            name: name.to_string(),
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.25, 0.75]; 3],
+            indices: vec![0, 1, 2],
+            transform: crate::types::IDENTITY,
+            ..NfsMeshPart::default()
+        }
+    }
+
+    #[test]
+    fn faces_are_one_based_and_run_on_after_the_first_part() {
+        let (a, b) = (part("A"), part("B"));
+        let obj = write_obj(&[&a, &b], "car.mtl", |_, _| "m".into());
+        assert!(obj.contains("f 1/1/1 2/2/2 3/3/3"), "{obj}");
+        // The second part's vertices continue the global numbering.
+        assert!(obj.contains("f 4/4/4 5/5/5 6/6/6"), "{obj}");
+    }
+
+    #[test]
+    fn each_material_run_gets_its_own_usemtl() {
+        let mut p = part("A");
+        p.indices = vec![0, 1, 2, 0, 1, 2];
+        let run = |offset, count| NfsMaterialRange {
+            index_offset: offset,
+            index_count: count,
+            ..NfsMaterialRange::default()
+        };
+        p.materials = vec![run(0, 3), run(3, 3)];
+        let obj = write_obj(&[&p], "car.mtl", |_, run| format!("m{run}"));
+        assert!(obj.contains("usemtl m0"));
+        assert!(obj.contains("usemtl m1"));
+    }
+
+    #[test]
+    fn v_axis_is_flipped_for_obj() {
+        let obj = write_obj(&[&part("A")], "car.mtl", |_, _| "m".into());
+        assert!(obj.contains("vt 0.25000 0.25000"), "{obj}");
+    }
+
+    #[test]
+    fn mtl_references_its_map_when_there_is_one() {
+        let mtl = write_mtl(&[
+            Material {
+                name: "tex".into(),
+                map: Some("tex/1.png".into()),
+                map_is_cutout: false,
+                diffuse: [1.0; 3],
+            },
+            Material {
+                name: "flat".into(),
+                map: None,
+                map_is_cutout: false,
+                diffuse: [0.1, 0.2, 0.3],
+            },
+        ]);
+        assert!(mtl.contains("newmtl tex") && mtl.contains("map_Kd tex/1.png"));
+        assert!(mtl.contains("newmtl flat") && mtl.contains("Kd 0.100 0.200 0.300"));
+        assert_eq!(mtl.matches("map_Kd").count(), 1);
+    }
 }
