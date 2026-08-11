@@ -13,7 +13,7 @@
 //! | offset | type | what it is |
 //! |---|---|---|
 //! | `+0`, `+4` | `f32` | position, in the world's own frame and units (Z-up, so these are X and Y and there is no height) |
-//! | `+8` | `u16` | a small integer — see below, **not** interpreted |
+//! | `+8` | `u16` | which path of this file's network the node belongs to |
 //! | `+10` | `u16` | two bytes with `0xFF` used as a sentinel — **not** interpreted |
 //! | `+12`, `+14`, `+16` | `u16` | node indices into this file's own table, `0xFFFF` for none |
 //! | `+18` | `u16` | zero in all 18,064 records |
@@ -25,10 +25,13 @@
 //!   **not one** holds a value that is neither `0xFFFF` nor smaller than its own file's node count.
 //!   A field that were anything else — a distance, a bitfield, a hash — would land outside on some
 //!   record out of eighteen thousand.
-//! - **`+20` is in the same unit as the coordinates.** Over the 7,277 consecutive in-run pairs (a
-//!   step under 100 m with the value rising), the ratio of its delta to the XY step has median
-//!   **1.0005**, p05 0.884, p95 1.054. It is cumulative arc length in world units — the small
-//!   spread is the height this record does not carry, plus corners cut by a 2-D chord.
+//! - **`+20` is in the same unit as the coordinates.** Over the 6,942 pairs that are consecutive
+//!   *within one path* (see below), the ratio of its delta to the XY step has median **1.0004**,
+//!   p05 0.884, p95 1.027. It is cumulative arc length in world units — the remaining spread is the
+//!   height this record does not carry, plus corners cut by a 2-D chord. The p95 was 1.054 while
+//!   the pairs were being filtered by "step under 100 m" instead of by path membership: knowing
+//!   where a path ends tightened the distribution on its own, which is its own small argument that
+//!   the split below is the right one.
 //!
 //!   This corrects a figure carried in the notes for a while, that the deltas were ≈0.787 of the
 //!   XY step. That ratio comes out of pairs taken through the *index* fields rather than through
@@ -36,14 +39,30 @@
 //!   median lands at 38.7 rather than near 1. What made the wrong number believable is that 0.785
 //!   is π/4, which reads like a derivation rather than a sampling accident.
 //!
+//! ## The table is a road network, not one path
+//!
+//! `+8` is the **path index**, and the file's own layout proves it rather than suggests it. In
+//! **105 of 105** node tables every value of `+8` occupies exactly one *contiguous run* in file
+//! order — 2,923 runs across the install against 2,923 distinct values, with no exception — and in
+//! **105 of 105** the values are densely `0..k-1` with no gaps. A field that merely correlated with
+//! position would not come out as a clean partition in every table in the game.
+//!
+//! What that buys is the driving order, which nothing else in the record gives. Taken in file
+//! order the node table jumps more than 100 m between neighbours 12.5 % of the time, and sorted by
+//! `progress` it is worse at 31.4 % — the table is not one route. Split on `+8` first and the same
+//! measurement reads **median 29.2 m, p95 65.9 m, and 0.9 % jumps**: each run is a polyline you
+//! could drive.
+//!
+//! The links then say what they are for. **94.8 %** of the 19,409 present links point at a node in
+//! a *different* path — so adjacency along a path is implicit in the order, and `+12`/`+14`/`+16`
+//! are the junctions where paths meet. That also explains why they read as a poor undirected
+//! neighbour relation: only 29 % are mutual, because a junction is directed.
+//!
 //! ## What is deliberately not named
 //!
-//! `+8` is 0..112 across the install with 113 distinct values, and in 18,064 of 18,064 records it
-//! *would* be a valid index into its own table — including in the five-node files, where that is a
-//! real constraint. That is suggestive and it is not proof: any small integer passes the same test.
 //! `+10`'s two bytes each use `0xFF` heavily (3,616 records have `0xFF` in the high byte) which is
-//! how the other optional fields here spell "none". Both are carried through as raw words so a
-//! caller can measure them further; naming a field is a claim, and neither is earned yet.
+//! how the other optional fields here spell "none". It is carried through as a raw word so a caller
+//! can measure it further; naming a field is a claim, and this one is not earned yet.
 //!
 //! The other four leaves are not read. `0x0003414D` is a whole number of 36-byte units in every
 //! file and `0x0003414C` of 16-byte ones; `0x0003414A` divides by nothing above 4, so it is either
@@ -69,8 +88,9 @@ pub struct RouteNode {
     /// Position as the file states it: the world's own frame, no fixup, no height.
     pub x: f32,
     pub y: f32,
-    /// `+8`, uninterpreted — see the module docs for what is and is not known about it.
-    pub word_8: u16,
+    /// `+8`: which path of this file's network the node belongs to. Nodes of one path are
+    /// contiguous and in driving order — see the module docs for what pins that.
+    pub path: u16,
     /// `+10`, uninterpreted.
     pub word_10: u16,
     /// `+18`, uninterpreted — zero in all 18,064 records of the install, and carried rather than
@@ -107,13 +127,13 @@ pub fn read_nodes(payload: &[u8]) -> NfsResult<Vec<RouteNode>> {
         let mut r = ByteReader::at(record, 0)?;
         let x = r.f32_le()?;
         let y = r.f32_le()?;
-        let word_8 = r.u16_le()?;
+        let path = r.u16_le()?;
         let word_10 = r.u16_le()?;
         let link = |v: u16| (v != NO_LINK).then_some(v);
         let links = [link(r.u16_le()?), link(r.u16_le()?), link(r.u16_le()?)];
         let word_18 = r.u16_le()?;
         let progress = r.f32_le()?;
-        out.push(RouteNode { x, y, word_8, word_10, word_18, links, progress });
+        out.push(RouteNode { x, y, path, word_10, word_18, links, progress });
     }
     Ok(out)
 }
@@ -148,6 +168,27 @@ pub fn nodes(file: &[u8]) -> NfsResult<Vec<RouteNode>> {
     }
 }
 
+/// The table's paths: the contiguous runs of one [`RouteNode::path`], in file order.
+///
+/// This is the whole reason the field is named. A path's nodes are consecutive *and* in driving
+/// order, so a run is a polyline — median step 29 m — while the table as a whole is not.
+///
+/// Runs, not a group-by: if a value ever appeared in two places the two are different runs and this
+/// says so, rather than welding them into one path that teleports. [`check`] reports when that
+/// happens; it does not happen anywhere in the install.
+#[must_use]
+pub fn paths(nodes: &[RouteNode]) -> Vec<&[RouteNode]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 1..=nodes.len() {
+        if i == nodes.len() || nodes[i].path != nodes[start].path {
+            out.push(&nodes[start..i]);
+            start = i;
+        }
+    }
+    out
+}
+
 /// What a node table checks out as, so a caller can print it rather than re-derive it.
 ///
 /// The point of the type is that every field is a question the file can answer about itself. A
@@ -164,13 +205,25 @@ pub struct NodeCheck {
     pub links_out_of_range: usize,
     /// **Must be zero.** A `+18` that is not zero.
     pub word_18_set: usize,
+    /// Distinct [`RouteNode::path`] values.
+    pub paths: usize,
+    /// Contiguous runs of one path value. **Must equal [`Self::paths`]** — a value appearing in two
+    /// runs would mean the field does not partition the table, and every ordering built on it would
+    /// be joining two unrelated stretches of road.
+    pub path_runs: usize,
+    /// Whether the path values are exactly `0..paths`. **Must hold**: the install numbers them
+    /// densely from zero in all 105 tables, and a gap would mean a path was dropped on the way in.
+    pub paths_dense: bool,
 }
 
 impl NodeCheck {
     /// Whether every check the table can make on itself passed.
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.links_out_of_range == 0 && self.word_18_set == 0
+        self.links_out_of_range == 0
+            && self.word_18_set == 0
+            && self.path_runs == self.paths
+            && self.paths_dense
     }
 }
 
@@ -178,7 +231,14 @@ impl NodeCheck {
 #[must_use]
 pub fn check(nodes: &[RouteNode]) -> NodeCheck {
     let n = nodes.len();
-    let mut c = NodeCheck { nodes: n, ..NodeCheck::default() };
+    let seen: std::collections::BTreeSet<u16> = nodes.iter().map(|p| p.path).collect();
+    let mut c = NodeCheck {
+        nodes: n,
+        paths: seen.len(),
+        path_runs: paths(nodes).len(),
+        paths_dense: seen.iter().copied().eq(0..seen.len() as u16),
+        ..NodeCheck::default()
+    };
     for node in nodes {
         if node.word_18 != 0 {
             c.word_18_set += 1;
@@ -207,10 +267,14 @@ mod tests {
     }
 
     fn record(x: f32, y: f32, links: [u16; 3], progress: f32) -> Vec<u8> {
+        on_path(0, x, y, links, progress)
+    }
+
+    fn on_path(path: u16, x: f32, y: f32, links: [u16; 3], progress: f32) -> Vec<u8> {
         let mut v = Vec::with_capacity(NODE_LEN);
         v.extend_from_slice(&x.to_le_bytes());
         v.extend_from_slice(&y.to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(&path.to_le_bytes());
         v.extend_from_slice(&0u16.to_le_bytes());
         for l in links {
             v.extend_from_slice(&l.to_le_bytes());
@@ -254,6 +318,47 @@ mod tests {
         let c = check(&nodes);
         assert_eq!(c.nodes, 2);
         assert_eq!(c.links_out_of_range, 1, "node 9 does not exist in a two-node table");
+        assert!(!c.is_clean());
+    }
+
+    /// The split is what makes a run drivable, so it is asserted on the shape the install has:
+    /// consecutive nodes of one path, numbered densely from zero.
+    #[test]
+    fn a_table_splits_into_contiguous_paths() {
+        let mut payload = on_path(0, 0.0, 0.0, [NO_LINK; 3], 0.0);
+        payload.extend(on_path(0, 30.0, 0.0, [NO_LINK; 3], 30.0));
+        payload.extend(on_path(1, 0.0, 90.0, [NO_LINK; 3], 0.0));
+        let nodes = read_nodes(&payload).unwrap();
+        let split = paths(&nodes);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].len(), 2, "path 0 keeps both of its nodes, in order");
+        assert_eq!(split[1][0].y, 90.0);
+        let c = check(&nodes);
+        assert_eq!((c.paths, c.path_runs, c.paths_dense), (2, 2, true));
+        assert!(c.is_clean());
+    }
+
+    /// A path value in two places is two runs, and welding them would join two unrelated stretches
+    /// of road into one polyline that teleports between them. It is reported, not silently merged.
+    #[test]
+    fn a_path_value_that_comes_back_is_two_runs_and_is_reported() {
+        let mut payload = on_path(0, 0.0, 0.0, [NO_LINK; 3], 0.0);
+        payload.extend(on_path(1, 0.0, 500.0, [NO_LINK; 3], 0.0));
+        payload.extend(on_path(0, 0.0, 1000.0, [NO_LINK; 3], 0.0));
+        let nodes = read_nodes(&payload).unwrap();
+        assert_eq!(paths(&nodes).len(), 3, "three runs over two values");
+        let c = check(&nodes);
+        assert_eq!((c.paths, c.path_runs), (2, 3));
+        assert!(!c.is_clean(), "a field that does not partition the table is not usable as one");
+    }
+
+    /// A gap in the numbering means a path went missing on the way in.
+    #[test]
+    fn path_numbering_with_a_hole_is_reported() {
+        let mut payload = on_path(0, 0.0, 0.0, [NO_LINK; 3], 0.0);
+        payload.extend(on_path(2, 0.0, 500.0, [NO_LINK; 3], 0.0));
+        let c = check(&read_nodes(&payload).unwrap());
+        assert!(!c.paths_dense);
         assert!(!c.is_clean());
     }
 

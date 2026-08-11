@@ -5,19 +5,26 @@
 //! from the record's own internal consistency instead — which turns out to be a stronger test than
 //! it sounds, because three of the six fields are indices into the very table they sit in.
 //!
-//! Two things are asserted over every node, and both are zero across the install's 18,064:
+//! Four things are asserted, and the install passes all four:
 //!
-//! - a `+12`/`+14`/`+16` that is neither `0xFFFF` nor a valid index into its own file's table,
-//! - a `+18` that is not zero.
+//! - a `+12`/`+14`/`+16` that is neither `0xFFFF` nor a valid index into its own file's table — 0
+//!   of 54,192 index reads,
+//! - a `+18` that is not zero — 0 of 18,064,
+//! - a path value that occupies more than one contiguous run — 2,923 runs over 2,923 values,
+//! - a gap in the path numbering — dense `0..k` in all 105 tables.
 //!
-//! That is 54,192 index reads with no exception. A misaligned or misread field does not survive
-//! that: it would have to be small enough, in every one of eighteen thousand records, to pass for
-//! an index into a table as short as five entries.
+//! A misaligned or misread field does not survive that. The links would have to be small enough, in
+//! every one of eighteen thousand records, to pass for an index into a table as short as five
+//! entries; and the path field would have to partition every table in the game by accident. Both
+//! have been tried: shifting the link read two bytes puts 15,931 links out of range, and taking the
+//! path from `+10` instead of `+8` gives 15,967 runs over 13,352 values with holes in the
+//! numbering. The command exits non-zero for either.
 //!
-//! The report also states the two distributions the layout was read from, so the claim in
-//! [`gizmo_nfs::world::routes`] can be re-derived rather than believed: the step between
-//! consecutive nodes, and the ratio of the `+20` delta to that step. The second is the one worth
-//! watching — it is what says `+20` is a distance in world units and not some other quantity.
+//! The report also states the two distributions the layout was read from, so the claims in
+//! [`gizmo_nfs::world::routes`] can be re-derived rather than believed: the step between nodes of
+//! one path, and the ratio of the `+20` gain to that step. The second is what says `+20` is a
+//! distance in world units and not some other quantity — and both are measured *within* a path,
+//! because that is the only place where consecutive means adjacent.
 //!
 //! ```bash
 //! ug2 track "$NFSU2_ROOT/TRACKS"          # every route file
@@ -27,7 +34,7 @@
 //! Exits non-zero if any check fails, so it can be a step in a script rather than something to read.
 
 use crate::paths::Result;
-use gizmo_nfs::world::routes::{check, nodes, NodeCheck, RouteNode};
+use gizmo_nfs::world::routes::{check, nodes, paths, NodeCheck, RouteNode};
 use std::path::{Path, PathBuf};
 
 /// Every `Paths*.bin` under a path, whether it names one file, a `ROUTES*` directory or `TRACKS`.
@@ -56,11 +63,6 @@ fn collect(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// A run of consecutive nodes is only a run while the step stays small. The jumps are where one
-/// path in the table ends and the next begins, and measuring across one turns a 30 m step into a
-/// 2 km one and the ratio below into noise.
-const RUN_STEP_LIMIT: f32 = 100.0;
-
 #[derive(Default)]
 struct Tally {
     files: usize,
@@ -78,13 +80,21 @@ impl Tally {
         self.check.links_absent += c.links_absent;
         self.check.links_out_of_range += c.links_out_of_range;
         self.check.word_18_set += c.word_18_set;
-        for pair in n.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            let step = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
-            self.steps.push(step);
-            let gain = b.progress - a.progress;
-            if step > 1.0 && step < RUN_STEP_LIMIT && gain > 0.0 {
-                self.ratios.push(gain / step);
+        self.check.paths += c.paths;
+        self.check.path_runs += c.path_runs;
+        self.check.paths_dense &= c.paths_dense;
+        // Measured **within a path**, which is the only place consecutive means adjacent. Doing it
+        // over the whole table mixes in the jump from one path's end to the next one's start, and
+        // that single mistake is what a "0.787" turns out to be made of.
+        for path in paths(n) {
+            for pair in path.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let step = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+                self.steps.push(step);
+                let gain = b.progress - a.progress;
+                if step > 1.0 && gain > 0.0 {
+                    self.ratios.push(gain / step);
+                }
             }
         }
     }
@@ -104,7 +114,7 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         return Err(format!("{}: no Paths*.bin here", path.display()));
     }
 
-    let mut tally = Tally::default();
+    let mut tally = Tally { check: NodeCheck { paths_dense: true, ..NodeCheck::default() }, ..Tally::default() };
     let mut offenders: Vec<String> = Vec::new();
 
     for file in &files {
@@ -143,13 +153,19 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
     );
     println!("+18 non-zero: {}", c.word_18_set);
     println!(
-        "step between consecutive nodes: p05 {:.1} · median {:.1} · p95 {:.1} m",
+        "paths: {} · contiguous runs {} (must match) · numbered 0..k with no gaps: {}",
+        c.paths,
+        c.path_runs,
+        if c.paths_dense { "yes" } else { "NO" }
+    );
+    println!(
+        "step between nodes of one path: p05 {:.1} · median {:.1} · p95 {:.1} m",
         percentile(&tally.steps, 0.05),
         percentile(&tally.steps, 0.50),
         percentile(&tally.steps, 0.95)
     );
     println!(
-        "+20 gain / step, over {} in-run pairs: p05 {:.4} · median {:.4} · p95 {:.4}",
+        "+20 gain / step, over {} in-path pairs: p05 {:.4} · median {:.4} · p95 {:.4}",
         tally.ratios.len(),
         percentile(&tally.ratios, 0.05),
         percentile(&tally.ratios, 0.50),
@@ -161,12 +177,16 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
     }
 
     if c.is_clean() {
-        println!("OK — every link is a node of its own table or absent, and every +18 is zero");
+        println!(
+            "OK — every link is a node of its own table or absent, every +18 is zero, and every \
+             path is one contiguous run"
+        );
         Ok(())
     } else {
         Err(format!(
-            "{} links out of range and {} non-zero +18: the record is not being read as it is laid out",
-            c.links_out_of_range, c.word_18_set
+            "{} links out of range, {} non-zero +18, {} path runs over {} path values (dense: {}): \
+             the record is not being read as it is laid out",
+            c.links_out_of_range, c.word_18_set, c.path_runs, c.paths, c.paths_dense
         ))
     }
 }
