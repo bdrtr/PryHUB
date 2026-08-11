@@ -137,28 +137,31 @@ fn door_zone_verts(p: &NfsMeshPart) -> usize {
 ///
 /// **Body exception** (unchanged from stock): a car with no paintable door skin bakes the door into
 /// a lower body LOD, so its body component picks the LOD with the best [`door_zone_verts`] coverage.
-/// Whether the roof a car is *built* with is the one with the sunroof in it.
+/// Whether a roof scoop is fitted, which is the one thing that changes a car's roof.
 ///
-/// **A judgement, deliberately one line.** Four of the install's 57 cars — 240SX, CIVIC, G35 and
-/// RSX — ship two roofs: `ROOF` and `FULLROOF`. They are alternatives, not halves: dropping one
-/// changes only the roof of the rendered car, and drawing both puts two panels in the same place.
-/// 25 cars ship only `ROOF` and **none ships only `FULLROOF`**, so `FULLROOF` is always the second
-/// of a pair.
+/// Four of the install's 57 cars — 240SX, CIVIC, G35, RSX — ship two roofs, `ROOF` and `FULLROOF`,
+/// and both used to be selected, so the car rendered with two panels in the same place.
 ///
-/// What they are is measured. On a car with a single roof — 350Z, GOLF, SKYLINE — the part has two
-/// material runs and nothing else. On these four, `ROOF` carries a third and fourth: an extra run
-/// with its own shader and its own texture, 24 triangles on the 240SX, which is the sunroof; and
-/// `FULLROOF` has no such run and 90 fewer triangles. A *full* roof is an unbroken one.
+/// They are not a coin flip, and the game's own behaviour says which is which: NFSU2 *"swaps
+/// `KIT00_ROOF` with `KIT00_FULLROOF` when a roof scoop is installed"* — the swap exists to take
+/// the sunroof away so the scoop has somewhere to sit. So `ROOF` is what a car is built with and
+/// `FULLROOF` is the scooped variant, which is also why only these four have one: they are the
+/// cars with a sunroof to remove.
 ///
-/// Which of the two the game fits as standard **is not in the files**. The `CarParts` catalogue in
-/// `GLOBALB` does not list roofs — they are not purchasable — both variants carry a complete LOD
-/// chain, and the install ships no showroom render or save profile to read it off. It is a question
-/// for someone who can look at the game, and until then this constant is the whole of the answer:
-/// flip it and every car with two roofs changes together.
-pub const STOCK_ROOF_HAS_SUNROOF: bool = true;
+/// The file agrees, measured before the behaviour was known. On a car with a single roof — 350Z,
+/// GOLF, SKYLINE — the part has two material runs and nothing else. On these four, `ROOF` carries
+/// a third and fourth: an extra run with its own shader and its own texture, 24 triangles on the
+/// 240SX, which is the sunroof; `FULLROOF` has no such run and 90 fewer triangles. A *full* roof is
+/// an unbroken one. And 25 cars ship only `ROOF` while none ships only `FULLROOF`.
+///
+/// It is a constant rather than a [`CarConfig`] dimension because there is nothing to fit yet: none
+/// of the four carries a scoop part of its own (NFSU2 keeps them in a shared file, the way it keeps
+/// rims), so a config flag would be a lever with nothing on the other end. When scoops are fitted,
+/// this is the line that becomes a field.
+pub const FITS_ROOF_SCOOP: bool = false;
 
-/// Which roof a part is, if it is one: `Some(true)` for the sunroof variant, `Some(false)` for the
-/// unbroken one.
+/// Which roof a part is, if it is one: `Some(true)` for the one a car is built with (the sunroof
+/// is in it), `Some(false)` for the unbroken one a roof scoop swaps in.
 ///
 /// `FULLROOF` is tested first because it contains `ROOF`, which is the mistake this function exists
 /// to make impossible to write twice.
@@ -213,7 +216,7 @@ pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMes
                 let better = match (roof_variant(&p.name), roof_variant(&cur.name)) {
                     // Two roofs in one slot is a choice, not a contest: the richer one would win on
                     // triangles every time and that is not what decides which roof a car has.
-                    (Some(mine), Some(theirs)) if mine != theirs => mine == STOCK_ROOF_HAS_SUNROOF,
+                    (Some(mine), Some(theirs)) if mine != theirs => mine != FITS_ROOF_SCOOP,
                     _ if prefer_door_fill => {
                         // Door coverage first, triangles as the tie-break.
                         (door_zone_verts(p), p.triangle_count())
@@ -246,8 +249,8 @@ mod tests {
     #[test]
     fn a_car_with_two_roofs_gets_exactly_one() {
         // `ROOF` is the richer part in all four cars that ship both, so a triangle tie-break and
-        // the constant agree today; the test pins the *reason*, by making the poorer part the
-        // sunroof one and checking the choice follows the constant and not the count.
+        // the constant agree today; the test pins the *reason*, by making the built-with roof the
+        // poorer part and checking the choice follows the constant and not the count.
         let parts = [
             part("CAR_KIT00_BODY_A", 100),
             part("CAR_KIT00_ROOF_A", 20),
@@ -262,7 +265,7 @@ mod tests {
         assert_eq!(roofs.len(), 1, "one roof, not two: {roofs:?}");
         assert_eq!(
             roofs[0].contains("FULLROOF"),
-            !STOCK_ROOF_HAS_SUNROOF,
+            FITS_ROOF_SCOOP,
             "the constant decides which, not the triangle count"
         );
     }
