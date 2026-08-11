@@ -71,6 +71,7 @@
 use crate::chunk::{walk, Visit};
 use crate::error::{NfsError, NfsResult};
 use crate::reader::ByteReader;
+use std::collections::BTreeMap;
 
 /// The node-table leaf.
 pub const NODE_CHUNK: u32 = 0x0003_4148;
@@ -603,6 +604,181 @@ pub fn check_events(events: &[RaceEvent]) -> EventCheck {
     c
 }
 
+/// The start-grid leaf, `0x00034146` — the whole of a `TrackPosMarkers*.bin`.
+pub const MARKER_CHUNK: u32 = 0x0003_4146;
+
+/// One marker record's length, after the chunk's leading `0x11` filler.
+pub const MARKER_LEN: usize = 48;
+
+/// Cars on a starting grid.
+pub const GRID_SLOTS: usize = 8;
+
+/// One place a car is put before a race starts.
+///
+/// **These are spawn slots, not course anchors** — a correction someone else had to make before us
+/// and it is worth carrying: the natural reading of a file full of positions along a route is
+/// "checkpoints", and it is wrong. What is here is starting grids: markers sharing a [`group`]
+/// come in eights, numbered `0..7` in [`slot`], and the eight sit on a flat patch — median span
+/// **10.5 × 11.9 m with 0.00 m between the highest and the lowest** across the install's 219 full
+/// grids. Four wide and two deep, on the tarmac.
+///
+/// A track usually has two of them, at opposite ends of the course, one per race direction — which
+/// is the same F/B split the `Routes####F.bin` / `Routes####B.bin` files carry.
+///
+/// [`group`]: Self::group
+/// [`slot`]: Self::slot
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StartMarker {
+    /// `+8`: which grid this belongs to. The eight markers of one grid share it.
+    pub group: u32,
+    /// `+12`: the place on the grid, `0..7`. Pole is `0`.
+    ///
+    /// Documented elsewhere as a zero field, which it is in 488 of the install's 2,114 markers and
+    /// nothing else in the other 1,626.
+    pub slot: u32,
+    /// `+16`: where the car is put, in the world's own frame — and unlike the rest of these files
+    /// this one has a height.
+    pub at: [f32; 3],
+    /// `+32`, uninterpreted. Its low byte agrees across a grid and its top nibble does not.
+    pub word_32: u32,
+    /// `+36`: the event this grid belongs to, or `4000` for free roam.
+    pub track: u32,
+}
+
+/// Read one `0x00034146` payload into markers.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if what follows the filler is not a whole number of records, or if
+/// a record does not carry the format's own `11, 11` signature in its first two words — which every
+/// one of the install's 2,114 does, and which is what makes a misread alignment fail loudly here
+/// rather than produce plausible coordinates.
+pub fn read_markers(payload: &[u8]) -> NfsResult<Vec<StartMarker>> {
+    let body = crate::geometry::skip_leading_filler(payload);
+    if !body.len().is_multiple_of(MARKER_LEN) {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x00034146 payload is not a whole number of 48-byte marker records",
+        });
+    }
+    let mut out = Vec::with_capacity(body.len() / MARKER_LEN);
+    for record in body.chunks_exact(MARKER_LEN) {
+        let mut r = ByteReader::at(record, 0)?;
+        if (r.u32_le()?, r.u32_le()?) != (11, 11) {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x00034146 record does not begin with the format's 11, 11 signature",
+            });
+        }
+        let group = r.u32_le()?;
+        let slot = r.u32_le()?;
+        let at = [r.f32_le()?, r.f32_le()?, r.f32_le()?];
+        let _pad = r.f32_le()?;
+        let word_32 = r.u32_le()?;
+        let track = r.u32_le()?;
+        out.push(StartMarker { group, slot, at, word_32, track });
+    }
+    Ok(out)
+}
+
+/// Every start marker a `TrackPosMarkers*.bin` declares, in file order.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`read_markers`]'s.
+pub fn markers(file: &[u8]) -> NfsResult<Vec<StartMarker>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == MARKER_CHUNK && !data.is_empty() {
+                match read_markers(data) {
+                    Ok(mut m) => out.append(&mut m),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// The full starting grids among a set of markers: eight markers of one `(group, track)`, in slot
+/// order, pole first.
+///
+/// Groups that are not eight strong are left out rather than padded — the install has 298 lone
+/// markers and 24 pairs beside its grids, and a caller asking for a grid wants somewhere to put
+/// eight cars.
+///
+/// **Group per file, not across them.** A region ships `TrackPosMarkersAll.bin` and
+/// `TrackPosMarkersFreeRoam.bin`, and one grid is in both: pool the two files' markers first and
+/// its `(track, group)` collects sixteen and is dropped as not-a-grid, so the install reads as 219
+/// grids instead of 221. Nothing here stops a caller doing that — the fix is to call this once per
+/// file, which is what `ug2 track` does.
+#[must_use]
+pub fn grids(markers: &[StartMarker]) -> Vec<Vec<StartMarker>> {
+    let mut by: BTreeMap<(u32, u32), Vec<StartMarker>> = BTreeMap::new();
+    for m in markers {
+        by.entry((m.track, m.group)).or_default().push(*m);
+    }
+    by.into_values()
+        .filter_map(|mut g| {
+            g.sort_by_key(|m| m.slot);
+            let numbered = g.iter().map(|m| m.slot).eq(0..GRID_SLOTS as u32);
+            (g.len() == GRID_SLOTS && numbered).then_some(g)
+        })
+        .collect()
+}
+
+/// What a set of markers checks out as. Both counts are zero across the install.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerCheck {
+    pub markers: usize,
+    /// Full eight-car grids.
+    pub grids: usize,
+    /// **Must be zero.** A slot outside `0..8`.
+    pub slot_out_of_range: usize,
+    /// **Must be zero.** A group of eight whose slots are not exactly `0..7`.
+    pub grid_misnumbered: usize,
+}
+
+impl MarkerCheck {
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.slot_out_of_range == 0 && self.grid_misnumbered == 0
+    }
+}
+
+/// Ask a set of markers whether it reads as grids.
+#[must_use]
+pub fn check_markers(markers: &[StartMarker]) -> MarkerCheck {
+    let mut by: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
+    for m in markers {
+        by.entry((m.track, m.group)).or_default().push(m.slot);
+    }
+    let mut c = MarkerCheck {
+        markers: markers.len(),
+        slot_out_of_range: markers.iter().filter(|m| m.slot as usize >= GRID_SLOTS).count(),
+        ..MarkerCheck::default()
+    };
+    for mut slots in by.into_values() {
+        if slots.len() != GRID_SLOTS {
+            continue;
+        }
+        slots.sort_unstable();
+        if slots.iter().copied().eq(0..GRID_SLOTS as u32) {
+            c.grids += 1;
+        } else {
+            c.grid_misnumbered += 1;
+        }
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,6 +1052,79 @@ mod tests {
         bad[2] = 0;
         assert!(read_events(&bad).is_err(), "an event with no outline is not an event");
         assert!(read_events(&[0u8; EVENT_LEN + 1]).is_err());
+    }
+
+    fn marker(group: u32, slot: u32, at: [f32; 3], track: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&11u32.to_le_bytes());
+        v.extend_from_slice(&11u32.to_le_bytes());
+        v.extend_from_slice(&group.to_le_bytes());
+        v.extend_from_slice(&slot.to_le_bytes());
+        for c in at {
+            v.extend_from_slice(&c.to_le_bytes());
+        }
+        v.extend_from_slice(&0f32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&track.to_le_bytes());
+        v.extend_from_slice(&[0u8; 8]);
+        assert_eq!(v.len(), MARKER_LEN);
+        v
+    }
+
+    fn full_grid(group: u32, track: u32) -> Vec<u8> {
+        (0..GRID_SLOTS as u32)
+            .flat_map(|s| marker(group, s, [s as f32 * 3.0, 0.0, 12.0], track))
+            .collect()
+    }
+
+    /// The `11, 11` signature is the alignment check. Without it a marker file read at the wrong
+    /// offset gives coordinates that look like coordinates.
+    #[test]
+    fn a_marker_reads_at_its_stated_offsets_and_the_signature_is_enforced() {
+        let mut payload = vec![0x11u8; 8];
+        payload.extend(marker(0xDEAD, 3, [584.1, -128.4, 15.8], 4101));
+        let m = read_markers(&payload).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].group, m[0].slot, m[0].track), (0xDEAD, 3, 4101));
+        assert_eq!(m[0].at, [584.1, -128.4, 15.8]);
+
+        let mut broken = payload.clone();
+        broken[8] = 12;
+        assert!(read_markers(&broken).is_err(), "11, 11 or it is not a marker record");
+    }
+
+    /// A grid is eight markers of one group numbered 0..7, pole first — 219 of them across the
+    /// install and not one misnumbered.
+    #[test]
+    fn a_full_grid_comes_back_in_slot_order_and_partial_ones_do_not_come_back() {
+        let mut payload = vec![0x11u8; 8];
+        payload.extend(full_grid(0xAAAA, 4101));
+        payload.extend(marker(0xBBBB, 0, [0.0, 0.0, 0.0], 4101)); // a lone marker
+        let m = read_markers(&payload).unwrap();
+        let g = grids(&m);
+        assert_eq!(g.len(), 1, "the lone marker is not a grid");
+        assert_eq!(g[0].len(), GRID_SLOTS);
+        assert!(g[0].iter().map(|m| m.slot).eq(0..GRID_SLOTS as u32), "pole first");
+
+        let c = check_markers(&m);
+        assert_eq!((c.markers, c.grids), (9, 1));
+        assert!(c.is_clean());
+    }
+
+    /// Eight markers whose slots are not 0..7 is the file disagreeing with itself, and it is
+    /// reported rather than sorted into something plausible.
+    #[test]
+    fn eight_markers_numbered_wrong_are_reported() {
+        let mut payload = vec![0x11u8; 8];
+        payload.extend(full_grid(0xAAAA, 4101));
+        // Break one slot number: 0..6 and a 7 turned into a second 6.
+        let last = payload.len() - MARKER_LEN;
+        payload[last + 12..last + 16].copy_from_slice(&6u32.to_le_bytes());
+        let m = read_markers(&payload).unwrap();
+        let c = check_markers(&m);
+        assert_eq!((c.grids, c.grid_misnumbered), (0, 1));
+        assert!(!c.is_clean());
+        assert!(grids(&m).is_empty(), "a misnumbered eight is not a grid");
     }
 
     #[test]

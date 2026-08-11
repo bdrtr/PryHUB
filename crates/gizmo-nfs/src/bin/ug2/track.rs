@@ -42,10 +42,37 @@
 
 use crate::paths::Result;
 use gizmo_nfs::world::routes::{
-    check, check_events, check_regions, events, nodes, paths, regions, EventCheck, NodeCheck,
-    RegionCheck, RouteNode,
+    check, check_events, check_markers, check_regions, events, markers, nodes, paths, regions,
+    EventCheck, MarkerCheck, NodeCheck, RegionCheck, RouteNode,
 };
 use std::path::{Path, PathBuf};
+
+/// Every `TrackPosMarkers*.bin` beside the route files under a path.
+fn collect_markers(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![if path.is_file() {
+        path.parent().unwrap_or(path).to_path_buf()
+    } else {
+        path.to_path_buf()
+    }];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("TrackPosMarkers") && n.ends_with(".bin"))
+            {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
 
 /// Every `Paths*.bin` under a path, whether it names one file, a `ROUTES*` directory or `TRACKS`.
 fn collect(path: &Path) -> Result<Vec<PathBuf>> {
@@ -80,6 +107,7 @@ struct Tally {
     check: NodeCheck,
     region: RegionCheck,
     event: EventCheck,
+    marker: MarkerCheck,
     /// Events by id, so the catalogue's repetition across a region's files is counted once.
     seen_events: std::collections::BTreeMap<u16, usize>,
     corners: Vec<usize>,
@@ -202,6 +230,16 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         percentile(&tally.ratios, 0.95)
     );
 
+    for file in collect_markers(path) {
+        let bytes = crate::paths::read(&file)?;
+        let m = markers(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mc = check_markers(&m);
+        tally.marker.markers += mc.markers;
+        tally.marker.grids += mc.grids;
+        tally.marker.slot_out_of_range += mc.slot_out_of_range;
+        tally.marker.grid_misnumbered += mc.grid_misnumbered;
+    }
+
     tally.corners.sort_unstable();
     let rg = tally.region;
     println!(
@@ -226,15 +264,22 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         ev.flag_disagrees
     );
 
+    let mk = tally.marker;
+    println!(
+        "start markers: {} · {} full eight-car grids · {} slots outside 0..8 · {} eights numbered \
+         wrong",
+        mk.markers, mk.grids, mk.slot_out_of_range, mk.grid_misnumbered
+    );
+
     for line in &offenders {
         println!("{line}");
     }
 
-    if c.is_clean() && rg.is_clean() && ev.is_clean() {
+    if c.is_clean() && rg.is_clean() && ev.is_clean() && mk.is_clean() {
         println!(
             "OK — every link is a node of its own table or absent, every +18 is zero, every path \
              is one contiguous run, every region's box is its own points' extent, and every \
-             event's circuit flag matches its outline"
+             event's circuit flag matches its outline, and every grid is numbered 0..7"
         );
         Ok(())
     } else {
