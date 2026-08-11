@@ -452,6 +452,157 @@ pub fn check_regions(regions: &[RouteRegion]) -> RegionCheck {
     }
 }
 
+/// The event-catalogue leaf, `0x0003414C`.
+pub const EVENT_CHUNK: u32 = 0x0003_414C;
+
+/// One event record's length.
+pub const EVENT_LEN: usize = 272;
+
+/// Point slots a record reserves. Only the first [`RaceEvent::outline`] of them are live.
+pub const EVENT_SLOTS: usize = 33;
+
+/// One race the region offers: what shape the course is and where it runs.
+///
+/// **This is the course.** The node table is a road *network* — its cross-path links go forward and
+/// back about equally and its paths do not tile the distance axis — so nothing in it says where a
+/// race goes. The outline here does, and its vertices are in lap order.
+///
+/// The catalogue is repeated in **every** `Paths*.bin` of its region, which is why one file's
+/// 16,320-byte chunk is 60 records and `ROUTESL4RA` holds 60 files: 3,600 copies of 60 events.
+/// Across the install that is 4,067 records and **105 distinct events**, ids 4001..4716, spread
+/// L4RA 60 · L4RB 9 · L4RC 12 · L4RD 3 · L4RF 8 · L4RG 13. `ROUTESL4RH` and `ROUTESL4RR` carry no
+/// events at all.
+///
+/// 99 of the 105 differ byte-for-byte between the files that carry them and **none differs in its
+/// live part** — the tail past `outline` holds stale values from whatever longer record the slot
+/// last held, so a reader that compared whole records would call the catalogue inconsistent and a
+/// reader that trusts the tail would draw a course through it.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RaceEvent {
+    /// `+0`: the event's id, which is also the name of the `Paths####.bin` that carries its network.
+    pub id: u16,
+    /// `+3`: whether the course is a closed lap rather than a point-to-point sprint.
+    pub circuit: bool,
+    /// `+4`, uninterpreted.
+    pub byte_4: u8,
+    /// `+5`: the course's length in hundreds of metres, as the file states it. A hint and no more:
+    /// against the outline's own perimeter it runs median 0.90 with a p10 of 0.27 and a p90 of 1.79,
+    /// which is what you get comparing a road's length with the outline drawn around it.
+    pub length_hint: u32,
+    /// `+8`: the course outline, in lap order, in the world's own frame. Closed — last equals
+    /// first — exactly when [`Self::circuit`] is set.
+    pub outline: Vec<[f32; 2]>,
+}
+
+impl RaceEvent {
+    /// Whether the outline's last point is its first.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match (self.outline.first(), self.outline.last()) {
+            (Some(a), Some(b)) => (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01,
+            _ => false,
+        }
+    }
+}
+
+/// Read one `0x0003414C` payload into events.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if the payload is not a whole number of records, or if a record
+/// claims more outline points than it has slots for.
+pub fn read_events(payload: &[u8]) -> NfsResult<Vec<RaceEvent>> {
+    if !payload.len().is_multiple_of(EVENT_LEN) {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x0003414C payload is not a whole number of 272-byte event records",
+        });
+    }
+    let mut out = Vec::with_capacity(payload.len() / EVENT_LEN);
+    for record in payload.chunks_exact(EVENT_LEN) {
+        let mut r = ByteReader::at(record, 0)?;
+        let id = r.u16_le()?;
+        let count = r.u8()? as usize;
+        let circuit = r.u8()? != 0;
+        let byte_4 = r.u8()?;
+        let length_hint = u32::from(r.u8()?) * 100;
+        if count == 0 || count > EVENT_SLOTS {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x0003414C event claims an outline longer than its 33 slots",
+            });
+        }
+        let mut p = ByteReader::at(record, 8)?;
+        let mut outline = Vec::with_capacity(count);
+        for _ in 0..count {
+            outline.push([p.f32_le()?, p.f32_le()?]);
+        }
+        out.push(RaceEvent { id, circuit, byte_4, length_hint, outline });
+    }
+    Ok(out)
+}
+
+/// Every event a route file's catalogue declares, in file order.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`read_events`]'s.
+pub fn events(file: &[u8]) -> NfsResult<Vec<RaceEvent>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == EVENT_CHUNK && !data.is_empty() {
+                match read_events(data) {
+                    Ok(mut e) => out.append(&mut e),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// What a catalogue checks out as. The last field is zero across the install.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EventCheck {
+    pub events: usize,
+    /// Closed lap circuits, whose outline comes back to its first point.
+    pub circuits: usize,
+    /// Point-to-point sprints, whose outline does not.
+    pub sprints: usize,
+    /// **Must be zero.** An event whose circuit flag and whose outline disagree about whether the
+    /// course is a loop. Over the install's 105 events it is 63 circuits, 42 sprints and no
+    /// exception, which is what makes the flag readable rather than decorative.
+    pub flag_disagrees: usize,
+}
+
+impl EventCheck {
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.flag_disagrees == 0
+    }
+}
+
+/// Ask a catalogue whether its circuit flags match its outlines.
+#[must_use]
+pub fn check_events(events: &[RaceEvent]) -> EventCheck {
+    let mut c = EventCheck { events: events.len(), ..EventCheck::default() };
+    for e in events {
+        match (e.circuit, e.is_closed()) {
+            (true, true) => c.circuits += 1,
+            (false, false) => c.sprints += 1,
+            _ => c.flag_disagrees += 1,
+        }
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +814,68 @@ mod tests {
         let c = check_regions(&r);
         assert_eq!((c.bounds_wrong, c.heading_not_unit), (1, 1));
         assert!(!c.is_clean());
+    }
+
+    fn event(id: u16, circuit: bool, pts: &[[f32; 2]]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&id.to_le_bytes());
+        v.push(pts.len() as u8);
+        v.push(u8::from(circuit));
+        v.push(0);
+        v.push(50); // 5,000 m
+        v.extend_from_slice(&0u16.to_le_bytes());
+        for p in pts {
+            v.extend_from_slice(&p[0].to_le_bytes());
+            v.extend_from_slice(&p[1].to_le_bytes());
+        }
+        // The slots past the outline hold whatever the record last held. Filling them with
+        // something that would be a plausible point is the whole point of the test below.
+        while v.len() < EVENT_LEN {
+            v.extend_from_slice(&999.0f32.to_le_bytes());
+        }
+        v.truncate(EVENT_LEN);
+        v
+    }
+
+    const LAP: [[f32; 2]; 4] = [[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 0.0]];
+    const SPRINT: [[f32; 2]; 3] = [[0.0, 0.0], [100.0, 0.0], [200.0, 40.0]];
+
+    /// The tail past the outline is stale, and it looks like data. 99 of the install's 105 events
+    /// differ from file to file in nothing else, so a reader that took all 33 slots would draw a
+    /// course through whatever the slot last held.
+    #[test]
+    fn only_the_live_part_of_an_outline_is_read() {
+        let e = read_events(&event(4001, true, &LAP)).unwrap();
+        assert_eq!(e[0].outline, LAP.to_vec(), "four points, not thirty-three");
+        assert_eq!(e[0].id, 4001);
+        assert_eq!(e[0].length_hint, 5000);
+    }
+
+    /// The circuit flag and the outline agree in all 105 events — 63 loops, 42 sprints, no
+    /// exception — which is what makes the flag worth reading instead of measuring the outline.
+    #[test]
+    fn the_circuit_flag_and_the_outline_agree_or_it_is_reported() {
+        let mut payload = event(4001, true, &LAP);
+        payload.extend(event(4002, false, &SPRINT));
+        let e = read_events(&payload).unwrap();
+        let c = check_events(&e);
+        assert_eq!((c.events, c.circuits, c.sprints, c.flag_disagrees), (2, 1, 1, 0));
+        assert!(c.is_clean());
+
+        // A loop whose flag says sprint is the file contradicting itself, and it is reported.
+        let lying = read_events(&event(4003, false, &LAP)).unwrap();
+        assert_eq!(check_events(&lying).flag_disagrees, 1);
+        assert!(!check_events(&lying).is_clean());
+    }
+
+    #[test]
+    fn an_outline_longer_than_its_slots_is_refused() {
+        let mut bad = event(4001, true, &LAP);
+        bad[2] = 34;
+        assert!(read_events(&bad).is_err());
+        bad[2] = 0;
+        assert!(read_events(&bad).is_err(), "an event with no outline is not an event");
+        assert!(read_events(&[0u8; EVENT_LEN + 1]).is_err());
     }
 
     #[test]

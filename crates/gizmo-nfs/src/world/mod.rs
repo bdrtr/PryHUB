@@ -34,5 +34,7 @@ pub mod tpk;
 pub use header::{read_header, WorldSolidHeader};
 pub use manifest::{manifest, WorldObjectInfo};
 pub use object::{meshes, WorldMesh};
-pub use routes::{nodes, regions, NodeCheck, RegionCheck, RouteNode, RouteRegion};
+pub use routes::{
+    events, nodes, regions, EventCheck, NodeCheck, RaceEvent, RegionCheck, RouteNode, RouteRegion,
+};
 pub use tpk::{packs, records, TrackPack, TrackTexture};

@@ -42,7 +42,8 @@
 
 use crate::paths::Result;
 use gizmo_nfs::world::routes::{
-    check, check_regions, nodes, paths, regions, NodeCheck, RegionCheck, RouteNode,
+    check, check_events, check_regions, events, nodes, paths, regions, EventCheck, NodeCheck,
+    RegionCheck, RouteNode,
 };
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,9 @@ struct Tally {
     files_without_nodes: usize,
     check: NodeCheck,
     region: RegionCheck,
+    event: EventCheck,
+    /// Events by id, so the catalogue's repetition across a region's files is counted once.
+    seen_events: std::collections::BTreeMap<u16, usize>,
     corners: Vec<usize>,
     steps: Vec<f32>,
     ratios: Vec<f32>,
@@ -137,6 +141,15 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         tally.region.bounds_wrong += rc.bounds_wrong;
         tally.region.heading_not_unit += rc.heading_not_unit;
         tally.corners.extend(r.iter().map(|x| x.points.len()));
+        let ev = events(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let ec = check_events(&ev);
+        tally.event.events += ec.events;
+        tally.event.circuits += ec.circuits;
+        tally.event.sprints += ec.sprints;
+        tally.event.flag_disagrees += ec.flag_disagrees;
+        for e in &ev {
+            *tally.seen_events.entry(e.id).or_default() += 1;
+        }
         let name = file.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         tally.files += 1;
         if n.is_empty() {
@@ -202,14 +215,26 @@ pub fn run(path: &Path, list: usize) -> Result<()> {
         tally.corners.get(tally.corners.len() * 19 / 20).copied().unwrap_or(0)
     );
 
+    let ev = tally.event;
+    println!(
+        "events: {} records · {} distinct (the catalogue repeats in every file of its region) · \
+         {} circuits, {} sprints · {} whose flag and outline disagree",
+        ev.events,
+        tally.seen_events.len(),
+        ev.circuits,
+        ev.sprints,
+        ev.flag_disagrees
+    );
+
     for line in &offenders {
         println!("{line}");
     }
 
-    if c.is_clean() && rg.is_clean() {
+    if c.is_clean() && rg.is_clean() && ev.is_clean() {
         println!(
             "OK — every link is a node of its own table or absent, every +18 is zero, every path \
-             is one contiguous run, and every region's box is its own points' extent"
+             is one contiguous run, every region's box is its own points' extent, and every \
+             event's circuit flag matches its outline"
         );
         Ok(())
     } else {
