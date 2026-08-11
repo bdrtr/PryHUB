@@ -188,3 +188,78 @@ mod tests {
         assert_eq!(mtl.matches("map_Kd").count(), 1);
     }
 }
+
+/// Apply a world solid's own placement to one of its vertices.
+///
+/// Row-vector convention, basis in rows 0-2 and translation in row 3, applied as-is: the layout is
+/// byte-identical to a column-major OpenGL matrix, so transposing it puts the whole city on the
+/// origin. Identity is checked rather than multiplied because 12,914 of the city's objects carry it.
+#[must_use]
+pub fn place_world_point(header: &crate::world::WorldSolidHeader, p: [f32; 3]) -> [f32; 3] {
+    if !header.is_placed() {
+        return p;
+    }
+    let m = &header.matrix;
+    [
+        p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0],
+        p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1],
+        p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2],
+    ]
+}
+
+/// Build the OBJ text for a set of world solids, naming each run's material via `material_for`.
+///
+/// **No frame conversion.** The city is authored Z-up and Blender is Z-up, so the honest export is
+/// the file's own coordinates — a renderer that wants Y-up converts on its own side, and a modeller
+/// opening this gets the city standing the way the game's own tools saw it.
+///
+/// `material_for(mesh, run_index)` returns the `newmtl` name to reference; a solid with no runs is
+/// emitted as one run with index 0 so geometry is never dropped for want of a material.
+#[must_use]
+pub fn write_world_obj(
+    meshes: &[crate::world::WorldMesh],
+    mtl_file: &str,
+    material_for: impl Fn(&crate::world::WorldMesh, usize) -> String,
+) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "# exported by gizmo-nfs — NFSU2 world coordinates, Z-up as authored");
+    let _ = writeln!(s, "mtllib {mtl_file}");
+    let mut base = 1usize;
+    for m in meshes {
+        if m.positions.is_empty() || m.indices.is_empty() {
+            continue;
+        }
+        let _ = writeln!(s, "\no {}", m.header.name);
+        for v in &m.positions {
+            let g = place_world_point(&m.header, *v);
+            let _ = writeln!(s, "v {:.5} {:.5} {:.5}", g[0], g[1], g[2]);
+        }
+        for uv in &m.uvs {
+            // OBJ's V axis runs the other way from the one the game samples with.
+            let _ = writeln!(s, "vt {:.5} {:.5}", uv[0], 1.0 - uv[1]);
+        }
+        let uvs = m.uvs.len();
+        let runs: Vec<(usize, usize, usize)> = if m.groups.is_empty() {
+            vec![(0, 0, m.indices.len())]
+        } else {
+            m.groups
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (i, g.index_offset, g.index_count))
+                .collect()
+        };
+        for (run, offset, count) in runs {
+            let Some(slice) = m.indices.get(offset..offset + count) else { continue };
+            let _ = writeln!(s, "usemtl {}", material_for(m, run));
+            for t in slice.chunks_exact(3) {
+                let f = |i: u32| {
+                    let v = base + i as usize;
+                    if (i as usize) < uvs { format!("{v}/{v}") } else { v.to_string() }
+                };
+                let _ = writeln!(s, "f {} {} {}", f(t[0]), f(t[1]), f(t[2]));
+            }
+        }
+        base += m.positions.len();
+    }
+    s
+}

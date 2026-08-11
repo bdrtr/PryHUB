@@ -278,6 +278,9 @@ enum Command {
         /// Emit one CSV row per bundle instead of the readable report.
         #[arg(long)]
         csv: bool,
+        /// Write the city as OBJ + MTL + PNG into this directory instead of reporting.
+        #[arg(long, value_name = "DIR")]
+        export: Option<PathBuf>,
     },
     /// Decode every solid of a city bundle and check it against what the file declares.
     ///
@@ -398,7 +401,7 @@ fn main() -> ExitCode {
             axes.and_then(|a| import::run(&file, &obj, part.as_deref(), &out, force, a))
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
-        Command::World { path, csv } => world::run(&path, csv),
+        Command::World { path, csv, export } => world::run(&path, csv, export.as_deref()),
         Command::Verify { path, list } => verify::run(&path, list),
         Command::Track { path, list } => track::run(&path, list),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),

@@ -17,7 +17,7 @@ pub mod obj;
 #[cfg(feature = "png")]
 pub use gltf::write_glb;
 pub use material::MaterialPlan;
-pub use obj::{write_mtl, write_obj, Material};
+pub use obj::{place_world_point, write_mtl, write_obj, write_world_obj, Material};
 
 use crate::types::NfsTexture;
 

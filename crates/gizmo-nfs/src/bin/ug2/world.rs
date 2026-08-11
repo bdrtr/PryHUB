@@ -18,7 +18,112 @@ use std::path::Path;
 /// needed before the city can be held in memory at all.
 const ENGINE_VERTEX_STRIDE: usize = 92;
 
-pub fn run(path: &Path, csv: bool) -> Result<()> {
+/// Write the city as OBJ + MTL + PNG, for opening in a modeller.
+///
+/// **Why this is worth having beyond the novelty.** Every question this crate answered about the
+/// city was answered by rendering it and squinting, which is slow and gets things wrong: two roofs
+/// on one car and a distance imposter standing in open ground both went unnoticed in a running
+/// frame and are obvious the moment the geometry is in front of you. A modeller is the instrument
+/// that was missing.
+///
+/// Exported in the file's own coordinates. NFSU2 is Z-up and Blender is Z-up, so there is nothing
+/// to convert and nothing to get wrong.
+///
+/// Byte-identical repeats are dropped — 14,847 of the eight bundles' 28,985 objects are one, and
+/// leaving them in gives every surface a twin to z-fight with.
+fn export(path: &Path, out: &Path) -> Result<()> {
+    use gizmo_nfs::export::{png_bytes, png_name, write_mtl, write_world_obj, Material};
+    use gizmo_nfs::types::AssetHash;
+    use gizmo_nfs::world::{meshes, packs};
+    use std::collections::{BTreeMap, HashSet};
+
+    let bundles = collect(path)?;
+    if bundles.is_empty() {
+        return Err(format!("{}: no STREAM*.BUN here", path.display()));
+    }
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+
+    let bytes: Vec<Vec<u8>> = bundles.iter().map(|b| crate::paths::read(b)).collect::<Result<_>>()?;
+    let mut all = Vec::new();
+    let mut all_packs = Vec::new();
+    for b in &bytes {
+        all.extend(meshes(b).map_err(|e| format!("{}: {e}", path.display()))?);
+        all_packs.extend(packs(b).map_err(|e| format!("{}: {e}", path.display()))?);
+    }
+    let declared = all.len();
+    let mut seen = HashSet::new();
+    all.retain(|m| {
+        let bits = |v: [f32; 3]| [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+        seen.insert((
+            m.header.hash.0,
+            m.positions.len(),
+            m.indices.len(),
+            bits(m.header.bbox_min),
+            bits(m.header.bbox_max),
+            m.header.matrix.map(|r| r.map(f32::to_bits)),
+        ))
+    });
+    println!("{declared} objects, {} after dropping byte-identical repeats", all.len());
+
+    // One material per texture key, plus one for the runs whose key resolves nowhere — those draw
+    // grey rather than vanishing, the same decision the renderer makes and for the same reason.
+    // `NfsMaterialRange::hash` is already the resolved key: the file names a run's texture by
+    // *index* into the solid's `0x00134012` list and the reader turns that into the hash while it
+    // walks. Treating it as an index again happens to work — a 32-bit hash never lands inside a
+    // slot list of a few entries, so the lookup misses and the fallback returns the hash — and it
+    // is the kind of accident that survives until one hash is small.
+    let key_of = |m: &gizmo_nfs::world::WorldMesh, run: usize| -> Option<AssetHash> {
+        if m.groups.is_empty() {
+            return m.texture_slots.first().copied();
+        }
+        m.groups.get(run).map(|g| g.hash)
+    };
+    let mut images: BTreeMap<u32, String> = BTreeMap::new();
+    let mut materials = Vec::new();
+    for m in &all {
+        for run in 0..m.groups.len().max(1) {
+            let Some(k) = key_of(m, run) else { continue };
+            if images.contains_key(&k.0) {
+                continue;
+            }
+            let decoded = all_packs.iter().find_map(|p| p.get(k).and_then(|t| p.decode(t).ok()));
+            let Some(img) = decoded else { continue };
+            let name = png_name(&img);
+            let png = png_bytes(&img).map_err(|e| format!("{name}: {e}"))?;
+            std::fs::write(out.join(&name), png).map_err(|e| format!("{name}: {e}"))?;
+            materials.push(Material {
+                name: format!("tex_{:08X}", k.0),
+                map: Some(name.clone()),
+                map_is_cutout: img.rgba.chunks_exact(4).any(|p| p[3] < 250),
+                diffuse: [1.0, 1.0, 1.0],
+            });
+            images.insert(k.0, name);
+        }
+    }
+    materials.push(Material {
+        name: "unresolved".into(),
+        map: None,
+        map_is_cutout: false,
+        diffuse: [0.35, 0.35, 0.38],
+    });
+    println!("{} textures written, {} materials", images.len(), materials.len());
+
+    let obj = write_world_obj(&all, "city.mtl", |m, run| {
+        key_of(m, run)
+            .filter(|k| images.contains_key(&k.0))
+            .map_or_else(|| "unresolved".to_string(), |k| format!("tex_{:08X}", k.0))
+    });
+    std::fs::write(out.join("city.obj"), obj).map_err(|e| format!("city.obj: {e}"))?;
+    std::fs::write(out.join("city.mtl"), write_mtl(&materials))
+        .map_err(|e| format!("city.mtl: {e}"))?;
+    println!("wrote {}/city.obj and city.mtl", out.display());
+    Ok(())
+}
+
+pub fn run(path: &Path, csv: bool, out: Option<&Path>) -> Result<()> {
+    if let Some(out) = out {
+        return export(path, out);
+    }
     let bundles = collect(path)?;
     if bundles.is_empty() {
         return Err(format!("{}: no STREAM*.BUN here", path.display()));
