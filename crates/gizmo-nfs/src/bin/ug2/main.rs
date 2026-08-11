@@ -40,6 +40,7 @@ mod probe;
 mod profile;
 mod replace;
 mod textures;
+mod track;
 mod tune;
 mod verify;
 mod world;
@@ -289,6 +290,18 @@ enum Command {
         #[arg(long, value_name = "N", default_value_t = 20)]
         list: usize,
     },
+    /// Read the route files' node tables and check them against themselves.
+    ///
+    /// A route file declares no counts to compare against, so the check is the record's own
+    /// consistency: three of its fields are indices into the very table they sit in. Exits
+    /// non-zero if any of them is not.
+    Track {
+        /// A `Paths*.bin`, a `ROUTES*` directory, or `TRACKS` to do all of them.
+        path: PathBuf,
+        /// How many offending files to name before summarising.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        list: usize,
+    },
     /// Compare two asset files chunk by chunk.
     Diff {
         /// The file to read as the "before".
@@ -387,6 +400,7 @@ fn main() -> ExitCode {
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::World { path, csv } => world::run(&path, csv),
         Command::Verify { path, list } => verify::run(&path, list),
+        Command::Track { path, list } => track::run(&path, list),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
             export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)

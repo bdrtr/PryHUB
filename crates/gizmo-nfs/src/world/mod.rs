@@ -22,14 +22,17 @@
 //! [`header`] reads the `0x00134011` solid header and [`manifest`] walks a bundle for every one of
 //! them plus its vertex and triangle counts — the manifest layer, with no vertex decoded. [`tpk`]
 //! reads the city's own texture-pack variant, whose records state pixel format and dimensions
-//! outright. Vertex buffers and the route files are not here yet.
+//! outright. [`routes`] reads the route files' node table — the graph a race is driven along — and
+//! nothing else of them yet.
 
 pub mod header;
 pub mod manifest;
 pub mod object;
+pub mod routes;
 pub mod tpk;
 
 pub use header::{read_header, WorldSolidHeader};
 pub use manifest::{manifest, WorldObjectInfo};
 pub use object::{meshes, WorldMesh};
+pub use routes::{nodes, NodeCheck, RouteNode};
 pub use tpk::{packs, records, TrackPack, TrackTexture};
