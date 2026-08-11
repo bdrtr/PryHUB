@@ -263,11 +263,25 @@ pub const REGION_HEAD: usize = 68;
 
 /// One polygonal region of a route: a place, a facing, and the ground it covers.
 ///
-/// **What these are is not settled and the names here say only what was measured.** They are large
-/// — median area 8,073 m² — they lie on the road (198 of 200 sampled centres stand on drivable
-/// surface, and 97 % of their edges have road on both sides), and each carries a direction. That
-/// combination is what an "are you on the course, and facing the right way" test needs, and this
-/// install ships no barrier chunk, so it is the standing candidate for one. It is not proof.
+/// **What these are is not settled and the names here say only what was measured.** [`Self::kind`]
+/// splits them into two families, and the split is sharp:
+///
+/// **Placed markers, whose polygon is derived.** Kinds 13, 18 and 19 are **8.00 × 8.00 m** squares
+/// and kind 14 is **15.00 × 15.00 m**; across the install every one of them has four corners, right
+/// angles at all four, and a centre on its own `origin` — 11,801 / 3,416 / 3,599 / 1,403 records
+/// with no exception among the quads — and its `heading` lies along an edge to within 0.0° at the
+/// 10th *and* 90th percentile. There is no spread at all, which means the corners are generated
+/// from `origin`, `heading` and a size rather than authored, and a consumer can treat these as an
+/// oriented square and ignore the points. 19,000 of the 42,698 records are one of these.
+///
+/// **Areas, whose polygon is the point.** Kinds 3, 4, 11, 12, 16 and 17 have their `origin`
+/// *outside* the polygon in 100 % of records and run from 731 m² up to a single 7,961,882 m² sheet.
+/// Kinds 5, 6 and 7 sit between: origin inside, hundreds to thousands of m², and the highest rate
+/// of lying on the carriageway (85–91 % of their centres stand on drivable road).
+///
+/// The heading is **not** the road's direction — compared against the local direction of the
+/// nearest route node within 60 m, the medians run 48–91° with no kind aligning. For the marker
+/// kinds it is the square's own orientation; for the area kinds it is still unexplained.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RouteRegion {
