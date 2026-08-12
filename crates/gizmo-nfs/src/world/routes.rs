@@ -1,4 +1,5 @@
-//! The route files: `TRACKS/ROUTES*/Paths*.bin`.
+//! The route files: `TRACKS/ROUTES*/Paths*.bin`, and the lane files beside them,
+//! `TRACKS/ROUTES*/Routes####F.bin` / `Routes####B.bin`.
 //!
 //! 113 files across eight `ROUTES*` directories, one per race route. Each is a single
 //! `0x80034147` container holding up to five leaves; every file has `0x0003414A` and `0x0003414D`,
@@ -64,9 +65,45 @@
 //! how the other optional fields here spell "none". It is carried through as a raw word so a caller
 //! can measure it further; naming a field is a claim, and this one is not earned yet.
 //!
-//! The other four leaves are not read. `0x0003414D` is a whole number of 36-byte units in every
-//! file and `0x0003414C` of 16-byte ones; `0x0003414A` divides by nothing above 4, so it is either
-//! variable-length or headed.
+//! ## `0x0003414D`: read, but not named
+//!
+//! 36-byte records, 118,729 across 111 files, and the leaf is **region-wide** — byte-identical in
+//! every file of a region, `PathsFreeRoam.bin` included. The record is pinned by its own
+//! redundancy: `+17` is the count of non-zero words at `+20`, exactly so in 118,729 of 118,729,
+//! with everything past the count zero and `+16`/`+19` zero throughout. See [`read_segments`].
+//!
+//! What each record holds is two points a median 24.4 m apart — a segment, not a box, because none
+//! of the 118,729 is zero-length — a flag, and one to four 32-bit references.
+//!
+//! **The references are not named, and three guesses have been killed rather than left open.** They
+//! are not the region's solid hashes, not its texture slot keys and not `0x0003414A`'s region ids:
+//! 0 of 3,032 resolve in each case. The whole install uses **159 distinct values** in four tight
+//! clusters, with runs of consecutive values inside a cluster — the signature of `h * 33 + byte`
+//! over names differing in their last character — so they read as name hashes over four families,
+//! and naming them wants a corpus of candidate names that is not to hand.
+//!
+//! ## The lane files: `Routes####F.bin` and `Routes####B.bin`
+//!
+//! 226 files beside the `Paths*.bin`, in forward/backward pairs, holding three leaves:
+//! `0x00034121` in all 226, `0x00034122` in 222 — all but the two test-track regions — and
+//! `0x00034123` in the 122 `ROUTESL4RA` files only, where it is always exactly 10,488 bytes and
+//! **byte-identical in all 122**. Only `0x00034121` is read; see [`read_lanes`] for the walk and
+//! what refuses a wrong one.
+//!
+//! **What the `F`/`B` pair actually is.** Of a pair's three chunks, `0x00034123` is byte-identical
+//! in all 60 pairs that have it, while `0x00034121` and `0x00034122` differ in all 105 — but at
+//! the same length in 104 of them. Inside `0x00034121` the two files carry the **same blocks, with
+//! the same names, in the same order, with the same point counts**, and the order is emphatically
+//! not reversed: matching block `i` of `F` against block `n-1-i` of `B` holds in 9 of 7,399 tries
+//! against 5,912 for matching them straight. Only two things change — the header's `+56`/`+60`
+//! span, and each point's [`LanePoint::along`]. Their sum is constant within a block in 5,912 of
+//! 7,399, so the pair is one geometry with the route measure taken from opposite ends.
+//!
+//! **What that does not settle.** It was expected to say which of a track's two starting grids a
+//! race uses and which end of a grid is the front. It does not: `along` is a coordinate along a
+//! *block*, and a block is a stretch of road shared between races rather than one race's line — of
+//! 442 full grids, the nearest lane point puts 116 near a block's start, 54 near its end and 212 in
+//! the middle. The layout is stated here; the front/back question stays open.
 
 use crate::chunk::{walk, Visit};
 use crate::error::{NfsError, NfsResult};
@@ -774,6 +811,315 @@ pub fn check_markers(markers: &[StartMarker]) -> MarkerCheck {
             c.grids += 1;
         } else {
             c.grid_misnumbered += 1;
+        }
+    }
+    c
+}
+
+// ── 0x0003414D: the marked segments ───────────────────────────────────────────────────────────
+
+/// The segment leaf of a `Paths*.bin`. Region-wide: byte-identical in every file of a region,
+/// including its `PathsFreeRoam.bin`.
+pub const SEGMENT_CHUNK: u32 = 0x0003_414D;
+
+/// One segment record's length. Every payload in the install is a whole multiple of it.
+pub const SEGMENT_LEN: usize = 36;
+
+/// A short run of ground with up to four references hung off it.
+///
+/// **What it is not** is as far as this has been taken, and the negatives are the useful part: the
+/// four trailing words are not the region's solid hashes (0 of 3,032 resolve), not its texture slot
+/// keys (0), and not `0x0003414A`'s region ids (0). Naming them is left open rather than guessed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteSegment {
+    /// `+0`…`+15`: two points in the world's own frame, no height.
+    ///
+    /// A segment and not a box: across the install the two points are a median **24.4 m** apart
+    /// (p05 7.9, p95 75.1, longest 792.6) and **none** of the 118,729 is zero-length, which a box
+    /// stored as `(min, max)` would be wherever something was flat.
+    pub at: [[f32; 2]; 2],
+    /// `+18`: set in 115,984 of 118,729 records and clear in 2,745. Uninterpreted.
+    pub flag: u8,
+    /// `+20`…`+35`: one to four 32-bit references, the count declared at `+17`.
+    ///
+    /// **The whole install uses 159 distinct values**, in four tight clusters — 93 in
+    /// `0x01F224BE..0x01F242AA`, 60 in `0x4EA23A69..0x4EA23F98`, 5 in `0xD59BF29A..0xD59BF29E`, and
+    /// one alone at `0x01FB47FD`. Values inside a cluster run consecutively in places, which is
+    /// what [`crate::hash`]'s `h * 33 + byte` gives two names differing in their last character; so
+    /// they read as name hashes over four families. Which names is not answered. Only the
+    /// `0x01F2` family appears outside `ROUTESL4RA`; the other three are the city's alone.
+    pub refs: Vec<u32>,
+}
+
+/// Read one `0x0003414D` payload into segments.
+///
+/// The record is pinned by its own redundancy rather than by a stride that happens to divide:
+/// `+17` is the number of non-zero words at `+20`, and it is exactly that in **118,729 of
+/// 118,729** records, with every word past the count zero in all of them, and `+16` and `+19` zero
+/// in all of them. Read at 24 bytes instead that count holds for 47.3 % of records and at 48 bytes
+/// for 33.5 %; 32 and 40 do not divide a single payload.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if the payload is not a whole number of records, if `+17` is above
+/// four or disagrees with the words that follow it, or if `+16`/`+19` are not zero.
+pub fn read_segments(payload: &[u8]) -> NfsResult<Vec<RouteSegment>> {
+    if !payload.len().is_multiple_of(SEGMENT_LEN) {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x0003414D payload is not a whole number of 36-byte segment records",
+        });
+    }
+    let mut out = Vec::with_capacity(payload.len() / SEGMENT_LEN);
+    for record in payload.chunks_exact(SEGMENT_LEN) {
+        let mut r = ByteReader::at(record, 0)?;
+        let at = [[r.f32_le()?, r.f32_le()?], [r.f32_le()?, r.f32_le()?]];
+        if record[16] != 0 || record[19] != 0 {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x0003414D record has a non-zero byte where the format keeps zero",
+            });
+        }
+        let count = usize::from(record[17]);
+        if count > 4 {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x0003414D record declares more than four references",
+            });
+        }
+        let mut refs = Vec::with_capacity(count);
+        for i in 0..4 {
+            let mut w = ByteReader::at(record, 20 + i * 4)?;
+            let word = w.u32_le()?;
+            if i < count {
+                if word == 0 {
+                    return Err(NfsError::CorruptArchive {
+                        detail: "0x0003414D record declares a reference it did not write",
+                    });
+                }
+                refs.push(word);
+            } else if word != 0 {
+                return Err(NfsError::CorruptArchive {
+                    detail: "0x0003414D record wrote a reference past its own count",
+                });
+            }
+        }
+        out.push(RouteSegment { at, flag: record[18], refs });
+    }
+    Ok(out)
+}
+
+/// Every segment a route file declares. Empty rather than an error when the file carries none.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`NfsError::CorruptArchive`] from [`read_segments`].
+pub fn segments(file: &[u8]) -> NfsResult<Vec<RouteSegment>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == SEGMENT_CHUNK && !data.is_empty() {
+                match read_segments(data) {
+                    Ok(mut s) => out.append(&mut s),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    failed.map_or(Ok(out), Err)
+}
+
+// ── Routes####F/B.bin: the lane blocks ────────────────────────────────────────────────────────
+
+/// The chunk holding the lane blocks, in `Routes####F.bin` and `Routes####B.bin`.
+///
+/// The two other chunks in those files are not read yet. `0x0003_4122` is in 222 of the 226 files
+/// — every one except the two test-track regions — and autocorrelates at a stride of 32;
+/// `0x0003_4123` is in the 122 `ROUTESL4RA` files only, is always exactly 10,488 bytes, is
+/// **byte-identical in all 122**, and autocorrelates at 16.
+pub const LANE_CHUNK: u32 = 0x0003_4121;
+
+/// Bytes of a lane block's header, before its records.
+const LANE_HEADER: usize = 84;
+/// Bytes of one record inside a lane block.
+const LANE_RECORD: usize = 56;
+
+/// One point on a lane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LanePoint {
+    /// `+0`/`+4`: where it is, in the world's own frame. No height — these files are flat.
+    pub at: [f32; 2],
+    /// `+8`: how far along the route this point is.
+    ///
+    /// The unit is world units, the same as the step between points: across 58,714 consecutive
+    /// pairs the ratio of this field's change to the plain XY distance has p05 0.018, median 0.75
+    /// and p95 1.37 — under one because a lane wanders across the road while it advances along it.
+    ///
+    /// **The direction is not fixed.** A block may count up or down: it is one-way along the block
+    /// in 3,927 of 6,686 sampled blocks, and where it counts down the first point holds the
+    /// largest value. Read it as a coordinate, not as a distance travelled, and take direction from
+    /// the sign of the change rather than from the record order.
+    pub along: f32,
+}
+
+/// One lane of a route: a named run of points with the extent it covers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lane {
+    /// `+16`, 16 bytes: `TrackRoutesA10` … `TrackRoutesA64`.
+    ///
+    /// Thirty of them exist, `A{group}{variant}` with group `1..6` and variant `0..4`, and every
+    /// one of the thirty is used. The letter is always `A` — it is not the region, which was the
+    /// first guess: `ROUTESL4RG`'s files carry `TrackRoutesA50` just as `ROUTESL4RB`'s do. A group
+    /// belongs to a set of regions and not to one (`A30` appears in six of the eight, `A6x` only in
+    /// `ROUTESL4RB`), so it is a kind of lane rather than a place.
+    pub name: String,
+    /// `+10`: the block's number within its file. Runs up, with gaps.
+    pub id: u16,
+    /// `+56`/`+60`: the smallest and largest [`LanePoint::along`] in the block.
+    ///
+    /// Holds in 16,358 of 17,222 blocks with a median error of zero. **These are the only two
+    /// fields of the header that differ between the `F` file and the `B` one.**
+    pub span: [f32; 2],
+    /// The first record's `+12`…`+27`: `[min_x, min_y, max_x, max_y]`.
+    ///
+    /// Every point of every block is inside it — 17,222 of 17,222 — with a median margin of
+    /// exactly 10 m. The first record is not a point and is not returned as one; this is what it
+    /// carries.
+    pub bounds: [f32; 4],
+    /// The lane itself, in file order.
+    pub points: Vec<LanePoint>,
+}
+
+/// Read the lane blocks of a `0x0003_4121` payload.
+///
+/// **The walk is self-describing rather than a guess.** A block is `84` bytes of header and
+/// `count + 1` records of `56`, where `count` is the `u16` at `+52` — repeated at `+54`, and the
+/// two agree in all 17,222 blocks of the install. Walking by it consumes the payload **exactly**
+/// in all 222 files that have one, and the four that do not have one carry an empty chunk.
+///
+/// That is a stronger statement than it sounds, because every neighbouring reading fails it in
+/// every file: a header of 80 or 88 bytes, a record of 52 or 60, or taking the count from `+50` or
+/// `+56` each land off the end in **222 of 222**. This function refuses all of them.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if the two counts disagree, if a block's name is not one of the
+/// format's, if a block runs past the payload, or if the walk does not end exactly on its end.
+pub fn read_lanes(payload: &[u8]) -> NfsResult<Vec<Lane>> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at < payload.len() {
+        let head = payload.get(at..at + LANE_HEADER).ok_or(NfsError::CorruptArchive {
+            detail: "0x00034121 block header runs past the payload",
+        })?;
+        let mut r = ByteReader::at(head, 10)?;
+        let id = r.u16_le()?;
+        // Cut at the first NUL, not at the trailing ones: the field is a C string in a fixed
+        // 16-byte slot and what follows the terminator is whatever was there before. Trimming from
+        // the end instead lets that tail into the name, and turns thirty names into thirty-four.
+        let field = &head[16..32];
+        let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+        let name = String::from_utf8_lossy(&field[..end]).trim_end().to_owned();
+        if !name.starts_with("TrackRoutes") {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x00034121 block is not named TrackRoutes*",
+            });
+        }
+        let mut r = ByteReader::at(head, 52)?;
+        let (count, again) = (r.u16_le()?, r.u16_le()?);
+        if count != again {
+            return Err(NfsError::CorruptArchive {
+                detail: "0x00034121 block states its point count twice and the two disagree",
+            });
+        }
+        let mut r = ByteReader::at(head, 56)?;
+        let span = [r.f32_le()?, r.f32_le()?];
+
+        let records = usize::from(count) + 1;
+        let body_at = at + LANE_HEADER;
+        let body = payload
+            .get(body_at..body_at + records * LANE_RECORD)
+            .ok_or(NfsError::CorruptArchive {
+                detail: "0x00034121 block claims more records than the payload holds",
+            })?;
+        // The first record is the block's own box, not a point on it.
+        let mut r = ByteReader::at(&body[..LANE_RECORD], 12)?;
+        let bounds = [r.f32_le()?, r.f32_le()?, r.f32_le()?, r.f32_le()?];
+        let mut points = Vec::with_capacity(usize::from(count));
+        for record in body[LANE_RECORD..].chunks_exact(LANE_RECORD) {
+            let mut r = ByteReader::at(record, 0)?;
+            points.push(LanePoint { at: [r.f32_le()?, r.f32_le()?], along: r.f32_le()? });
+        }
+        out.push(Lane { name, id, span, bounds, points });
+        at = body_at + records * LANE_RECORD;
+    }
+    if at != payload.len() {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x00034121 block walk did not land on the end of the payload",
+        });
+    }
+    Ok(out)
+}
+
+/// Every lane block in a `Routes####F.bin` or `Routes####B.bin`.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`NfsError::CorruptArchive`] from [`read_lanes`].
+pub fn lanes(file: &[u8]) -> NfsResult<Vec<Lane>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == LANE_CHUNK && !data.is_empty() {
+                match read_lanes(data) {
+                    Ok(mut l) => out.append(&mut l),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    failed.map_or(Ok(out), Err)
+}
+
+/// What a set of lanes checks out as. Both counts are zero across the install.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LaneCheck {
+    /// How many blocks were read.
+    pub lanes: usize,
+    /// How many points they hold, the first record of each block excluded.
+    pub points: usize,
+    /// Blocks with a point outside their own stated box. **Zero across the install.**
+    pub outside_bounds: usize,
+    /// Blocks whose `span` is not the extent of their points' `along`. 864 of 17,222 — a check
+    /// that fails, kept as a number rather than dropped, because whatever those blocks are is not
+    /// understood yet.
+    pub span_wrong: usize,
+}
+
+/// Hold a set of lanes against themselves.
+#[must_use]
+pub fn check_lanes(lanes: &[Lane]) -> LaneCheck {
+    let mut c = LaneCheck { lanes: lanes.len(), ..LaneCheck::default() };
+    for l in lanes {
+        c.points += l.points.len();
+        if l.points.iter().any(|p| {
+            p.at[0] < l.bounds[0]
+                || p.at[0] > l.bounds[2]
+                || p.at[1] < l.bounds[1]
+                || p.at[1] > l.bounds[3]
+        }) {
+            c.outside_bounds += 1;
+        }
+        let (lo, hi) = l.points.iter().fold((f32::MAX, f32::MIN), |(a, b), p| {
+            (a.min(p.along), b.max(p.along))
+        });
+        if l.points.is_empty() || (lo - l.span[0]).abs() > 0.01 || (hi - l.span[1]).abs() > 0.01 {
+            c.span_wrong += 1;
         }
     }
     c

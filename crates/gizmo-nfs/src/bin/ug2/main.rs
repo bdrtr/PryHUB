@@ -308,6 +308,13 @@ enum Command {
         /// How many offending files to name before summarising.
         #[arg(long, value_name = "N", default_value_t = 20)]
         list: usize,
+        /// Also print every start-marker group: its track, its slots, and where it puts them.
+        #[arg(long)]
+        grids: bool,
+        /// Resolve `0x0003414D`'s trailing words against the region's own bundle and say how many
+        /// are object hashes. Needs the bundles beside the `ROUTES*` directories.
+        #[arg(long)]
+        objects: bool,
     },
     /// Compare two asset files chunk by chunk.
     Diff {
@@ -407,7 +414,7 @@ fn main() -> ExitCode {
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
         Command::World { path, csv, export, y_up } => world::run(&path, csv, export.as_deref(), y_up),
         Command::Verify { path, list } => verify::run(&path, list),
-        Command::Track { path, list } => track::run(&path, list),
+        Command::Track { path, list, grids, objects } => track::run(&path, list, grids, objects),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
             export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)

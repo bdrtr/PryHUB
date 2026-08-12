@@ -64,6 +64,19 @@ fn export(path: &Path, out: &Path, y_up: bool) -> Result<()> {
         ))
     });
     println!("{declared} objects, {} after dropping byte-identical repeats", all.len());
+    if bundles.len() > 1 {
+        // Said loudly because it is invisible until you open the result: the bundles are not tiles
+        // of one city, they are per-race supersets, and two of them carry their own ground for the
+        // same map. Exported together they stack — measured under one race's 341 route nodes, 16
+        // have three road surfaces above one another and 56 have two, against none and 21 from a
+        // single bundle.
+        println!(
+            "  NOTE: {} bundles exported together. They overlap — `STREAML4RB` and `STREAML4RG` \
+             each carry their own terrain and road layer for the same ground — so the result has \
+             the city stacked several deep. Export one `STREAM*.BUN` for a single, unlayered world.",
+            bundles.len()
+        );
+    }
 
     // One material per texture key, plus one for the runs whose key resolves nowhere — those draw
     // grey rather than vanishing, the same decision the renderer makes and for the same reason.
