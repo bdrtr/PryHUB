@@ -54,6 +54,13 @@
 //! measurement reads **median 29.2 m, p95 65.9 m, and 0.9 % jumps**: each run is a polyline you
 //! could drive.
 //!
+//! **A polyline, though, and not an arrow.** File order gives the *sequence* and not the
+//! *direction*: across the install **1,361 of the 2,923 paths end lower in `progress` than they
+//! start**, so nearly half are stored against the way they are driven. Which end is the start is a
+//! question for `+20` and not for the index — walk a path by file order and you have a coin flip
+//! per path, which reads as a car driving the right road the wrong way. `ug2 track` reports the
+//! count so a caller cannot forget it.
+//!
 //! The links then say what they are for. **94.8 %** of the 19,409 present links point at a node in
 //! a *different* path — so adjacency along a path is implicit in the order, and `+12`/`+14`/`+16`
 //! are the junctions where paths meet. That also explains why they read as a poor undirected

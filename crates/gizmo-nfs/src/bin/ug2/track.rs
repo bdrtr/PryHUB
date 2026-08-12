@@ -151,6 +151,8 @@ struct Tally {
     seg_refs: usize,
     seg_words: std::collections::BTreeSet<u32>,
     seg_len: Vec<f32>,
+    paths_seen: usize,
+    paths_falling: usize,
     corners: Vec<usize>,
     steps: Vec<f32>,
     ratios: Vec<f32>,
@@ -171,6 +173,15 @@ impl Tally {
         // over the whole table mixes in the jump from one path's end to the next one's start, and
         // that single mistake is what a "0.787" turns out to be made of.
         for path in paths(n) {
+            // Does a path's own progress rise along file order? The module says nodes of one path
+            // are "in driving order", and contiguity is proven — but the *direction* is not, and
+            // a walk that assumes it runs a third of the network backwards.
+            if path.len() > 1 {
+                self.paths_seen += 1;
+                if path[path.len() - 1].progress < path[0].progress {
+                    self.paths_falling += 1;
+                }
+            }
             for pair in path.windows(2) {
                 let (a, b) = (pair[0], pair[1]);
                 let step = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
@@ -598,6 +609,12 @@ pub fn run(path: &Path, list: usize, grids_flag: bool, objects_flag: bool) -> Re
             q(0.95)
         );
     }
+
+    println!(
+        "path direction: {} of {} paths end lower in progress than they start — file order is not \
+         driving order for those",
+        tally.paths_falling, tally.paths_seen
+    );
 
     let ln = tally.lane;
     println!(
