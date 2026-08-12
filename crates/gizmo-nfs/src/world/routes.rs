@@ -877,15 +877,20 @@ pub struct PathInfo {
     pub nodes: u16,
     /// `+36`: another path this one runs into.
     ///
-    /// **A lead, not a decoded field, and the numbers say exactly how far it goes.** It names a
-    /// path the node-level links also reach in **96.6 %** of records, so it is a path-level
-    /// adjacency rather than a coincidence. Followed as a successor — chain from path to path
-    /// until it repeats — it lays out a line covering at least 95 % of the route's own stated
-    /// length in **43 of 105** routes and at least half in 79, with a median of 80 %; every route
-    /// made of a single path comes out at 100 %.
+    /// **Adjacency, not sequence — and the second number is what settles that.** It names a path
+    /// the node-level links also reach in **96.6 %** of records, so the relation is real. But a
+    /// successor has to be somewhere you can drive *to*, and it is not: this path's far end lands
+    /// within 40 m of the named path's near end in only **40.2 %** of the install's records. A
+    /// field that meant "the next stretch of road" would be near 100.
     ///
-    /// So it is *a* successor and not *the* sequence. Something else decides where the chain
-    /// starts and what happens where it breaks, and that something is not read.
+    /// Followed as a successor anyway it does surprisingly well — chained until it repeats, it
+    /// covers at least 95 % of the route's own stated length in 43 of 105 routes and at least half
+    /// in 79, median 80 %, and every single-path route comes out at 100 % — which is what makes it
+    /// a lead worth recording and a trap worth labelling.
+    ///
+    /// `+68` was the other candidate, since its `+36` points back at us in 71.2 % of records. It
+    /// fails the same test the same way, at 50.3 %. Whatever orders a race's paths, neither of
+    /// these two is it.
     pub next: u16,
     /// `+116`/`+120`: [`RouteNode::progress`] at the path's first and last node **in file order**.
     ///
