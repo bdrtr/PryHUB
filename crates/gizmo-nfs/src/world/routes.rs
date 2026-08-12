@@ -85,8 +85,13 @@
 //! progress at the path's first and last node **in file order**, and `+128`/`+132`, the smallest
 //! and largest on it. Together they are the file stating a path's direction — see [`PathInfo`].
 //!
+//! Four more fields are read. `+20` is the path's own id and `+32` its node count, both exact in
+//! 2,923 of 2,923 — the first is what makes a record self-identifying, and inferring it from
+//! position instead disagrees in 2,811. `+36` names another path, and it is carried as a lead with
+//! its own limits attached: see [`PathInfo::next`].
+//!
 //! The record opens with up to four bytes of ASCII (`R8d`, `F19d`, `M…`, `C…`, `J…`), carried as a
-//! tag without a claim about what it names. The other ~200 bytes are not read. One reading was
+//! tag without a claim about what it names. The remaining ~180 bytes are not read. One reading was
 //! tried and refused: the `u16` run near `+174` looks like a list of the events that use the path —
 //! in `Paths4001.bin` it reads `4001, 4003, 4104, 4083`, four real track numbers — but only **5 of
 //! the 105** files contain their own number anywhere in the record, so whatever that run is, it is
@@ -863,6 +868,25 @@ pub struct PathInfo {
     /// `+0`, up to four bytes of ASCII: `R8d`, `F19d`, `M…`, `C…`, `J…`. A tag rather than a
     /// sentence, and it is carried without a claim about what it names.
     pub name: String,
+    /// `+20`: the path's own id — the same value its nodes carry at their `+8`. Exact in 2,923 of
+    /// 2,923 records, which is what makes a record self-identifying: a caller does not have to
+    /// infer that the *n*th record describes path *n*, and inferring it from position in the node
+    /// table instead disagrees in 2,811 of them.
+    pub id: u16,
+    /// `+32`: how many nodes the path has. Exact in 2,923 of 2,923.
+    pub nodes: u16,
+    /// `+36`: another path this one runs into.
+    ///
+    /// **A lead, not a decoded field, and the numbers say exactly how far it goes.** It names a
+    /// path the node-level links also reach in **96.6 %** of records, so it is a path-level
+    /// adjacency rather than a coincidence. Followed as a successor — chain from path to path
+    /// until it repeats — it lays out a line covering at least 95 % of the route's own stated
+    /// length in **43 of 105** routes and at least half in 79, with a median of 80 %; every route
+    /// made of a single path comes out at 100 %.
+    ///
+    /// So it is *a* successor and not *the* sequence. Something else decides where the chain
+    /// starts and what happens where it breaks, and that something is not read.
+    pub next: u16,
     /// `+116`/`+120`: [`RouteNode::progress`] at the path's first and last node **in file order**.
     ///
     /// Exact in **2,923 of 2,923** records. Together with [`Self::low`]/[`Self::high`] this is the
@@ -901,12 +925,21 @@ pub fn read_path_info(payload: &[u8]) -> NfsResult<Vec<PathInfo>> {
     let mut out = Vec::with_capacity(payload.len() / PATH_LEN);
     for record in payload.chunks_exact(PATH_LEN) {
         let end = record[..4].iter().position(|b| *b == 0).unwrap_or(4);
+        let mut r = ByteReader::at(record, 20)?;
+        let id = r.u16_le()?;
+        let mut r = ByteReader::at(record, 32)?;
+        let nodes = r.u16_le()?;
+        let mut r = ByteReader::at(record, 36)?;
+        let next = r.u16_le()?;
         let mut r = ByteReader::at(record, 116)?;
         let (from, to) = (r.f32_le()?, r.f32_le()?);
         let mut r = ByteReader::at(record, 128)?;
         let (low, high) = (r.f32_le()?, r.f32_le()?);
         out.push(PathInfo {
             name: String::from_utf8_lossy(&record[..end]).into_owned(),
+            id,
+            nodes,
+            next,
             from,
             to,
             low,
@@ -956,6 +989,10 @@ pub struct PathInfoCheck {
     pub span_wrong: usize,
     /// Records the file marks as stored against the way they are driven.
     pub reversed: usize,
+    /// Records whose `+20` is not their own index.
+    pub id_wrong: usize,
+    /// Records whose `+32` is not the path's node count.
+    pub node_count_wrong: usize,
 }
 
 /// Check a file's path records against its own nodes.
@@ -988,6 +1025,12 @@ pub fn check_path_info(info: &[PathInfo], nodes: &[RouteNode]) -> PathInfoCheck 
         }
         if !p.driven_in_file_order() {
             c.reversed += 1;
+        }
+        if usize::from(p.id) != i {
+            c.id_wrong += 1;
+        }
+        if usize::from(p.nodes) != run.len() {
+            c.node_count_wrong += 1;
         }
     }
     c

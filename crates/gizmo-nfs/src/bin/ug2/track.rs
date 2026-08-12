@@ -434,6 +434,8 @@ pub fn run(path: &Path, list: usize, grids_flag: bool, objects_flag: bool) -> Re
             tally.path_info.ends_wrong += pc.ends_wrong;
             tally.path_info.span_wrong += pc.span_wrong;
             tally.path_info.reversed += pc.reversed;
+            tally.path_info.id_wrong += pc.id_wrong;
+            tally.path_info.node_count_wrong += pc.node_count_wrong;
         }
         let seg = segments(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
         tally.segments += seg.len();
@@ -626,8 +628,10 @@ pub fn run(path: &Path, list: usize, grids_flag: bool, objects_flag: bool) -> Re
     println!(
         "path records (0x34149): {} · {} files whose count is not the path count · {} whose \
          from/to are not the first and last node · {} whose low/high are not the extent · {} the \
-         file marks as stored against the way they are driven",
-        pi.records, pi.count_wrong, pi.ends_wrong, pi.span_wrong, pi.reversed
+         file marks as stored against the way they are driven · {} whose +20 is not their own \
+         index · {} whose +32 is not the node count",
+        pi.records, pi.count_wrong, pi.ends_wrong, pi.span_wrong, pi.reversed, pi.id_wrong,
+        pi.node_count_wrong
     );
     println!(
         "path direction: {} of {} paths end lower in progress than they start — measured, and the \
