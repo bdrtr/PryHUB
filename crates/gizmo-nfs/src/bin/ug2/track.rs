@@ -43,8 +43,8 @@
 use crate::paths::Result;
 use gizmo_nfs::world::routes::{
     check, check_events, check_lanes, check_markers, check_regions, events, lanes, markers, nodes,
-    paths, regions, segments, EventCheck, LaneCheck, MarkerCheck, NodeCheck, RaceEvent,
-    RegionCheck, RouteNode, StartMarker,
+    path_info, paths, regions, segments, check_path_info, EventCheck, LaneCheck, MarkerCheck,
+    NodeCheck, PathInfoCheck, RaceEvent, RegionCheck, RouteNode, StartMarker,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -151,6 +151,7 @@ struct Tally {
     seg_refs: usize,
     seg_words: std::collections::BTreeSet<u32>,
     seg_len: Vec<f32>,
+    path_info: PathInfoCheck,
     paths_seen: usize,
     paths_falling: usize,
     corners: Vec<usize>,
@@ -423,6 +424,17 @@ pub fn run(path: &Path, list: usize, grids_flag: bool, objects_flag: bool) -> Re
         tally.corners.extend(r.iter().map(|x| x.points.len()));
         // 0x0003414D, held to its own redundancy: the reader refuses a record whose count and
         // words disagree, so reading them all at all is the check.
+        // 0x00034149: one 220-byte record per path, and the two fields in it that are read are
+        // checked against the very nodes they describe.
+        let pi = path_info(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        if !pi.is_empty() {
+            let pc = check_path_info(&pi, &n);
+            tally.path_info.records += pc.records;
+            tally.path_info.count_wrong += pc.count_wrong;
+            tally.path_info.ends_wrong += pc.ends_wrong;
+            tally.path_info.span_wrong += pc.span_wrong;
+            tally.path_info.reversed += pc.reversed;
+        }
         let seg = segments(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
         tally.segments += seg.len();
         for s in &seg {
@@ -610,9 +622,16 @@ pub fn run(path: &Path, list: usize, grids_flag: bool, objects_flag: bool) -> Re
         );
     }
 
+    let pi = tally.path_info;
     println!(
-        "path direction: {} of {} paths end lower in progress than they start — file order is not \
-         driving order for those",
+        "path records (0x34149): {} · {} files whose count is not the path count · {} whose \
+         from/to are not the first and last node · {} whose low/high are not the extent · {} the \
+         file marks as stored against the way they are driven",
+        pi.records, pi.count_wrong, pi.ends_wrong, pi.span_wrong, pi.reversed
+    );
+    println!(
+        "path direction: {} of {} paths end lower in progress than they start — measured, and the \
+         file says the same in 0x34149",
         tally.paths_falling, tally.paths_seen
     );
 

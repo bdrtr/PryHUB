@@ -58,8 +58,14 @@
 //! *direction*: across the install **1,361 of the 2,923 paths end lower in `progress` than they
 //! start**, so nearly half are stored against the way they are driven. Which end is the start is a
 //! question for `+20` and not for the index — walk a path by file order and you have a coin flip
-//! per path, which reads as a car driving the right road the wrong way. `ug2 track` reports the
-//! count so a caller cannot forget it.
+//! per path, which reads as a car driving the right road the wrong way.
+//!
+//! And the file says so itself, in the leaf that was unread until this was measured the hard way:
+//! see [`read_path_info`]. `0x00034149` is **one 220-byte record per path** — exactly
+//! `220 × the path count` in all 105 files — and its `+116`/`+120` are the progress at the path's
+//! first and last node in file order, exact in 2,923 of 2,923. When those two are the wrong way
+//! round the path is reversed, and the count that falls out agrees with the measurement to the
+//! record.
 //!
 //! The links then say what they are for. **94.8 %** of the 19,409 present links point at a node in
 //! a *different* path — so adjacency along a path is implicit in the order, and `+12`/`+14`/`+16`
@@ -71,6 +77,20 @@
 //! `+10`'s two bytes each use `0xFF` heavily (3,616 records have `0xFF` in the high byte) which is
 //! how the other optional fields here spell "none". It is carried through as a raw word so a caller
 //! can measure it further; naming a field is a claim, and this one is not earned yet.
+//!
+//! ## `0x00034149`: one record per path
+//!
+//! 220 bytes each, and the count is the node table's own path count in all 105 files that carry
+//! the leaf. Two fields are read and both are exact in 2,923 of 2,923 records: `+116`/`+120`, the
+//! progress at the path's first and last node **in file order**, and `+128`/`+132`, the smallest
+//! and largest on it. Together they are the file stating a path's direction — see [`PathInfo`].
+//!
+//! The record opens with up to four bytes of ASCII (`R8d`, `F19d`, `M…`, `C…`, `J…`), carried as a
+//! tag without a claim about what it names. The other ~200 bytes are not read. One reading was
+//! tried and refused: the `u16` run near `+174` looks like a list of the events that use the path —
+//! in `Paths4001.bin` it reads `4001, 4003, 4104, 4083`, four real track numbers — but only **5 of
+//! the 105** files contain their own number anywhere in the record, so whatever that run is, it is
+//! not that.
 //!
 //! ## `0x0003414D`: read, but not named
 //!
@@ -818,6 +838,156 @@ pub fn check_markers(markers: &[StartMarker]) -> MarkerCheck {
             c.grids += 1;
         } else {
             c.grid_misnumbered += 1;
+        }
+    }
+    c
+}
+
+// ── 0x00034149: one record per path ───────────────────────────────────────────────────────────
+
+/// The per-path leaf of a `Paths*.bin`.
+pub const PATH_CHUNK: u32 = 0x0003_4149;
+
+/// One path record's length.
+///
+/// Not a divisor that happens to fit: the payload is **exactly** `PATH_LEN × the node table's path
+/// count` in all 105 files that carry one, and the path count is itself proven — every value of
+/// `+8` occupies one contiguous run, in 105 of 105 tables.
+pub const PATH_LEN: usize = 220;
+
+/// What the route file says about one of its paths.
+///
+/// Most of the record is not read. What is read is read at 100 %.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathInfo {
+    /// `+0`, up to four bytes of ASCII: `R8d`, `F19d`, `M…`, `C…`, `J…`. A tag rather than a
+    /// sentence, and it is carried without a claim about what it names.
+    pub name: String,
+    /// `+116`/`+120`: [`RouteNode::progress`] at the path's first and last node **in file order**.
+    ///
+    /// Exact in **2,923 of 2,923** records. Together with [`Self::low`]/[`Self::high`] this is the
+    /// file stating a path's direction, which otherwise has to be measured: `from > to` says the
+    /// path is stored against the way it is driven, and 1,361 of the install's paths are.
+    pub from: f32,
+    pub to: f32,
+    /// `+128`/`+132`: the smallest and largest progress on the path. Exact in 2,923 of 2,923.
+    pub low: f32,
+    pub high: f32,
+}
+
+impl PathInfo {
+    /// Whether the path's nodes are stored in the order they are driven.
+    ///
+    /// The one thing this record settles that nothing else does. A caller that walks a path by
+    /// index without asking gets a coin flip, and the way it fails — a car driving the right road
+    /// the wrong way — reads as a physics or AI bug long before it reads as a decode.
+    #[must_use]
+    pub fn driven_in_file_order(&self) -> bool {
+        self.to >= self.from
+    }
+}
+
+/// Read one `0x00034149` payload into per-path records.
+///
+/// # Errors
+///
+/// [`NfsError::CorruptArchive`] if the payload is not a whole number of records.
+pub fn read_path_info(payload: &[u8]) -> NfsResult<Vec<PathInfo>> {
+    if !payload.len().is_multiple_of(PATH_LEN) {
+        return Err(NfsError::CorruptArchive {
+            detail: "0x00034149 payload is not a whole number of 220-byte path records",
+        });
+    }
+    let mut out = Vec::with_capacity(payload.len() / PATH_LEN);
+    for record in payload.chunks_exact(PATH_LEN) {
+        let end = record[..4].iter().position(|b| *b == 0).unwrap_or(4);
+        let mut r = ByteReader::at(record, 116)?;
+        let (from, to) = (r.f32_le()?, r.f32_le()?);
+        let mut r = ByteReader::at(record, 128)?;
+        let (low, high) = (r.f32_le()?, r.f32_le()?);
+        out.push(PathInfo {
+            name: String::from_utf8_lossy(&record[..end]).into_owned(),
+            from,
+            to,
+            low,
+            high,
+        });
+    }
+    Ok(out)
+}
+
+/// Every path record a route file declares. Empty rather than an error when it carries none.
+///
+/// # Errors
+///
+/// Propagates a walk failure, or [`NfsError::CorruptArchive`] from [`read_path_info`].
+pub fn path_info(file: &[u8]) -> NfsResult<Vec<PathInfo>> {
+    let mut out = Vec::new();
+    let mut failed = None;
+    walk(
+        file,
+        |_, _| Ok(Visit::Descend),
+        |_, header, data| {
+            if header.id == PATH_CHUNK && !data.is_empty() {
+                match read_path_info(data) {
+                    Ok(mut p) => out.append(&mut p),
+                    Err(e) => failed = Some(e),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    failed.map_or(Ok(out), Err)
+}
+
+/// Hold the path records against the node table they describe.
+///
+/// Every count here is zero across the install, which is what makes the two fields a reading rather
+/// than a guess: a record whose stated span disagrees with the nodes it covers would be an offset
+/// that lands on something else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PathInfoCheck {
+    pub records: usize,
+    /// Files where the record count is not the node table's path count.
+    pub count_wrong: usize,
+    /// Records whose `from`/`to` are not the first and last node's progress.
+    pub ends_wrong: usize,
+    /// Records whose `low`/`high` are not the smallest and largest.
+    pub span_wrong: usize,
+    /// Records the file marks as stored against the way they are driven.
+    pub reversed: usize,
+}
+
+/// Check a file's path records against its own nodes.
+#[must_use]
+pub fn check_path_info(info: &[PathInfo], nodes: &[RouteNode]) -> PathInfoCheck {
+    // Keyed by the path's **id**, not by where its run sits in the file. The two are not the same
+    // order — `paths` returns runs as the file lays them out, and a record's index is the id it
+    // describes. Pairing them by position instead disagrees with the nodes in 2,811 of 2,923
+    // records, which is what that mistake looks like from the outside: a field that seems wrong.
+    let runs = paths(nodes);
+    let by_id: BTreeMap<u16, &[RouteNode]> =
+        runs.iter().filter(|r| !r.is_empty()).map(|r| (r[0].path, *r)).collect();
+    let mut c = PathInfoCheck {
+        records: info.len(),
+        count_wrong: usize::from(info.len() != runs.len()),
+        ..PathInfoCheck::default()
+    };
+    for (i, p) in info.iter().enumerate() {
+        let Ok(id) = u16::try_from(i) else { continue };
+        let Some(run) = by_id.get(&id).copied() else { continue };
+        let (first, last) = (run[0].progress, run[run.len() - 1].progress);
+        let (lo, hi) = run.iter().fold((f32::MAX, f32::MIN), |(a, b), n| {
+            (a.min(n.progress), b.max(n.progress))
+        });
+        if (p.from - first).abs() > 0.5 || (p.to - last).abs() > 0.5 {
+            c.ends_wrong += 1;
+        }
+        if (p.low - lo).abs() > 0.5 || (p.high - hi).abs() > 0.5 {
+            c.span_wrong += 1;
+        }
+        if !p.driven_in_file_order() {
+            c.reversed += 1;
         }
     }
     c
