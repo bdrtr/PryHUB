@@ -334,7 +334,12 @@ pub struct Chassis {
     /// wheel's friction circle; the sliding one is the force a sliding wheel gives. The peak is the
     /// larger in every one of the 46 records (a 240SX 1.70 against 1.40).
     pub tyre_grip: [[f32; 2]; 2],
-    /// Downforce, front then rear. Around 0.14–0.18; units not established.
+    /// Downforce, front then rear, in **kN per m/s of speed** — linear in speed, not quadratic.
+    /// Around 0.14–0.18. The aero code (`0x59E620`) pushes the body down by `lane · |v|` at each
+    /// axle's point, scaled by `max((v̂·forward)², 0.4)`; a 240SX's 0.145 + 0.154 is 8.3 kN at
+    /// 100 km/h, 0.7 of its weight. Measured in the game, from the process's memory: the four wheel
+    /// loads summed read 1.00 / 1.43 / 1.65 / 1.90 × the car's weight at 20 / 60 / 100 / 140 km/h,
+    /// and this formula gives 1.00 / 1.41 / 1.69 / 1.97.
     pub downforce: [f32; 2],
     /// How far the ride-height slider can lower the car, front then rear, in metres (0.02–0.05).
     /// The slider runs from minus this to zero. 0 on every traffic vehicle.
