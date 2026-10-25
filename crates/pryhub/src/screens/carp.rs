@@ -22,8 +22,9 @@
 //! changing it, installing it and driving. Each one's evidence, its rival readings and the
 //! experiment that would decide it are in [`gizmo_nfs::Unproven`].
 //!
-//! Thirty-two of the forty-seven rows have a lane; **twenty-six of those are proved and six are
-//! candidates**. It was seven: `steer_lock` was wired to the per-car angle at `+0x284`, set from
+//! Fifty-seven of the sixty-four rows have a lane; **fifty-six of those are proved and one is a
+//! candidate**. There were seven candidates once, and every one that left did so by being tested.
+//! The first: `steer_lock` was wired to the per-car angle at `+0x284`, set from
 //! 37° to 12° on a 240SX, installed and driven, and the car steered exactly as before. The row is a
 //! dash again, and the dash means something it did not mean before — *tested*, not *unexamined*.
 //!
@@ -43,40 +44,47 @@
 //! * Everything else the record stores **once**, so it is shown under `STOCK` and left blank under
 //!   the upgrades — repeating a number across four columns would read as "this upgrade changes
 //!   nothing", which the file does not say.
-//! * `[::AERO]` is the one section with nothing at all, and it now has a reason rather than a
-//!   shrug: the sweep over the 46 records found nothing, and `SPEED2.EXE` holds `aero_drag`,
-//!   `aero_lift` and `downforce` in a single **global** block. Aero may simply not be per-car in
-//!   this game, which would explain a null that no amount of further sweeping was going to fix.
-//! * `[::BRAKES]` keeps two of three empty and promotes the third to a candidate. That row is
-//!   `+0x38C`: 0.47–0.60 in all 46 records, a *front fraction* just over half, ordering by
-//!   drivetrain (FWD 0.564, RWD 0.531, AWD 0.530) so front-heavy cars get more front brake, and the
-//!   game's own tuning text reads "Brake bias controls how much braking the front tires do verses
-//!   the rears." Against it: set to 0.02 on a real 240SX, installed and driven, braking unchanged
+//! * **The tuning sliders were located by the game's code, not by sweeping.** `SPEED2.EXE` sets
+//!   every Dyno slider's range in one function that reads named lanes of this record, and
+//!   `English.bin` names the sliders in the same order. That filled `grip_*`, `downforce_*` and the
+//!   whole of `[::SUSPENSION]` as **proved** rows — see [`gizmo_nfs::Chassis`] for the table and
+//!   what it overturned. The units are still the file's own: the code says which slider owns which
+//!   lane, not what a 1.70 of grip is in newtons.
+//! * `[::AERO]` has downforce and no drag. `drag_coef` stays a dash: the slider code reads per-car
+//!   downforce and nothing for drag, which may well be one of the global aero constants.
+//! * `[::BRAKES]` is full now, two rows proved and one a candidate. `brake_force` and `handbrake`
+//!   are `+0x384` and `+0x388`, read in the tyre code as the per-wheel brake and handbrake torques —
+//!   and the second is the lane `cg_height` used to point at, which is why that row is a dash again.
+//!   The candidate is `+0x38C`: 0.47–0.60 in all 46 records, a *front fraction* just over half,
+//!   ordering by drivetrain (FWD 0.564, RWD 0.531, AWD 0.530) so front-heavy cars get more front
+//!   brake, and the game's own tuning text reads "Brake bias controls how much braking the front
+//!   tires do verses the rears." Against it: set to 0.02 on a real 240SX, installed and driven, braking unchanged
 //!   — but a bias moves force between axles and does not change **stopping distance**, so that
-//!   experiment very likely watched the wrong thing. A brake *force* and a handbrake stay dashes.
+//!   experiment very likely watched the wrong thing.
 //! * `[::STEERING]` is half filled and the two halves are the two ways this screen has been wrong.
 //!   `steer_speed` was ruled out for a good reason about the wrong quantity — the only steering
 //!   *angles* found were a global ±43 — and it is not an angle at all; setting a 240SX's to 0.05
 //!   produced a car that would barely turn. `steer_lock` went the other way: a per-car angle at
-//!   `+0x284` looked right enough to wire in as a candidate, and the drive refused it. It also reads
-//!   100 on every traffic vehicle against a bus's 75, and 60 on a HUMMER against 27 on a 106 — small
-//!   cars have *more* lock, not less. So the row is empty for the third time and for a new reason:
-//!   it has been tested. The lane and its refutation are kept in
-//!   [`gizmo_nfs::Unproven::angle_284_deg`] rather than deleted, so nobody proposes it again.
+//!   `+0x284` looked right enough to wire in as a candidate, and the drive refused it. The game's
+//!   code later said why: `+0x284` is the **front spring** — now `spring_f` in `[::SUSPENSION]`. So
+//!   the row stays empty, and the lane it was tested against has a name.
 //! * `torque_scale` has no lane because the curve is stored in absolute N·m, so there is nothing to
-//!   scale. `shift_time`'s only candidate is one constant shared by 45 of 46 cars. `grip_*`,
-//!   `slip_angle`, `weight_bias_f` and `cg_height` were swept for and are absent.
+//!   scale. `shift_time`'s only candidate is one constant shared by 45 of 46 cars. `weight_bias_f`
+//!   was swept for and is absent. `slip_angle` was too, and the sweep was wrong: it is the first
+//!   lane of each tyre block, read by the lateral-force code — 12° in every record, which is why a
+//!   search for a lane that *varies* never found it.
 //! * `[::TIRES]` has **two** width rows where the design has one, because the file has two: 12 of
 //!   the 46 records give the rear axle a different width from the front — a SUPRA is 225 / 245 —
-//!   and one row writing all four corners would quietly square them off. Its grip rows stay empty:
-//!   the only claim anyone has made for them reads `+0.730, −0.730, −0.730, +0.730` across the four
-//!   corners, which is a mirrored coordinate rather than a grip, and whose "rear" is the front-right
-//!   wheel.
+//!   and one row writing all four corners would quietly square them off. Its grip rows are **two
+//!   per axle** for the same reason: the record stores two lanes per axle — the peak and the sliding
+//!   grip, as the tyre code reads them — and the game averages them when it shows one number.
 //! * `[::SUSPENSION]` is a **tenth section the design does not draw**, and it is here because the
 //!   game names it. `LANGUAGES/English.bin` lists front and rear springs, shocks and sway bars among
 //!   its ten tuning sliders, so stopping at nine sections was inheriting the design's omission
-//!   rather than being faithful to it. Four of the six rows have a candidate lane in two eight-lane
-//!   blocks at `+0x1E0` and `+0x200`; the sway bars have none and stay dashes.
+//!   rather than being faithful to it. All of it is proved now: spring and how fast it stiffens,
+//!   bump and rebound, sway bar, the two ends of the travel and ride-height drop per axle, in two
+//!   blocks at `+0x280` and `+0x2A0` and a pair at `+0x714`. The blocks at `+0x1E0`/`+0x200` that used to be read here as springs and dampers are
+//!   the tyre grip.
 //!
 //! # Writing
 //!
@@ -153,14 +161,11 @@ enum Source {
     /// The steering multiplier — see the module note for why this row exists and its neighbour
     /// does not.
     SteerRatio,
-    /// Candidate: centre-of-gravity height at `+0x388`.
-    CgHeight,
     /// Candidate: front brake bias at `+0x38C`.
     BrakeBias,
-    /// Candidate: spring rate of axle `0` front / `1` rear.
-    Spring(usize),
-    /// Candidate: damping rate of the same axle.
-    Damper(usize),
+    /// A lane of [`gizmo_nfs::Chassis`] — suspension, tyre, downforce, ride height or brake — named
+    /// by the field it is.
+    Chassis(CarField),
     /// Nothing in this install answers it. See the module note.
     NotLocated,
 }
@@ -238,7 +243,8 @@ static SECTIONS: &[Section] = &[
         params: &[
             got("mass", "kg", Source::MassKg),
             gap("weight_bias_f", "%"),
-            cand("cg_height", "m", Source::CgHeight),
+            // Was a candidate on `+0x388`, which the tyre code reads as the handbrake torque.
+            gap("cg_height", "m"),
         ],
     },
     Section {
@@ -282,23 +288,34 @@ static SECTIONS: &[Section] = &[
     Section {
         name: "[::TIRES]",
         params: &[
-            gap("grip_front", "g"),
-            gap("grip_rear", "g"),
-            gap("slip_angle", "°"),
+            got("grip_front", "μ", Source::Chassis(CarField::TyreGrip { axle: 0, lane: 0 })),
+            got("grip_front_slide", "μ", Source::Chassis(CarField::TyreGrip { axle: 0, lane: 1 })),
+            got("grip_rear", "μ", Source::Chassis(CarField::TyreGrip { axle: 1, lane: 0 })),
+            got("grip_rear_slide", "μ", Source::Chassis(CarField::TyreGrip { axle: 1, lane: 1 })),
+            got("slip_angle_f", "°", Source::Chassis(CarField::TyreSlipDeg(0))),
+            got("slip_angle_r", "°", Source::Chassis(CarField::TyreSlipDeg(1))),
+            got("tire_load_f", "kN", Source::Chassis(CarField::TyreLoad(0))),
+            got("tire_load_r", "kN", Source::Chassis(CarField::TyreLoad(1))),
+            got("tire_lat_f", "×", Source::Chassis(CarField::TyreLateral(0))),
+            got("tire_lat_r", "×", Source::Chassis(CarField::TyreLateral(1))),
             got("tire_width_f", "mm", Source::TyreWidthFront),
             got("tire_width_r", "mm", Source::TyreWidthRear),
         ],
     },
     Section {
         name: "[::AERO]",
-        params: &[gap("drag_coef", "Cd"), gap("downforce_f", "N"), gap("downforce_r", "N")],
+        params: &[
+            gap("drag_coef", "Cd"),
+            got("downforce_f", "", Source::Chassis(CarField::Downforce(0))),
+            got("downforce_r", "", Source::Chassis(CarField::Downforce(1))),
+        ],
     },
     Section {
         name: "[::BRAKES]",
         params: &[
-            gap("brake_force", "×"),
+            got("brake_force", "", Source::Chassis(CarField::Brake)),
             cand("brake_bias_f", "", Source::BrakeBias),
-            gap("handbrake", "×"),
+            got("handbrake", "", Source::Chassis(CarField::Handbrake)),
         ],
     },
     Section {
@@ -307,27 +324,37 @@ static SECTIONS: &[Section] = &[
             // Empty again, and this time it is a **result** rather than a gap nobody has looked
             // into. The per-car angle at `+0x284` was proposed for this row, wired in as a
             // candidate, set from 37° to 12° on a 240SX, installed and driven — and the car steered
-            // exactly as before. It also reads 100 on every traffic vehicle against a bus's 75, and
-            // 60 on a HUMMER against 27 on a 106. See `gizmo_nfs::Unproven::angle_284_deg`, which
-            // keeps the lane and the refutation; the row keeps the dash.
+            // exactly as before. The game's slider code later named the lane: it is the front
+            // spring, `spring_f` below. The row keeps the dash.
             gap("steer_lock", "°"),
             got("steer_speed", "×", Source::SteerRatio),
         ],
     },
     // The tenth section, which the design does not draw. It is here because **the game names it**:
-    // `LANGUAGES/English.bin` lists front and rear springs, shocks and sway bars among its ten
-    // tuning sliders, so a table that stops at nine sections is not being faithful to the design so
-    // much as inheriting its omission. Four of the six have a candidate lane; the sway bars do not,
-    // and stay dashes rather than being fitted to whatever is nearby.
+    // `LANGUAGES/English.bin` lists front and rear springs, shocks and sway bars among its tuning
+    // sliders, so a table that stops at nine sections is not being faithful to the design so much
+    // as inheriting its omission. Every row is a lane `SPEED2.EXE`'s slider or suspension code
+    // reads — see `gizmo_nfs::Chassis`. The shock has two rows per axle, bump and rebound, because
+    // the force code picks one by the direction the wheel is moving.
     Section {
         name: "[::SUSPENSION]",
         params: &[
-            cand("spring_f", "", Source::Spring(0)),
-            cand("damper_f", "", Source::Damper(0)),
-            cand("spring_r", "", Source::Spring(1)),
-            cand("damper_r", "", Source::Damper(1)),
-            gap("sway_bar_f", ""),
-            gap("sway_bar_r", ""),
+            got("spring_f", "kN/m", Source::Chassis(CarField::Spring(0))),
+            got("spring_rise_f", "1/m", Source::Chassis(CarField::SpringRise(0))),
+            got("bump_f", "kNs/m", Source::Chassis(CarField::Shock { axle: 0, lane: 0 })),
+            got("rebound_f", "kNs/m", Source::Chassis(CarField::Shock { axle: 0, lane: 1 })),
+            got("sway_bar_f", "kN/m", Source::Chassis(CarField::SwayBar(0))),
+            got("travel_bump_f", "m", Source::Chassis(CarField::Travel { axle: 0, lane: 0 })),
+            got("travel_droop_f", "m", Source::Chassis(CarField::Travel { axle: 0, lane: 1 })),
+            got("ride_drop_f", "m", Source::Chassis(CarField::RideDropM(0))),
+            got("spring_r", "kN/m", Source::Chassis(CarField::Spring(1))),
+            got("spring_rise_r", "1/m", Source::Chassis(CarField::SpringRise(1))),
+            got("bump_r", "kNs/m", Source::Chassis(CarField::Shock { axle: 1, lane: 0 })),
+            got("rebound_r", "kNs/m", Source::Chassis(CarField::Shock { axle: 1, lane: 1 })),
+            got("sway_bar_r", "kN/m", Source::Chassis(CarField::SwayBar(1))),
+            got("travel_bump_r", "m", Source::Chassis(CarField::Travel { axle: 1, lane: 0 })),
+            got("travel_droop_r", "m", Source::Chassis(CarField::Travel { axle: 1, lane: 1 })),
+            got("ride_drop_r", "m", Source::Chassis(CarField::RideDropM(1))),
         ],
     },
 ];
@@ -472,8 +499,9 @@ pub struct Car {
     steer_ratio: f32,
     /// One per upgrade level: final drive, gear count, and the forward ratios.
     gearbox: [(f32, usize, [f32; 6]); 4],
-    /// The lanes with a candidate meaning: steer lock, CoG height, brake bias, and the two axles'
-    /// spring and damper. Kept together and drawn marked — see [`Claim`].
+    /// The suspension, tyre and brake lanes. See [`gizmo_nfs::Chassis`].
+    chassis: gizmo_nfs::Chassis,
+    /// The lane with a candidate meaning: brake bias. Drawn marked — see [`Claim`].
     unproven: gizmo_nfs::Unproven,
 }
 
@@ -500,6 +528,7 @@ impl Car {
             torque_rpm: h.torque_rpm(),
             tyre_width_mm,
             gearbox,
+            chassis: h.chassis,
             unproven: h.unproven,
         }
     }
@@ -548,15 +577,21 @@ impl Car {
                         *w = v;
                     }
                 }
-                F::CgHeight => self.unproven.cg_height = v,
                 F::BrakeBiasFront => self.unproven.brake_bias_f = v,
-                F::Spring(axle) => {
-                    if let Some(x) = self.unproven.spring.get_mut(axle) {
-                        *x = v;
-                    }
-                }
-                F::Damper(axle) => {
-                    if let Some(x) = self.unproven.damper.get_mut(axle) {
+                F::SpringRise(_)
+                | F::Spring(_)
+                | F::Shock { .. }
+                | F::SwayBar(_)
+                | F::Travel { .. }
+                | F::TyreSlipDeg(_)
+                | F::TyreLoad(_)
+                | F::TyreLateral(_)
+                | F::TyreGrip { .. }
+                | F::Downforce(_)
+                | F::RideDropM(_)
+                | F::Brake
+                | F::Handbrake => {
+                    if let Some(x) = chassis_lane(&mut self.chassis, field) {
                         *x = v;
                     }
                 }
@@ -764,9 +799,6 @@ fn cell(param: &Param, car: Option<&Car>, level: usize) -> Cell {
         Source::SteerRatio => {
             stock_only(num(car.steer_ratio, CarField::SteerRatio, 2, 0.01, 0.0, 10.0))
         }
-        Source::CgHeight => {
-            stock_only(num(car.unproven.cg_height, CarField::CgHeight, 3, 0.005, 0.0, 5.0))
-        }
         Source::BrakeBias => stock_only(num(
             car.unproven.brake_bias_f,
             CarField::BrakeBiasFront,
@@ -775,12 +807,25 @@ fn cell(param: &Param, car: Option<&Car>, level: usize) -> Cell {
             0.0,
             1.0,
         )),
-        Source::Spring(axle) => match car.unproven.spring.get(axle) {
-            Some(&v) => stock_only(num(v, CarField::Spring(axle), 3, 0.005, 0.0, 20.0)),
-            None => Cell::Empty,
-        },
-        Source::Damper(axle) => match car.unproven.damper.get(axle) {
-            Some(&v) => stock_only(num(v, CarField::Damper(axle), 3, 0.005, 0.0, 20.0)),
+        Source::Chassis(field) => match chassis_lane(&mut car.chassis.clone(), field) {
+            // Ride-height drop and travel are a few centimetres — the extension stop below zero —
+            // and the brake torques and grips want their third decimal; everything else is a
+            // coefficient in the ones-to-hundreds, and steps the way the other ratios do.
+            Some(&mut v) if matches!(field, CarField::RideDropM(_)) => {
+                stock_only(num(v, field, 3, 0.001, 0.0, 0.5))
+            }
+            Some(&mut v) if matches!(field, CarField::Travel { .. }) => {
+                stock_only(num(v, field, 3, 0.001, -1.0, 1.0))
+            }
+            Some(&mut v)
+                if matches!(
+                    field,
+                    CarField::Brake | CarField::Handbrake | CarField::TyreGrip { .. }
+                ) =>
+            {
+                stock_only(num(v, field, 3, 0.005, 0.0, 10.0))
+            }
+            Some(&mut v) => stock_only(num(v, field, 2, 0.01, 0.0, 500.0)),
             None => Cell::Empty,
         },
         Source::GearCount => num(count as f32, CarField::GearCount(level), 0, 0.05, 1.0, 6.0),
@@ -887,6 +932,27 @@ fn dirty_count(file: Option<&Car>, edits: &BTreeMap<CarField, f32>) -> usize {
         .count()
 }
 
+/// The [`gizmo_nfs::Chassis`] slot behind a field, or `None` for any other field.
+fn chassis_lane(c: &mut gizmo_nfs::Chassis, field: CarField) -> Option<&mut f32> {
+    use CarField as F;
+    match field {
+        F::SpringRise(axle) => c.spring_rise.get_mut(axle),
+        F::Spring(axle) => c.spring.get_mut(axle),
+        F::Shock { axle, lane } => c.shock.get_mut(axle)?.get_mut(lane),
+        F::SwayBar(axle) => c.sway_bar.get_mut(axle),
+        F::Travel { axle, lane } => c.travel_m.get_mut(axle)?.get_mut(lane),
+        F::TyreSlipDeg(axle) => c.tyre_slip_deg.get_mut(axle),
+        F::TyreLoad(axle) => c.tyre_load.get_mut(axle),
+        F::TyreLateral(axle) => c.tyre_lateral.get_mut(axle),
+        F::TyreGrip { axle, lane } => c.tyre_grip.get_mut(axle)?.get_mut(lane),
+        F::Downforce(axle) => c.downforce.get_mut(axle),
+        F::RideDropM(axle) => c.ride_drop_m.get_mut(axle),
+        F::Brake => Some(&mut c.brake),
+        F::Handbrake => Some(&mut c.handbrake),
+        _ => None,
+    }
+}
+
 /// What the file holds in one lane, in the units the pending map keeps.
 fn stored_value(car: &Car, field: CarField) -> Option<f32> {
     use CarField as F;
@@ -903,10 +969,20 @@ fn stored_value(car: &Car, field: CarField) -> Option<f32> {
         F::GearCount(level) => car.gearbox.get(level)?.1 as f32,
         F::Gear { level, gear } => *car.gearbox.get(level)?.2.get(gear.checked_sub(1)?)?,
         F::TyreWidthMm(corner) => *car.tyre_width_mm.get(corner)?,
-        F::CgHeight => car.unproven.cg_height,
         F::BrakeBiasFront => car.unproven.brake_bias_f,
-        F::Spring(axle) => *car.unproven.spring.get(axle)?,
-        F::Damper(axle) => *car.unproven.damper.get(axle)?,
+        F::SpringRise(_)
+        | F::Spring(_)
+        | F::Shock { .. }
+        | F::SwayBar(_)
+        | F::Travel { .. }
+        | F::TyreSlipDeg(_)
+        | F::TyreLoad(_)
+        | F::TyreLateral(_)
+        | F::TyreGrip { .. }
+        | F::Downforce(_)
+        | F::RideDropM(_)
+        | F::Brake
+        | F::Handbrake => *chassis_lane(&mut car.chassis.clone(), field)?,
         _ => return None,
     })
 }
@@ -1438,11 +1514,12 @@ mod tests {
         // to be seen as one, which is what this line is for.
         assert_eq!(SECTIONS.len(), 10, "the design's nine, plus the one the game names");
         assert_eq!(SECTIONS[9].name, "[::SUSPENSION]");
-        // 47 rows: the design's 39, plus one because its torque section generates eight rows from
+        // 64 rows: the design's 39, plus one because its torque section generates eight rows from
         // its own `rpmSteps` where the file holds nine points; plus one because its single
         // tyre-width row is two here (12 of the 46 records give the rear axle its own width); plus
-        // the six of the new section.
-        assert_eq!(total(), 47, "the design's rows, at the file's own resolution");
+        // two because each axle's grip is two lanes; plus five because its one slip-angle row is
+        // the tyre block's three per-axle curve lanes here; plus the sixteen of the new section.
+        assert_eq!(total(), 64, "the design's rows, at the file's own resolution");
         assert_eq!(SECTIONS[3].params.len(), 9, "the file's nine torque points");
     }
 
@@ -1463,24 +1540,28 @@ mod tests {
         assert_eq!(
             named,
             vec![
-                "cg_height",     // +0x388 — SUVs top, hatchbacks bottom, traffic all exactly 0.300
                 "brake_bias_f",  // +0x38C — a front fraction, FWD 0.564 against RWD 0.531
-                "spring_f", "damper_f", "spring_r", "damper_r", // +0x1E0 / +0x200
             ]
         );
-        assert_eq!(candidates(), 6);
-        assert_eq!(located(), 32, "26 proved and 6 candidates");
+        assert_eq!(candidates(), 1);
+        assert_eq!(located(), 57, "56 proved and 1 candidate");
 
         // A candidate is not a gap: it has a lane, and the cell is editable — because the only
         // thing that settles one is changing it and driving.
         let car = sample();
-        let cg = &SECTIONS[1].params[2];
-        assert_eq!(cg.claim, Claim::Candidate);
-        let Cell::Num(num) = cell(cg, Some(&car), 0) else { panic!("editable") };
-        assert_eq!(num.field, CarField::CgHeight);
+        let bias = &SECTIONS[7].params[1];
+        assert_eq!(bias.claim, Claim::Candidate);
+        let Cell::Num(num) = cell(bias, Some(&car), 0) else { panic!("editable") };
+        assert_eq!(num.field, CarField::BrakeBiasFront);
         assert!(num.field.is_unproven(), "and the parser agrees it is one");
         // …and it is stored once, so it stays under STOCK.
-        assert_eq!(cell(cg, Some(&car), 1), Cell::Empty);
+        assert_eq!(cell(bias, Some(&car), 1), Cell::Empty);
+
+        // `cg_height` is a dash again, and that too is a result: its lane, `+0x388`, is the
+        // handbrake torque the tyre code reads — `handbrake` under `[::BRAKES]`.
+        let cg = &SECTIONS[1].params[2];
+        assert_eq!(cg.label, "cg_height");
+        assert_eq!(cg.source, Source::NotLocated);
 
         // `steer_lock` is a dash again, and that is a **result**: `+0x284` was wired in here, set
         // from 37° to 12° on a 240SX, installed and driven, and the car steered exactly as before.
@@ -1508,24 +1589,28 @@ mod tests {
                 "car_name", "drive_type", "mass", "idle_rpm", "red_line", "max_rpm", "trq_pt_1",
                 "trq_pt_2", "trq_pt_3", "trq_pt_4", "trq_pt_5", "trq_pt_6", "trq_pt_7", "trq_pt_8",
                 "trq_pt_9", "gear_count", "final_drive", "gear_1", "gear_2", "gear_3", "gear_4",
-                "gear_5", "gear_6", "tire_width_f", "tire_width_r", "steer_speed",
+                "gear_5", "gear_6",
+                // Located by `SPEED2.EXE`'s slider-range and physics code — see `gizmo_nfs::Chassis`.
+                "grip_front", "grip_front_slide", "grip_rear", "grip_rear_slide", "slip_angle_f",
+                "slip_angle_r", "tire_load_f", "tire_load_r", "tire_lat_f", "tire_lat_r",
+                "tire_width_f", "tire_width_r", "downforce_f", "downforce_r", "brake_force",
+                "handbrake", "steer_speed", "spring_f", "spring_rise_f", "bump_f", "rebound_f",
+                "sway_bar_f", "travel_bump_f", "travel_droop_f", "ride_drop_f", "spring_r",
+                "spring_rise_r", "bump_r", "rebound_r", "sway_bar_r", "travel_bump_r",
+                "travel_droop_r", "ride_drop_r",
             ]
         );
-        assert_eq!(located() - candidates(), 26);
-        // `AERO` stays wholly empty, and there is now a reason rather than a shrug: the sweep over
-        // the 46 records found nothing, and `SPEED2.EXE` holds `aero_drag`, `aero_lift` and
-        // `downforce` in one **global** block, so aero may simply not be per-car in this game.
-        assert!(
-            SECTIONS[6].params.iter().all(|p| p.source == Source::NotLocated),
-            "aero is not in this record"
-        );
-        // `BRAKES` keeps two of its three empty. The bias has a candidate; a brake *force* and a
-        // handbrake do not, and are not going to be fitted to whichever nearby lane is the right
-        // order of magnitude. No row may claim a source — proved or candidate — without the claim
-        // being made in the open by editing a test, which is what `STEERING` made someone do.
+        assert_eq!(located() - candidates(), 56);
+        // `AERO` has downforce and no drag: the slider code reads per-car downforce and nothing a
+        // drag coefficient could be.
+        assert_eq!(SECTIONS[6].params[0].source, Source::NotLocated, "drag_coef has no lane");
+        // `BRAKES` is full: the brake and handbrake torques are the lanes the tyre code multiplies
+        // by the pedal and the lever, and the bias stays a candidate. No row may claim a source —
+        // proved or candidate — without the claim being made in the open by editing a test, which
+        // is what `STEERING` made someone do.
         let brakes = &SECTIONS[7];
-        assert_eq!(brakes.params[0].source, Source::NotLocated, "brake_force has no lane");
-        assert_eq!(brakes.params[2].source, Source::NotLocated, "handbrake has no lane");
+        assert_eq!(brakes.params[0].source, Source::Chassis(CarField::Brake));
+        assert_eq!(brakes.params[2].source, Source::Chassis(CarField::Handbrake));
         // `STEERING` is half filled, and the halves are not interchangeable: the multiplier is
         // per-car and was confirmed by driving it, the lock angle is a global ±43 and stays a gap.
         let steering = &SECTIONS[8];
@@ -1695,14 +1780,20 @@ mod tests {
     #[test]
     fn the_tyre_rows_write_one_axle_each() {
         let car = sample();
-        let front = &SECTIONS[5].params[3];
-        let rear = &SECTIONS[5].params[4];
+        let front = &SECTIONS[5].params[10];
+        let rear = &SECTIONS[5].params[11];
         assert_eq!(cell(front, Some(&car), 0).text().as_deref(), Some("205"));
         assert_eq!(cell(rear, Some(&car), 0).text().as_deref(), Some("225"));
         let Cell::Num(f) = cell(front, Some(&car), 0) else { panic!("editable") };
         let Cell::Num(r) = cell(rear, Some(&car), 0) else { panic!("editable") };
         assert_eq!((f.field, f.mirror), (CarField::TyreWidthMm(0), Some(CarField::TyreWidthMm(1))));
         assert_eq!((r.field, r.mirror), (CarField::TyreWidthMm(2), Some(CarField::TyreWidthMm(3))));
+        // The grip rows above them are one lane each, not mirrored: the record's two lanes per axle
+        // differ in every car, and a mirror would square them off.
+        let grip = &SECTIONS[5].params[1];
+        assert_eq!(cell(grip, Some(&car), 0).text().as_deref(), Some("1.400"));
+        let Cell::Num(g) = cell(grip, Some(&car), 0) else { panic!("editable") };
+        assert_eq!((g.field, g.mirror), (CarField::TyreGrip { axle: 0, lane: 1 }, None));
     }
 
     /// `--section` finds a section the ways someone would actually type it, and refuses the rest.
@@ -1775,25 +1866,21 @@ mod tests {
 
     /// `gizmo_nfs::Unproven` is `#[non_exhaustive]` — the parser correctly refusing to be built from
     /// outside — so a test that wants one takes it from a synthetic record through the parser.
-    fn unproven(
-        cg_height: f32,
-        brake_bias: f32,
-        spring: [f32; 2],
-        damper: [f32; 2],
-    ) -> gizmo_nfs::Unproven {
+    fn record(handbrake: f32, brake_bias: f32, grip: [[f32; 2]; 2]) -> gizmo_nfs::CarHandling {
         let mut b = vec![0u8; 0x890 + 16];
         b[..5].copy_from_slice(b"TESTX");
         b[0x20..0x25].copy_from_slice(b"TESTX");
         let path = b"CARS\\TESTX\\GEOMETRY.BIN";
         b[0x40..0x40 + path.len()].copy_from_slice(path);
         let mut put = |o: usize, v: f32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-        put(0x388, cg_height);
+        put(0x388, handbrake);
         put(0x38c, brake_bias);
-        put(0x1ec, spring[0]);
-        put(0x20c, spring[1]);
-        put(0x1f0, damper[0]);
-        put(0x210, damper[1]);
-        gizmo_nfs::globalb::find_car(&b, "TESTX").expect("the synthetic record parses").handling.unproven
+        put(0x1ec, grip[0][0]);
+        put(0x1f0, grip[0][1]);
+        put(0x20c, grip[1][0]);
+        put(0x210, grip[1][1]);
+        put(0x284, 37.0);
+        gizmo_nfs::globalb::find_car(&b, "TESTX").expect("the synthetic record parses").handling
     }
 
     /// A stand-in shaped like the 240SX's record: a stock five-speed that gains a sixth by L3, and
@@ -1822,8 +1909,9 @@ mod tests {
             tyre_width_mm: [205.0, 205.0, 225.0, 225.0],
             steer_ratio: 1.1,
             gearbox: [five, five, five, six],
-            // The 240SX's own candidate lanes, as the record holds them.
-            unproven: unproven(0.5, 0.535, [1.70, 1.67], [1.40, 1.40]),
+            // The 240SX's own lanes, as the record holds them.
+            chassis: record(0.5, 0.535, [[1.70, 1.40], [1.67, 1.40]]).chassis,
+            unproven: record(0.5, 0.535, [[1.70, 1.40], [1.67, 1.40]]).unproven,
         }
     }
 }

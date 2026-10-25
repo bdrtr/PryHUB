@@ -48,15 +48,30 @@ const G_REAR_DRIVE: usize = 0x10; // 0 = FWD, 1 = RWD; only the stock block is r
 const G_COUNT: usize = 0x18;
 const G_RATIOS: usize = 0x20; // reverse, neutral, then up to six forward
 
+// The tuning lanes, read off `SPEED2.EXE`'s own slider-range and physics code — see `Chassis` for
+// the evidence. Every one is a pair, front then rear, except the brakes.
+/// The two axle blocks, eight lanes each: rise, spring, bump, rebound, sway bar, then the travel
+/// pair (compression stop, extension stop). The eighth is not read by the force code.
+const SUSPENSION_AT: [usize; 2] = [0x280, 0x2A0];
+const S_RISE: usize = 0x00;
+const S_SPRING: usize = 0x04;
+const S_SHOCK: usize = 0x08;
+const S_SWAY: usize = 0x10;
+const S_TRAVEL: usize = 0x14;
+/// The two tyre blocks: slip angle, load, lateral scale, then the grip pair at `+0x0C`/`+0x10`.
+const GRIP_AT: [usize; 2] = [0x1E0, 0x200];
+const G_SLIP: usize = 0x00;
+const G_LOAD: usize = 0x04;
+const G_LATERAL: usize = 0x08;
+const G_GRIP: usize = 0x0C;
+const OFF_DOWNFORCE: usize = 0x374;
+const OFF_RIDE_DROP: usize = 0x714;
+/// Brake torque, then handbrake torque — one of each for the whole car.
+const OFF_BRAKE: usize = 0x384;
+
 // Lanes with a *candidate* meaning and no proof. See `Unproven`, which is where each one's
 // evidence, its rival readings and the experiment that would settle it are written down.
-const U_ANGLE_284: usize = 0x284;
-const U_CG_HEIGHT: usize = 0x388;
 const U_BRAKE_BIAS: usize = 0x38C;
-/// Two eight-lane blocks, read as front then rear.
-const U_SUSPENSION_AT: [usize; 2] = [0x1E0, 0x200];
-const U_SPRING: usize = 0x0C;
-const U_DAMPER: usize = 0x10;
 
 /// One wheel's mount, in NFSU2 car space (metres).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -202,102 +217,163 @@ pub struct CarHandling {
     /// geometric ratio, which is exactly what the driving showed. Name and meaning both come from
     /// the game now, and neither is borrowed.
     ///
-    /// That text also places this field: it is one of **ten tuning sliders** the game names, and it
-    /// is the first of them found in this record. The others are worth looking for nearby — and
-    /// looking for them by name is what produced [`Unproven`], which is where the rest of that list
-    /// has got to.
+    /// That text also places this field: it is one of the game's **tuning sliders**, and it was the
+    /// first of them found in this record. The rest were found later and by a different route —
+    /// reading the code that sets each slider's range — and are in [`Chassis`]. That code agrees
+    /// with the drive: slider `8` takes its range from this lane, with `+0x6CC` as its upper end.
     pub steer_ratio: f32,
+    /// Suspension, tyres, downforce, ride height and brakes — the lanes the game's own slider and
+    /// physics code locate in this record.
+    pub chassis: Chassis,
     /// Lanes that read plausibly and are not proved. Behind a type whose name says so.
     pub unproven: Unproven,
 }
 
+/// The tuning sliders' lanes, located by **the game's code** rather than by sweeping the file.
+///
+/// # How these were found
+///
+/// `SPEED2.EXE` (v1.2) keeps the `CarTypeInfo` array behind a global pointer and sets every Dyno
+/// tuning slider's range in one function: `switch (slider)` over ids `0..=0x18`, each case reading
+/// named lanes of the car's record and widening a `[min, max]` with them. The slider ids are named by
+/// `LANGUAGES/English.bin`, whose tuning labels sit in id order — and the cases the code makes
+/// identifiable on its own pin that order down: `8` reads `+0x380`, the steering ratio already
+/// settled by driving; `9` reads `+0x2C8` and `+0x4E8`, the stock and third-level **final drive**;
+/// `10..=15` are converted as gear ratios; `0x17`/`0x18` loop over the nine-point ECU and turbo
+/// torque tables. What sits between is then read rather than guessed:
+///
+/// | slider | lanes (front, rear) | upper end |
+/// |---|---|---|
+/// | `0`/`4` springs | `+0x284`, `+0x2A4` | `+0x6D4`, `+0x6F4` |
+/// | `1`/`5` shocks | `+0x288`/`+0x28C`, `+0x2A8`/`+0x2AC` | `+0x6D8`/`+0x6DC`, `+0x6F8`/`+0x6FC` |
+/// | `2`/`6` sway bars | `+0x290`, `+0x2B0` | `+0x6E0`, `+0x700` |
+/// | `3`/`7` ride height | `−(+0x714)`, `−(+0x718)`, and `0` | — |
+/// | `0x13`/`0x14` tyre grip | `+0x1EC`/`+0x1F0`, `+0x20C`/`+0x210` | `+0x65C`/`+0x660`, `+0x67C`/`+0x680` |
+/// | `0x15`/`0x16` downforce | `+0x374`, `+0x378` | plus two upgrade lanes each |
+///
+/// Ids `0..=3` are one axle and `4..=7` the other: the default-value function links them in exactly
+/// those pairs, and the front is read as the lower id because the labels say *Front* first.
+///
+/// The upper-end lanes are where the slider stops, and the game shifts that range by the
+/// performance parts fitted, so they are not exposed here as "the upgraded value".
+///
+/// # What the physics does with them
+///
+/// The slider code says which lane a slider owns; the **physics** says what the number is. Both are
+/// read from the same executable, and the second settles what the first left open — which shock lane
+/// is bump, which grip lane is the peak — and adds the lanes no slider touches.
+///
+/// **Units: tonnes, metres, seconds, kilonewtons** — the same "kilo" convention as mass and torque.
+/// A spring of `37` is 37 kN/m. The physics does not read the record itself: it copies `+0x110` to
+/// `+0x3C0` and lerps the fitted performance parts into the copy, toward targets in `+0x650..+0x718`
+/// — the same block the slider ranges end in.
+///
+/// *Suspension* (one object per wheel, force each frame), with `x` the compression in metres from the
+/// static position and `v` its rate:
+///
+/// ```text
+/// x clamped to travel; below the extension stop the wheel is in the air and the force is 0
+/// F = (max(x,0)·rise + 1)·spring·x  +  (v > 0 ? bump : rebound)·v
+///   + the axle's share of the car's weight  +  sway_bar·(x − x of the other wheel on the axle)
+/// F = max(F, 0)
+/// ```
+///
+/// The weight share is added separately, so the spring does not hold the car up — it resists
+/// leaving the static position. A 240SX's front reads as a damping ratio of about 0.8.
+///
+/// *Tyre.* Lateral force comes from a table in the executable, indexed by slip angle over
+/// [`Self::tyre_slip_deg`] and by `0.8 × load / `[`Self::tyre_load`], scaled by
+/// [`Self::tyre_lateral`]. Longitudinal force is the wheel torque over its radius — there is no
+/// longitudinal slip curve. A wheel that slides (contact speed off by more than 0.5 m/s, or locked)
+/// gives the sliding grip along the slip direction instead, and every wheel is held inside a
+/// friction circle of the peak grip times its load.
+///
+/// The functions, in v1.2: suspension `0x5A8790`, tyre force `0x5A8280`, friction circle
+/// `0x59D600`, lateral table `0x59D510`, wheel lock `0x59D400`, the physics copy `0x5B4DC0`.
+///
+/// # What this overturned
+///
+/// * `+0x284` was the "angle" that refused to be a steering lock. It is the **front spring**. A
+///   HUMMER's 60 against a 106's 34 is a stiffer spring under a heavier car, and the traffic
+///   vehicles' flat 100 is a default.
+/// * The two lanes at `+0x1EC`/`+0x1F0` were read as the front spring and front damper. They are
+///   **one** quantity, the front **tyre grip**: when the slider shows one number the code averages
+///   them (`× 0.5`), which is meaningless across a spring and a damper.
+/// * `+0x388` was the strongest candidate for a centre-of-gravity height. It is the **handbrake
+///   torque**. Raising it to 1.40 and driving left cornering unchanged — which is what a handbrake
+///   does when nobody pulls it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Chassis {
+    /// How much stiffer the spring gets as it compresses, front then rear, per metre: the spring
+    /// force is `(1 + rise·x)·spring·x`. Around 5–6.
+    pub spring_rise: [f32; 2],
+    /// Spring stiffness, front then rear, in kN/m. 30–60 over the playable cars; every traffic
+    /// vehicle 100.
+    pub spring: [f32; 2],
+    /// Damping, front then rear, as `[bump, rebound]` in kN·s/m — bump while the wheel compresses,
+    /// rebound while it extends. Around 4–7.5. The tuning screen averages the pair.
+    pub shock: [[f32; 2]; 2],
+    /// Sway-bar stiffness, front then rear, in kN/m of difference between the axle's two wheels.
+    /// 0 on every traffic vehicle.
+    pub sway_bar: [f32; 2],
+    /// Suspension travel, front then rear, as `[compression stop, extension stop]` in metres from the
+    /// static position. The second is negative (a 240SX `0.16, −0.16`); past it the wheel is off the
+    /// ground.
+    pub travel_m: [[f32; 2]; 2],
+    /// The slip angle the lateral table is laid over, front then rear, in degrees. The table reaches
+    /// its last column here and stays there. 12 in every record.
+    pub tyre_slip_deg: [f32; 2],
+    /// The load the lateral table's load axis is divided by, front then rear, in kN. 1 in every
+    /// record.
+    pub tyre_load: [f32; 2],
+    /// A multiplier on the lateral table, front then rear. 1 in every record.
+    pub tyre_lateral: [f32; 2],
+    /// Tyre grip, front then rear, as `[peak, sliding]` friction coefficients. The peak bounds every
+    /// wheel's friction circle; the sliding one is the force a sliding wheel gives. The peak is the
+    /// larger in every one of the 46 records (a 240SX 1.70 against 1.40).
+    pub tyre_grip: [[f32; 2]; 2],
+    /// Downforce, front then rear. Around 0.14–0.18; units not established.
+    pub downforce: [f32; 2],
+    /// How far the ride-height slider can lower the car, front then rear, in metres (0.02–0.05).
+    /// The slider runs from minus this to zero. 0 on every traffic vehicle.
+    pub ride_drop_m: [f32; 2],
+    /// Brake torque per wheel at full pedal, in kN·m once the game's fixed `× 4` is applied — the
+    /// stored number is what this holds. 0.47–0.75.
+    pub brake: f32,
+    /// Handbrake torque per wheel at full lever, in kN·m once the game's fixed `× 10` is applied —
+    /// again the stored number.
+    pub handbrake: f32,
+}
+
 /// Lanes that read plausibly and are **not proved**.
 ///
-/// Everything else this module exposes is either measured across the install or was settled by
-/// driving. These five were not, and they are a separate struct rather than five more fields of
-/// [`CarHandling`] for exactly that reason: a consumer has to reach past a type whose name says
-/// "unproven" to show one, so an unproven number cannot be printed beside a proved one by accident.
+/// Everything else this module exposes is either measured across the install, settled by driving,
+/// or located by the game's own code. What is left here was not, and it is a separate struct rather
+/// than another field of [`CarHandling`] for exactly that reason: a consumer has to reach past a
+/// type whose name says "unproven" to show one, so an unproven number cannot be printed beside a
+/// proved one by accident.
 ///
-/// **One has already left.** `+0x284` was read as a steering lock, and the experiment refused it —
-/// see [`Self::angle_284_deg`], which keeps the lane and the refutation rather than deleting both.
-/// That is the point of this struct: a candidate that survives contact is promoted, a candidate that
-/// does not leaves a record of having been tried, and neither outcome is a number quietly printed
-/// beside a measured one.
+/// **Four have already left, promoted.** `+0x284` (once a refused steering lock) and the two
+/// "spring"/"damper" pairs were located by `SPEED2.EXE`'s slider-range code, and are now
+/// [`Chassis::spring`] and [`Chassis::tyre_grip`]. `+0x388`, the centre-of-gravity candidate, was
+/// read in the tyre code as the **handbrake** torque and is now [`Chassis::handbrake`]. That is the
+/// point of this struct: a candidate that survives contact is promoted, and one that does not is
+/// renamed rather than quietly printed beside a measured one.
 ///
-/// **They exist because the game says they should.** `LANGUAGES/English.bin` carries the tuning
-/// screen's help text, and it names ten sliders: front and rear springs, front and rear shocks,
-/// front and rear sway bars, steering ratio, tyre grip, downforce, ride height, brake bias, gear
-/// ratios and final drive. Only two of those — the steering ratio and the gearboxes — are proved
-/// here. The rest have to be somewhere, and looking for a *named* thing is a different search from
-/// sweeping 222 unread lanes for something interesting.
-///
-/// **Two of them were found by someone else, and the cross-check cut both ways.**
 /// [NFSU2Forge](https://github.com/justlucasgomes/NFSU2Forge) reads this same record with offsets
 /// relative to the manufacturer string, which is `+0xC0` here, so its claims translate directly.
-/// Where it agrees with this crate — mass, the rpm limits, the torque curve — two independent reads
-/// landing on one lane is worth having. Where it does not, the disagreements were checkable and
-/// three of them resolve against it: it calls `+0x380` a brake force, which is the steering
-/// multiplier settled by driving; it calls a wheel-entry lane front and rear *grip*, which reads
-/// `+0.730, −0.730, −0.730, +0.730` across the four corners and so is a mirrored coordinate rather
-/// than a grip, and whose "rear" is the front-right wheel; and its reverse ratio is the first lane
-/// of the *next* transmission block. What survived that is below.
-///
-/// None of these is claimed. Each one names what would settle it, which is always the same
-/// experiment: change it with `ug2 tune`, install, drive.
+/// Where it disagreed with this crate the disagreements were checkable and resolved against it: it
+/// calls `+0x380` a brake force, which is the steering multiplier; it calls a wheel-entry lane front
+/// and rear *grip*, which reads `+0.730, −0.730, −0.730, +0.730` across the four corners and so is a
+/// mirrored coordinate; and its reverse ratio is the first lane of the *next* transmission block.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Unproven {
-    /// `+0x284`, in what look like degrees. Named for its offset because the one name anybody has
-    /// proposed for it has been **tested and refused**.
-    ///
-    /// It was read as a steering lock, and that reading is now dead three times over:
-    ///
-    /// * The 240SX's was set from 37 to **12** — a third of the angle — installed, and driven. The
-    ///   car steered exactly as before.
-    /// * The 14 traffic vehicles all read exactly **100.0** while a BUS reads **75**. A taxi does
-    ///   not out-lock a bus.
-    /// * A HUMMER reads 60 where a PEUGOT 106 reads 27, which is the wrong way round: small cars
-    ///   have more lock, not less.
-    ///
-    /// The null is worth more than a null usually is here, because it was run against a **positive
-    /// control** in the same session. This crate had never actually confirmed that the game reads
-    /// the plain `.lzc` it writes — that was inherited from an older note which turned out to be
-    /// describing its own output. So the 240SX's mass was tripled to 3,660 kg alongside this edit,
-    /// installed together, and driven: the car was unmistakably heavy. The channel carries, the car
-    /// was the right one, and the steering did not move. Compare the earlier brake-bias null, which
-    /// has none of that behind it and is why [`Self::brake_bias_f`] is still a candidate.
-    ///
-    /// What remains true is that the lane is **not nothing**: 27 to 60 over the playable cars, 15
-    /// distinct values, and a second angle-shaped lane four on at `+0x290` (20–45) that moves with
-    /// it. Something reads these. It is not the player's steering.
-    pub angle_284_deg: f32,
-    /// `+0x388` — the middle of a triple of fractions at `+0x384`, `+0x388`, `+0x38C`.
-    ///
-    /// **For:** the strongest ordering of any lane here. 0.39 (COROLLA) to 0.67 (HUMMER) over the
-    /// playable cars, and every traffic vehicle is exactly 0.300 — a per-class default. Sorted, it
-    /// puts the SUVs at the top and the hatchbacks at the bottom, which is what a centre-of-gravity
-    /// height does and what very little else does.
-    ///
-    /// **Against:** a 240SX's was raised from 0.50 to **1.40** — nearly roof height — installed
-    /// and driven, and cornering felt unchanged. The drive carried its own control this time: the
-    /// rev limiter was cut to 3,200 in the same write, and the car audibly stopped at 3,200, so
-    /// the file did reach the game and the null is not a plumbing null.
-    ///
-    /// **Why the row stays a candidate anyway, and this is the honest reading rather than the
-    /// convenient one.** "Cornering felt unchanged" is a statement about what NFSU2's handling
-    /// model *does with* a centre of gravity, not about what the lane is. This game does not let a
-    /// car roll over in ordinary driving at all, so the most obvious consequence of a high centre
-    /// of gravity is one it may simply never express. That is the same shape of error as the
-    /// brake-bias null next door, which watched stopping distance when a bias moves force between
-    /// axles — a real measurement of the wrong observable. Set against it, the file evidence is
-    /// the strongest of any lane here.
-    ///
-    /// **What would settle it now:** something that shows weight *transfer* rather than roll —
-    /// nose-dive under hard braking, squat under acceleration, or how a drift breaks away — with
-    /// the value driven to both extremes rather than raised once.
-    pub cg_height: f32,
-    /// `+0x38C`, the third of that triple.
+    /// `+0x38C`, the third of a triple whose first two are [`Chassis::brake`] and
+    /// [`Chassis::handbrake`].
     ///
     /// **For:** 0.47–0.60 in all 46 records — a *front fraction* just over half — and it orders by
     /// drivetrain: FWD 0.564, RWD 0.531, AWD 0.530. Front-heavy cars getting more front brake is
@@ -309,26 +385,14 @@ pub struct Unproven {
     /// bias moves force between axles and does not change **stopping distance**, so the experiment
     /// very likely watched the wrong thing.
     ///
-    /// **Settles it:** set it to 0.02 again and brake hard mid-corner. A car that spins is a bias.
+    /// **Neighbours, and a part.** It sits after the brake and handbrake torques, and the brake
+    /// upgrade moves it together with them (a 240SX 0.535 → 0.49). But the brake-bias slider's range
+    /// is a fixed `0..1` rather than this lane, and the per-wheel brake code reads only a pedal it is
+    /// handed — where the pedal is split between axles has not been read.
+    ///
+    /// **Settles it:** the code that splits the pedal, or set it to 0.02 again and brake hard
+    /// mid-corner. A car that spins is a bias.
     pub brake_bias_f: f32,
-    /// `+0x1EC` and `+0x20C` — the fourth lane of two eight-lane blocks at `+0x1E0` and `+0x200`,
-    /// read as front then rear.
-    ///
-    /// **For:** the game names "Front Springs" and "Rear Springs" as two of its ten sliders, so
-    /// there are two of these to find. The blocks are identical in shape (`12.0, 1.0, 1.0, x, y,
-    /// 0, 0, 0`), differ only in the two lanes read here, and 17 and 18 distinct values run 1.43 to
-    /// 1.90 with every traffic vehicle above the playable range — a bus at 3.0.
-    ///
-    /// **Against:** which block is the front axle is an assumption, not a reading. A second, higher
-    /// pair sits at `+0x650`/`+0x670` (1.88 / 1.65 where these are 1.70 / 1.40), which may be the
-    /// upgraded suspension the game sells — or may be something else entirely.
-    ///
-    /// **Settles it:** set one to 5.0 and drive over a kerb. Front and rear are told apart by which
-    /// end of the car stops absorbing it.
-    pub spring: [f32; 2],
-    /// `+0x1F0` and `+0x210`, the lane after each spring. The game's "Front Shocks" and "Rear
-    /// Shocks". Same evidence and the same doubt as [`Self::spring`], which it sits beside.
-    pub damper: [f32; 2],
 }
 
 /// Radians per second per rpm — `2π/60`, the conversion torque needs to become power.
@@ -619,19 +683,30 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
         ],
         tyre_width_m,
         steer_ratio: le_f32(b, rec + OFF_STEER)?,
-        unproven: Unproven {
-            angle_284_deg: le_f32(b, rec + U_ANGLE_284)?,
-            cg_height: le_f32(b, rec + U_CG_HEIGHT)?,
-            brake_bias_f: le_f32(b, rec + U_BRAKE_BIAS)?,
-            spring: [
-                le_f32(b, rec + U_SUSPENSION_AT[0] + U_SPRING)?,
-                le_f32(b, rec + U_SUSPENSION_AT[1] + U_SPRING)?,
-            ],
-            damper: [
-                le_f32(b, rec + U_SUSPENSION_AT[0] + U_DAMPER)?,
-                le_f32(b, rec + U_SUSPENSION_AT[1] + U_DAMPER)?,
-            ],
-        },
+        chassis: read_chassis(b, rec)?,
+        unproven: Unproven { brake_bias_f: le_f32(b, rec + U_BRAKE_BIAS)? },
+    })
+}
+
+/// Read the tuning-slider lanes of the record beginning at `rec`. See [`Chassis`].
+fn read_chassis(b: &[u8], rec: usize) -> Option<Chassis> {
+    let f = |at: usize| le_f32(b, rec + at);
+    let axle = |at: [usize; 2], lane: usize| Some([f(at[0] + lane)?, f(at[1] + lane)?]);
+    let pair = |at: usize| Some([f(at)?, f(at + 4)?]);
+    Some(Chassis {
+        spring_rise: axle(SUSPENSION_AT, S_RISE)?,
+        spring: axle(SUSPENSION_AT, S_SPRING)?,
+        shock: [pair(SUSPENSION_AT[0] + S_SHOCK)?, pair(SUSPENSION_AT[1] + S_SHOCK)?],
+        sway_bar: axle(SUSPENSION_AT, S_SWAY)?,
+        travel_m: [pair(SUSPENSION_AT[0] + S_TRAVEL)?, pair(SUSPENSION_AT[1] + S_TRAVEL)?],
+        tyre_slip_deg: axle(GRIP_AT, G_SLIP)?,
+        tyre_load: axle(GRIP_AT, G_LOAD)?,
+        tyre_lateral: axle(GRIP_AT, G_LATERAL)?,
+        tyre_grip: [pair(GRIP_AT[0] + G_GRIP)?, pair(GRIP_AT[1] + G_GRIP)?],
+        downforce: pair(OFF_DOWNFORCE)?,
+        ride_drop_m: pair(OFF_RIDE_DROP)?,
+        brake: f(OFF_BRAKE)?,
+        handbrake: f(OFF_BRAKE + 4)?,
     })
 }
 

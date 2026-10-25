@@ -29,8 +29,9 @@
 
 use super::{
     read_record, CarTypeInfo, GEARBOX_AT, G_COUNT, G_FINAL_DRIVE, G_RATIOS, G_REAR_DRIVE, OFF_MASS,
-    OFF_RPM, OFF_STEER, OFF_TORQUE, OFF_WHEELS, REC_SIZE, TORQUE_GAIN_AT, U_ANGLE_284, U_BRAKE_BIAS,
-    U_CG_HEIGHT, U_DAMPER, U_SPRING, U_SUSPENSION_AT, WHEEL_STRIDE, W_RADIUS, W_TYRE_WIDTH,
+    OFF_BRAKE, OFF_DOWNFORCE, OFF_RIDE_DROP, OFF_RPM, OFF_STEER, OFF_TORQUE, OFF_WHEELS, REC_SIZE,
+    S_RISE, S_SHOCK, S_SPRING, S_SWAY, S_TRAVEL, SUSPENSION_AT, TORQUE_GAIN_AT, U_BRAKE_BIAS,
+    WHEEL_STRIDE, W_RADIUS, W_TYRE_WIDTH, GRIP_AT, G_GRIP, G_LATERAL, G_LOAD, G_SLIP,
 };
 use crate::error::{NfsError, NfsResult};
 
@@ -94,17 +95,51 @@ pub enum Field {
     TyreWidthMm(usize),
     /// Wheel radius at corner `0..4`, in metres.
     WheelRadiusM(usize),
-    /// The angle-shaped lane at `+0x284`, named for its offset because its one proposed name was
-    /// tested and refused. See [`super::Unproven::angle_284_deg`].
-    Angle284,
-    /// Candidate: centre-of-gravity height. See [`super::Unproven::cg_height`].
-    CgHeight,
+    /// How fast an axle's spring stiffens. See [`super::Chassis::spring_rise`].
+    SpringRise(usize),
+    /// Spring stiffness of axle `0` (front) or `1` (rear). See [`super::Chassis::spring`].
+    Spring(usize),
+    /// Bump (`0`) or rebound (`1`) damping. See [`super::Chassis::shock`].
+    Shock {
+        /// `0` front, `1` rear.
+        axle: usize,
+        /// `0` bump, `1` rebound.
+        lane: usize,
+    },
+    /// Sway-bar stiffness of an axle. See [`super::Chassis::sway_bar`].
+    SwayBar(usize),
+    /// One end of an axle's suspension travel, in metres. See [`super::Chassis::travel_m`].
+    Travel {
+        /// `0` front, `1` rear.
+        axle: usize,
+        /// `0` the compression stop, `1` the extension stop.
+        lane: usize,
+    },
+    /// The slip angle an axle's lateral table spans, in degrees. See
+    /// [`super::Chassis::tyre_slip_deg`].
+    TyreSlipDeg(usize),
+    /// The load an axle's lateral table is normalised by. See [`super::Chassis::tyre_load`].
+    TyreLoad(usize),
+    /// A multiplier on an axle's lateral table. See [`super::Chassis::tyre_lateral`].
+    TyreLateral(usize),
+    /// Peak (`0`) or sliding (`1`) grip of an axle. See [`super::Chassis::tyre_grip`].
+    TyreGrip {
+        /// `0` front, `1` rear.
+        axle: usize,
+        /// `0` peak, `1` sliding.
+        lane: usize,
+    },
+    /// Downforce of an axle. See [`super::Chassis::downforce`].
+    Downforce(usize),
+    /// How far the ride-height slider lowers an axle, in metres. See
+    /// [`super::Chassis::ride_drop_m`].
+    RideDropM(usize),
+    /// Brake torque. See [`super::Chassis::brake`].
+    Brake,
+    /// Handbrake torque. See [`super::Chassis::handbrake`].
+    Handbrake,
     /// Candidate: front brake bias. See [`super::Unproven::brake_bias_f`].
     BrakeBiasFront,
-    /// Candidate: spring rate of axle `0` (front) or `1` (rear).
-    Spring(usize),
-    /// Candidate: damping rate of axle `0` (front) or `1` (rear).
-    Damper(usize),
 }
 
 impl Field {
@@ -135,11 +170,26 @@ impl Field {
                 OFF_WHEELS + corner * WHEEL_STRIDE + W_TYRE_WIDTH
             }
             Self::WheelRadiusM(corner) if corner < 4 => OFF_WHEELS + corner * WHEEL_STRIDE + W_RADIUS,
-            Self::Angle284 => U_ANGLE_284,
-            Self::CgHeight => U_CG_HEIGHT,
+            Self::SpringRise(axle) => SUSPENSION_AT.get(axle).copied()? + S_RISE,
+            Self::Spring(axle) => SUSPENSION_AT.get(axle).copied()? + S_SPRING,
+            Self::Shock { axle, lane } if lane < 2 => {
+                SUSPENSION_AT.get(axle).copied()? + S_SHOCK + lane * 4
+            }
+            Self::SwayBar(axle) => SUSPENSION_AT.get(axle).copied()? + S_SWAY,
+            Self::Travel { axle, lane } if lane < 2 => {
+                SUSPENSION_AT.get(axle).copied()? + S_TRAVEL + lane * 4
+            }
+            Self::TyreSlipDeg(axle) => GRIP_AT.get(axle).copied()? + G_SLIP,
+            Self::TyreLoad(axle) => GRIP_AT.get(axle).copied()? + G_LOAD,
+            Self::TyreLateral(axle) => GRIP_AT.get(axle).copied()? + G_LATERAL,
+            Self::TyreGrip { axle, lane } if lane < 2 => {
+                GRIP_AT.get(axle).copied()? + G_GRIP + lane * 4
+            }
+            Self::Downforce(axle) if axle < 2 => OFF_DOWNFORCE + axle * 4,
+            Self::RideDropM(axle) if axle < 2 => OFF_RIDE_DROP + axle * 4,
+            Self::Brake => OFF_BRAKE,
+            Self::Handbrake => OFF_BRAKE + 4,
             Self::BrakeBiasFront => U_BRAKE_BIAS,
-            Self::Spring(axle) => U_SUSPENSION_AT.get(axle).copied()? + U_SPRING,
-            Self::Damper(axle) => U_SUSPENSION_AT.get(axle).copied()? + U_DAMPER,
             _ => return None,
         };
         (at + 4 <= REC_SIZE).then_some(at)
@@ -198,11 +248,20 @@ impl Field {
             Self::GearCount(level) => format!("gear_count@{level}"),
             Self::TyreWidthMm(corner) => format!("tyre_width{corner}"),
             Self::WheelRadiusM(corner) => format!("wheel_radius{corner}"),
-            Self::Angle284 => "angle284?".into(),
-            Self::CgHeight => "cg_height?".into(),
+            Self::SpringRise(axle) => format!("spring_rise{axle}"),
+            Self::Spring(axle) => format!("spring{axle}"),
+            Self::Shock { axle, lane } => format!("shock{axle}_{lane}"),
+            Self::SwayBar(axle) => format!("sway{axle}"),
+            Self::Travel { axle, lane } => format!("travel{axle}_{lane}"),
+            Self::TyreSlipDeg(axle) => format!("tyre_slip{axle}"),
+            Self::TyreLoad(axle) => format!("tyre_load{axle}"),
+            Self::TyreLateral(axle) => format!("tyre_lat{axle}"),
+            Self::TyreGrip { axle, lane } => format!("grip{axle}_{lane}"),
+            Self::Downforce(axle) => format!("downforce{axle}"),
+            Self::RideDropM(axle) => format!("ride_drop{axle}"),
+            Self::Brake => "brake".into(),
+            Self::Handbrake => "handbrake".into(),
             Self::BrakeBiasFront => "brake_bias?".into(),
-            Self::Spring(axle) => format!("spring{axle}?"),
-            Self::Damper(axle) => format!("damper{axle}?"),
         }
     }
 
@@ -219,6 +278,10 @@ impl Field {
             None => (name.as_str(), 0),
         };
         let after = |prefix: &str| head.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok());
+        let pair = |prefix: &str| {
+            let (a, b) = head.strip_prefix(prefix)?.split_once('_')?;
+            Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+        };
         let field = match head {
             "mass" => Self::MassKg,
             "idle_rpm" => Self::IdleRpm,
@@ -227,10 +290,10 @@ impl Field {
             "rear_drive" => Self::RearDrive,
             "steer_ratio" => Self::SteerRatio,
             "final_drive" => Self::FinalDrive(level),
+            "brake" => Self::Brake,
+            "handbrake" => Self::Handbrake,
             // The question mark is part of the name, and deliberately awkward to type: these are
             // candidates, and a command line that spells one should say so.
-            "angle284?" => Self::Angle284,
-            "cg_height?" => Self::CgHeight,
             "brake_bias?" => Self::BrakeBiasFront,
             "reverse" => Self::Reverse(level),
             "gear_count" => Self::GearCount(level),
@@ -243,11 +306,28 @@ impl Field {
                     Self::TyreWidthMm(corner)
                 } else if let Some(corner) = after("wheel_radius") {
                     Self::WheelRadiusM(corner)
-                } else if let Some(axle) = head.strip_suffix('?').and_then(|h| {
-                    h.strip_prefix("spring").map(|n| (n, 0)).or_else(|| h.strip_prefix("damper").map(|n| (n, 1)))
-                }) {
-                    let n: usize = axle.0.parse().ok()?;
-                    if axle.1 == 0 { Self::Spring(n) } else { Self::Damper(n) }
+                } else if let Some(axle) = after("spring_rise") {
+                    Self::SpringRise(axle)
+                } else if let Some(axle) = after("spring") {
+                    Self::Spring(axle)
+                } else if let Some(axle) = after("sway") {
+                    Self::SwayBar(axle)
+                } else if let Some(axle) = after("tyre_slip") {
+                    Self::TyreSlipDeg(axle)
+                } else if let Some(axle) = after("tyre_load") {
+                    Self::TyreLoad(axle)
+                } else if let Some(axle) = after("tyre_lat") {
+                    Self::TyreLateral(axle)
+                } else if let Some(axle) = after("downforce") {
+                    Self::Downforce(axle)
+                } else if let Some(axle) = after("ride_drop") {
+                    Self::RideDropM(axle)
+                } else if let Some((axle, lane)) = pair("shock") {
+                    Self::Shock { axle, lane }
+                } else if let Some((axle, lane)) = pair("travel") {
+                    Self::Travel { axle, lane }
+                } else if let Some((axle, lane)) = pair("grip") {
+                    Self::TyreGrip { axle, lane }
                 } else {
                     let (block, point) = head.strip_prefix("gain")?.split_once('_')?;
                     Self::TorqueGainNm {
@@ -266,14 +346,7 @@ impl Field {
     /// like a proved one. The naming carries it too — [`Self::key`] ends these in `?`.
     #[must_use]
     pub fn is_unproven(self) -> bool {
-        matches!(
-            self,
-            Self::Angle284
-                | Self::CgHeight
-                | Self::BrakeBiasFront
-                | Self::Spring(_)
-                | Self::Damper(_)
-        )
+        matches!(self, Self::BrakeBiasFront)
     }
 
     /// Every field of a record, in the order a table would list them. For a caller that wants to
@@ -297,9 +370,20 @@ impl Field {
         out.extend((0..4).map(Self::WheelRadiusM));
         // Last, and named with a `?`, so that a listing reads proved-then-candidate rather than
         // mixing the two.
-        out.extend([Self::Angle284, Self::CgHeight, Self::BrakeBiasFront]);
-        out.extend((0..2).map(Self::Spring));
-        out.extend((0..2).map(Self::Damper));
+        for axle in 0..2 {
+            out.push(Self::SpringRise(axle));
+            out.push(Self::Spring(axle));
+            out.extend((0..2).map(|lane| Self::Shock { axle, lane }));
+            out.push(Self::SwayBar(axle));
+            out.extend((0..2).map(|lane| Self::Travel { axle, lane }));
+            out.push(Self::TyreSlipDeg(axle));
+            out.push(Self::TyreLoad(axle));
+            out.push(Self::TyreLateral(axle));
+            out.extend((0..2).map(|lane| Self::TyreGrip { axle, lane }));
+            out.push(Self::Downforce(axle));
+            out.push(Self::RideDropM(axle));
+        }
+        out.extend([Self::Brake, Self::Handbrake, Self::BrakeBiasFront]);
         out
     }
 }
@@ -428,12 +512,23 @@ pub fn snapshot(info: &CarTypeInfo) -> Vec<Edit> {
         h.tyre_width_m.iter().enumerate().map(|(i, &w)| (Field::TyreWidthMm(i), w * 1000.0)),
     );
     out.extend(info.wheels.iter().enumerate().map(|(i, w)| (Field::WheelRadiusM(i), w.radius)));
-    let u = &h.unproven;
-    out.push((Field::Angle284, u.angle_284_deg));
-    out.push((Field::CgHeight, u.cg_height));
-    out.push((Field::BrakeBiasFront, u.brake_bias_f));
-    out.extend(u.spring.iter().enumerate().map(|(i, &v)| (Field::Spring(i), v)));
-    out.extend(u.damper.iter().enumerate().map(|(i, &v)| (Field::Damper(i), v)));
+    let c = &h.chassis;
+    for axle in 0..2 {
+        out.push((Field::SpringRise(axle), c.spring_rise[axle]));
+        out.push((Field::Spring(axle), c.spring[axle]));
+        out.extend((0..2).map(|lane| (Field::Shock { axle, lane }, c.shock[axle][lane])));
+        out.push((Field::SwayBar(axle), c.sway_bar[axle]));
+        out.extend((0..2).map(|lane| (Field::Travel { axle, lane }, c.travel_m[axle][lane])));
+        out.push((Field::TyreSlipDeg(axle), c.tyre_slip_deg[axle]));
+        out.push((Field::TyreLoad(axle), c.tyre_load[axle]));
+        out.push((Field::TyreLateral(axle), c.tyre_lateral[axle]));
+        out.extend((0..2).map(|lane| (Field::TyreGrip { axle, lane }, c.tyre_grip[axle][lane])));
+        out.push((Field::Downforce(axle), c.downforce[axle]));
+        out.push((Field::RideDropM(axle), c.ride_drop_m[axle]));
+    }
+    out.push((Field::Brake, c.brake));
+    out.push((Field::Handbrake, c.handbrake));
+    out.push((Field::BrakeBiasFront, h.unproven.brake_bias_f));
     out
 }
 
@@ -507,6 +602,42 @@ mod tests {
         assert_eq!(Field::parse("tyre_width4"), None);
         assert_eq!(Field::parse("nonsense"), None);
         assert_eq!(Field::parse(""), None);
+    }
+
+    /// The tuning lanes sit exactly where `SPEED2.EXE`'s slider-range code reads them — see
+    /// [`crate::Chassis`]. Written out as literals so a wrong block or stride cannot agree with
+    /// itself.
+    #[test]
+    fn the_tuning_lanes_are_where_the_game_reads_them() {
+        let at = |f: Field| f.lane().unwrap();
+        assert_eq!((at(Field::Spring(0)), at(Field::Spring(1))), (0x284, 0x2A4));
+        assert_eq!(at(Field::Shock { axle: 0, lane: 1 }), 0x28C);
+        assert_eq!(at(Field::Shock { axle: 1, lane: 0 }), 0x2A8);
+        assert_eq!((at(Field::SwayBar(0)), at(Field::SwayBar(1))), (0x290, 0x2B0));
+        assert_eq!(at(Field::TyreGrip { axle: 0, lane: 0 }), 0x1EC);
+        assert_eq!(at(Field::TyreGrip { axle: 0, lane: 1 }), 0x1F0);
+        assert_eq!(at(Field::TyreGrip { axle: 1, lane: 0 }), 0x20C);
+        assert_eq!((at(Field::Downforce(0)), at(Field::Downforce(1))), (0x374, 0x378));
+        assert_eq!((at(Field::RideDropM(0)), at(Field::RideDropM(1))), (0x714, 0x718));
+        // The lanes only the physics names: the rest of each suspension and tyre block, and the
+        // brakes.
+        assert_eq!((at(Field::SpringRise(0)), at(Field::SpringRise(1))), (0x280, 0x2A0));
+        assert_eq!(at(Field::Shock { axle: 0, lane: 0 }), 0x288, "bump");
+        assert_eq!(at(Field::Travel { axle: 0, lane: 0 }), 0x294);
+        assert_eq!(at(Field::Travel { axle: 1, lane: 1 }), 0x2B8);
+        assert_eq!((at(Field::TyreSlipDeg(0)), at(Field::TyreSlipDeg(1))), (0x1E0, 0x200));
+        assert_eq!(at(Field::TyreLoad(1)), 0x204);
+        assert_eq!(at(Field::TyreLateral(0)), 0x1E8);
+        assert_eq!((at(Field::Brake), at(Field::Handbrake)), (0x384, 0x388));
+        // The names these lanes had as candidates meant other lanes — `spring0?` was the front
+        // tyre grip, `cg_height?` the handbrake. Refusing them is what stops an old command line
+        // from editing the wrong thing.
+        for old in ["angle284?", "spring0?", "damper1?", "cg_height?"] {
+            assert_eq!(Field::parse(old), None, "{old}");
+        }
+        assert!(!Field::Spring(0).is_unproven());
+        assert!(!Field::Handbrake.is_unproven());
+        assert!(Field::BrakeBiasFront.is_unproven());
     }
 
     /// Distinct lanes for distinct fields — the property a table of offsets can quietly break by
