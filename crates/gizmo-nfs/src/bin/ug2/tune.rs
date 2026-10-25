@@ -206,11 +206,10 @@ fn show_all(bytes: &[u8], bundle: &install::Bundle, csv: bool) -> Result<()> {
     outln!("{} records in {}\n", cars.len(), bundle.lzc.display());
     outln!(
         "{:<12} {:>4} {:>7} {:>7} {:>7} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7}",
-        "car", "drv", "kW", "kW L3", "mass", "idle", "red", "limit", "steer?", "a284?", "cg?", "bias?"
+        "car", "drv", "kW", "kW L3", "mass", "idle", "red", "limit", "steer", "spr_f", "hbrk", "bias?"
     );
     for (_, info) in &cars {
         let h = &info.handling;
-        let u = &h.unproven;
         outln!(
             "{:<12} {:>4} {:>7.1} {:>7.1} {:>7.0} {:>6.0} {:>6.0} {:>6.0} {:>7.2} {:>7.1} {:>7.3} {:>7.3}",
             info.name,
@@ -222,9 +221,9 @@ fn show_all(bytes: &[u8], bundle: &install::Bundle, csv: bool) -> Result<()> {
             h.engine.red_line_rpm,
             h.engine.limiter_rpm,
             h.steer_ratio,
-            u.angle_284_deg,
-            u.cg_height,
-            u.brake_bias_f
+            h.chassis.spring[0],
+            h.chassis.handbrake,
+            h.unproven.brake_bias_f
         );
     }
     outln!("\n  ? = a candidate lane, not a claim — see gizmo_nfs::Unproven.");
@@ -250,9 +249,18 @@ fn unit(field: CarField) -> &'static str {
         CarField::TyreWidthMm(_) => "mm",
         CarField::WheelRadiusM(_) => "m",
         CarField::GearCount(_) => "",
-        CarField::Angle284 => "°  ?",
-        CarField::CgHeight => "m  ?",
-        CarField::BrakeBiasFront | CarField::Spring(_) | CarField::Damper(_) => "   ?",
+        CarField::RideDropM(_) | CarField::Travel { .. } => "m",
+        CarField::Spring(_) | CarField::SwayBar(_) => "kN/m",
+        CarField::Shock { .. } => "kNs/m",
+        CarField::TyreSlipDeg(_) => "deg",
+        CarField::TyreLoad(_) => "kN",
+        CarField::SpringRise(_) => "1/m",
+        CarField::TyreLateral(_)
+        | CarField::TyreGrip { .. }
+        | CarField::Downforce(_)
+        | CarField::Brake
+        | CarField::Handbrake => "",
+        CarField::BrakeBiasFront => "   ?",
         _ => ":1",
     }
 }
