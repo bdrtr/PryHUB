@@ -78,7 +78,7 @@ pub use globalb::edit::{Field as CarField, Store as CarFieldStore};
 pub use parts::{group_of, select_car, select_stock_car, CarConfig, Grp};
 pub use texture::{Tpk, TpkEntry};
 pub use types::{
-    AssetHash, LodLevel, Mat4, NfsCar, NfsMaterialRange, NfsMeshPart, NfsTexture, PartRole,
+    AssetHash, LodLevel, Mat4, NfsCar, NfsMarker, NfsMaterialRange, NfsMeshPart, NfsTexture, PartRole,
     PixelFormat, TexFormat,
 };
 

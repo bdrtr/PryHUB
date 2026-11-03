@@ -28,6 +28,15 @@ pub const VERTEX_BUFFER: u32 = 0x0013_4B01;
 pub const MATERIAL_RANGES: u32 = 0x0013_4B02;
 /// Index buffer.
 pub const INDEX_BUFFER: u32 = 0x0013_4B03;
+/// Position markers: named points and frames the game hangs things off at run time — exhaust
+/// tips, brake discs, the spoiler, light FX. See [`super::marker`].
+pub const POSITION_MARKERS: u32 = 0x0013_401A;
+
+/// Bytes per `0x0013401A` record: a `u32` name hash, three `u32`s that are zero in every record
+/// of an install (28,456 of them), and a row-major 4×4 matrix at [`MARKER_MATRIX`].
+pub const MARKER_STRIDE: usize = 80;
+/// Offset of the matrix within a `0x0013401A` record.
+pub const MARKER_MATRIX: usize = 16;
 
 /// Bytes per `0x00134B02` entry (15 × u32). The entries occupy the *trailing*
 /// `count * MAT_RANGE_STRIDE` bytes (any leading bytes are `0x11` alignment filler).

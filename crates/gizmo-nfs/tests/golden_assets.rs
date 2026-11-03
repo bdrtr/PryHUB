@@ -2307,3 +2307,35 @@ fn the_city_decodes_to_what_it_declares() {
     assert!(solids > 20_000, "only {solids} city solids — this install is not whole");
     assert!(declared_v > 3_000_000, "only {declared_v} city vertices — this install is not whole");
 }
+
+/// The markers say where the parts the file does not place go. Structure, not the 240SX's own
+/// numbers: the exhaust sits behind the rear axle and low, every wheel LOD carries a brake marker
+/// on its own axis, and `BASE` carries the spoiler mount behind the cabin and above the floor.
+#[test]
+fn markers_place_what_the_file_does_not() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping marker test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("CARS/240SX/GEOMETRY.BIN")).expect("read GEOMETRY.BIN");
+    let parts = gizmo_nfs::parse_geometry(&bytes).expect("parse");
+    let find = |stem: &str| parts.iter().find(|p| p.name.contains(stem)).unwrap_or_else(|| panic!("no {stem}"));
+
+    let bumper = find("_KIT00_REAR_BUMPER_A");
+    let exhausts: Vec<_> =
+        ["LEFT_EXHAUST", "RIGHT_EXHAUST"].iter().filter_map(|n| bumper.marker(n)).collect();
+    assert!(!exhausts.is_empty(), "a stock rear bumper names at least one exhaust exit");
+    for e in exhausts {
+        let [x, _, z] = e.position();
+        assert!(x < -1.0 && (-0.2..0.5).contains(&z), "behind the car and low: {:?}", e.position());
+    }
+
+    let wheel = find("_KIT00_FRONT_WHEEL_A");
+    let brake = wheel.marker("MARKER_BRAKE").expect("the wheel says where its brake goes").position();
+    assert!(brake[0].abs() < 1e-3 && brake[2].abs() < 1e-3, "on the axle: {brake:?}");
+    assert!(brake[1] > 0.0 && brake[1] < 0.3, "inboard of the rim, inside the tyre: {brake:?}");
+
+    let base = find("_BASE_A");
+    let [x, y, z] = base.marker("SPOILER").expect("BASE names the spoiler mount").position();
+    assert!(x < -1.0 && y.abs() < 1e-3 && z > 0.4, "behind and above, on the centreline: {x} {y} {z}");
+}

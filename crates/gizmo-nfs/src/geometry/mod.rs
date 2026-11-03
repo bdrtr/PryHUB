@@ -7,6 +7,7 @@
 //!   0x80134001                    global header (skipped)
 //!   0x80134010  (one per SOLID)   a renderable part
 //!     0x00134011                  solid header: name (ASCII) + local 4x4 matrix + bbox
+//!     0x0013401A                  position markers: 80-byte records, hash + 4x4 (optional)
 //!     0x00134900                  mesh header: u32[9]=triangle_count, u32[13]=vertex_count
 //!     0x80134100                  mesh container
 //!       0x00134B01                vertex buffer (see below)
@@ -30,6 +31,7 @@ pub mod format;
 pub mod write;
 pub(crate) mod index;
 pub(crate) mod material;
+pub mod marker;
 mod name;
 mod solid;
 pub(crate) mod vertex;
