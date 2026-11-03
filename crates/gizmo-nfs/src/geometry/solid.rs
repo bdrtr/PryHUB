@@ -3,9 +3,9 @@
 
 use super::format::{
     FILLER_BYTE, INDEX_BUFFER, MATERIAL_LIST, MATERIAL_RANGES, MATERIAL_SHADERS, MESH_HEADER,
-    MESH_TRI_COUNT_FIELD, MESH_VERT_COUNT_FIELD, SOLID_HEADER, VERTEX_BUFFER,
+    MESH_TRI_COUNT_FIELD, MESH_VERT_COUNT_FIELD, POSITION_MARKERS, SOLID_HEADER, VERTEX_BUFFER,
 };
-use super::{index, material, name, vertex};
+use super::{index, marker, material, name, vertex};
 use crate::chunk::ChunkNode;
 use crate::error::NfsResult;
 use crate::reader::ByteReader;
@@ -99,6 +99,8 @@ pub(super) fn parse_solid(
         .find(MATERIAL_RANGES)
         .map(|m| material::material_ranges(m.data(root), &ordered, &shaders, indices.len()))
         .unwrap_or_default();
+    let markers =
+        solid.find(POSITION_MARKERS).map(|m| marker::parse_markers(m.data(root))).unwrap_or_default();
 
     Ok(Ok(NfsMeshPart {
         name: part,
@@ -113,6 +115,7 @@ pub(super) fn parse_solid(
         role,
         lod,
         transform,
+        markers,
         bbox_min,
         bbox_max,
     }))

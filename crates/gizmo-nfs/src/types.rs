@@ -96,6 +96,33 @@ pub struct NfsMaterialRange {
     pub index_count: usize,
 }
 
+/// One position marker (`0x0013401A`): a named frame in its solid's space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NfsMarker {
+    /// `bStringHash` of the marker's name (`LEFT_EXHAUST`, `MARKER_BRAKE`, `SPOILER`, …). The
+    /// names are not in the file; the hash is.
+    pub hash: AssetHash,
+    /// The frame, row-major with the translation in the last row — the same convention as
+    /// [`NfsMeshPart::transform`]. Affine in every record of an install (last column `0,0,0,1`).
+    pub matrix: Mat4,
+}
+
+impl NfsMarker {
+    /// A marker from its name hash and frame.
+    #[must_use]
+    pub fn new(hash: AssetHash, matrix: Mat4) -> Self {
+        Self { hash, matrix }
+    }
+
+    /// The marker's position: the matrix's translation row.
+    #[must_use]
+    pub fn position(&self) -> [f32; 3] {
+        [self.matrix[3][0], self.matrix[3][1], self.matrix[3][2]]
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -146,6 +173,16 @@ pub struct NfsMeshPart {
     pub lod: LodLevel,
     /// The part's local transform, as stored in the file.
     pub transform: Mat4,
+    /// The solid's position markers (`0x0013401A`), in file order: named frames, in this part's
+    /// own space, that the game hangs other things off at run time. Empty when the solid has none.
+    ///
+    /// They are where the file says the things it does **not** place go. A car's `EXHAUST_A` and
+    /// brake meshes are modelled about the origin with no placement in their matrix; the rear
+    /// bumper carries `LEFT_EXHAUST` / `RIGHT_EXHAUST` (one or both — that is the car's single or
+    /// twin exit), the wheel carries `MARKER_BRAKE`, and `BASE` carries `SPOILER`, which is exactly
+    /// the translation a placed spoiler's own matrix holds. Look one up by name with
+    /// [`Self::marker`].
+    pub markers: Vec<NfsMarker>,
     /// Axis-aligned bounding-box minimum.
     pub bbox_min: [f32; 3],
     /// Axis-aligned bounding-box maximum.
@@ -295,6 +332,14 @@ pub struct NfsCar {
 }
 
 impl NfsMeshPart {
+    /// The first marker named `name` (upper case, as the game spells it — see
+    /// [`crate::hash::string_hash`]), if this part carries one.
+    #[must_use]
+    pub fn marker(&self, name: &str) -> Option<&NfsMarker> {
+        let h = crate::hash::string_hash(name);
+        self.markers.iter().find(|m| m.hash.0 == h)
+    }
+
     /// Total triangle count (`indices.len() / 3`).
     #[must_use]
     pub fn triangle_count(&self) -> usize {
