@@ -40,9 +40,13 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         .response
         .rect;
 
+    // The side columns give way before the middle does: left at their default widths, a window a
+    // tiling compositor made narrow has nothing left for the view they are all there to serve.
+    let side = 120.0..=(ui.available_width() * 0.26).max(150.0);
     let tree_rect = egui::Panel::left("tree")
         .resizable(true)
         .default_size(density.tree_width())
+        .size_range(side.clone())
         .show_separator_line(false)
         .frame(panel_frame(Margin { right: BORDER, ..Margin::ZERO }))
         .show_inside(ui, |ui| {
@@ -61,6 +65,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
     let inspector_rect = egui::Panel::right("inspector")
         .resizable(true)
         .default_size(density.inspector_width())
+        .size_range(side)
         .show_separator_line(false)
         .frame(panel_frame(Margin { left: BORDER, ..Margin::ZERO }))
         .show_inside(ui, |ui| {
@@ -184,15 +189,23 @@ fn tabs(app: &mut PryHub, ui: &mut egui::Ui) {
             if let Some(node) = app.doc.as_ref().zip(app.selection).and_then(|(d, o)| d.node_at(o)) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(10.0); // the meta's own `padding-right`
-                    ui.label(
-                        RichText::new(format!(
-                            "{:#010x} · {}",
-                            node.header.id,
-                            panels::inspector::chunk_label(node.header.id)
-                        ))
-                        .font(theme::font::mono(10.5))
-                        .color(theme::muted(48)),
-                    );
+                    // Truncated, because the tabs are what is left of the row's width and this is
+                    // a note about the selection the tree already shows. Below a few words it says
+                    // nothing, so it goes.
+                    if ui.available_width() >= 72.0 {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "{:#010x} · {}",
+                                    node.header.id,
+                                    panels::inspector::chunk_label(node.header.id)
+                                ))
+                                .font(theme::font::mono(10.5))
+                                .color(theme::muted(48)),
+                            )
+                            .truncate(),
+                        );
+                    }
                 });
             }
         });

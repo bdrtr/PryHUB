@@ -232,7 +232,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         ),
     );
 
-    overlay(app, ui, pane);
+    overlay(app, ui, pane, bar);
 }
 
 /// The camera's own controls, top-right over the picture.
@@ -273,7 +273,7 @@ fn toolbar(app: &mut PryHub, ui: &mut egui::Ui, pane: Rect) -> Rect {
 
 /// The corner readouts the design puts over the viewport: what is shown, what it is made of, which
 /// way is up, and how to move the camera.
-fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect) {
+fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect, bar: Rect) {
     let t = app.lang.strings();
     let p = ui.painter();
     let Some(preview) = &app.preview else { return };
@@ -323,13 +323,17 @@ fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect) {
         rect.left_top() + Vec2::splat(INSET),
         vec2(token::RULE + 10.0 + text_w + 10.0, text_h + 12.0),
     );
-    p.rect_filled(chip, 0.0_f32, fill);
-    theme::draw::accent_left_bar(p, chip);
-    let mut y = chip.top() + 6.0;
-    for line in lines {
-        let height = line.size().y;
-        p.galley(pos2(chip.left() + token::RULE + 10.0, y), line, token::TEXT);
-        y += height + LEAD;
+    // In a narrow pane the readout gives way: it is drawn after the toolbar, so it would sit on top
+    // of buttons that still have to be pressed, and the tree and the inspector say the same things.
+    if !chip.intersects(bar) {
+        p.rect_filled(chip, 0.0_f32, fill);
+        theme::draw::accent_left_bar(p, chip);
+        let mut y = chip.top() + 6.0;
+        for line in lines {
+            let height = line.size().y;
+            p.galley(pos2(chip.left() + token::RULE + 10.0, y), line, token::TEXT);
+            y += height + LEAD;
+        }
     }
 
     // Bottom-left: the badge that makes the status bar's `1u = 1m · Z↑` visible in the picture, and

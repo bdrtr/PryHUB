@@ -9,6 +9,11 @@ use crate::theme::Density;
 use crate::theme::{self, token};
 use egui::{Align, Layout, RichText};
 
+/// How wide the top bar's row must be for the brand's subtitle to stay, in points.
+const SUBTITLE_FROM: f32 = 1120.0;
+/// The same for the wordmark, which is worth more than the subtitle and so goes later.
+const WORDMARK_FROM: f32 = 1040.0;
+
 impl PryHub {
     /// Brand · open/export · screen nav · what the file's health is · settings.
     pub(crate) fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -46,69 +51,92 @@ impl PryHub {
                 );
 
                 ui.horizontal_centered(|ui| {
-                    // The design's `gap:10px` between everything on this row.
-                    ui.spacing_mut().item_spacing.x = 10.0;
-
-                    // Brand: the word and its subtitle share a baseline and a click.
-                    let brand = ui
-                        .horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 7.0;
-                            // The mark, set to the wordmark's own cap height rather than to the
-                            // bar's: a logo as tall as the strip it sits in reads as a button.
-                            if let Some(mark) = mark {
-                                mark.show(ui, 22.0);
-                            }
-                            ui.label(
-                                RichText::new("PryHUB").font(theme::font::heading(19.0)).color(token::TEXT),
-                            );
-                            ui.label(RichText::new(t.brand_sub).size(10.0).color(theme::muted(50)));
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if brand.clicked() {
-                        self.screen = Screen::Welcome;
-                    }
-                    crate::widget::rule_v(ui, 22.0, token::DIVIDER_ON_SURFACE);
-
-                    // The two file actions: they act on the *document*, while the nav beyond them
-                    // only chooses which way to look at it.
-                    if crate::widget::action(ui, t.m_open, true, theme::icon::open).clicked() {
-                        self.screen = Screen::Welcome;
-                    }
-                    // Enabled only with a file open: a button that can do nothing is worse than one
-                    // that is visibly not for now.
-                    let can = self.doc.is_some();
-                    if crate::widget::action(ui, t.m_export, can, theme::icon::export)
-                        .on_hover_text(t.export_hint)
-                        .clicked()
-                    {
-                        exported = true;
-                    }
-
-                    ui.add_space(theme::token::SPACE_2);
-                    crate::widget::segmented(
-                        ui,
-                        egui::Id::new("nav"),
-                        &mut self.screen,
-                        &[
-                            (Screen::Workspace, t.nav_workspace),
-                            (Screen::Carp, t.nav_carp),
-                            (Screen::Validation, t.nav_validation),
-                            (Screen::Discovery, t.nav_discovery),
-                            (Screen::Diff, t.nav_diff),
-                            (Screen::Dictionary, t.nav_dict),
-                        ],
-                        crate::widget::Seg::Nav,
-                    );
-
+                    let width = ui.available_width();
+                    // Laid out from the right, and the fixed cluster first: what is left over is
+                    // what the rest gets, so the two cannot overlap.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         self.settings_menu(ui);
-                        if let Some(counts) = health {
-                            if health_counter(ui, counts).on_hover_text(t.nav_validation).clicked() {
-                                self.screen = Screen::Validation;
+                        // In a scope whether or not there is a file, because the ids of everything
+                        // laid out after this count what came before it: the counter appearing on
+                        // the frame a file lands would otherwise rename the whole row.
+                        ui.scope(|ui| {
+                            if let Some(counts) = health {
+                                if health_counter(ui, counts).on_hover_text(t.nav_validation).clicked() {
+                                    self.screen = Screen::Validation;
+                                }
                             }
-                        }
+                        });
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            // The design's `gap:10px` between everything on this row.
+                            ui.spacing_mut().item_spacing.x = 10.0;
+
+                            // Brand: the word and its subtitle share a baseline and a click.
+                            let brand = ui
+                                .horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    // The mark, set to the wordmark's own cap height rather than to the
+                                    // bar's: a logo as tall as the strip it sits in reads as a button.
+                                    if let Some(mark) = mark {
+                                        mark.show(ui, 22.0);
+                                    }
+                                    // The words go first when the row runs short, and the mark still says
+                                    // whose window this is and still goes home.
+                                    if width >= WORDMARK_FROM {
+                                        ui.label(
+                                            RichText::new("PryHUB").font(theme::font::heading(19.0)).color(token::TEXT),
+                                        );
+                                    }
+                                    if width >= SUBTITLE_FROM {
+                                        ui.label(RichText::new(t.brand_sub).size(10.0).color(theme::muted(50)));
+                                    }
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            if brand.clicked() {
+                                self.screen = Screen::Welcome;
+                            }
+                            crate::widget::rule_v(ui, 22.0, token::DIVIDER_ON_SURFACE);
+
+                            // The two file actions: they act on the *document*, while the nav beyond them
+                            // only chooses which way to look at it.
+                            if crate::widget::action(ui, t.m_open, true, theme::icon::open).clicked() {
+                                self.screen = Screen::Welcome;
+                            }
+                            // Enabled only with a file open: a button that can do nothing is worse than one
+                            // that is visibly not for now.
+                            let can = self.doc.is_some();
+                            if crate::widget::action(ui, t.m_export, can, theme::icon::export)
+                                .on_hover_text(t.export_hint)
+                                .clicked()
+                            {
+                                exported = true;
+                            }
+
+                            ui.add_space(theme::token::SPACE_2);
+                            // Last in line for the width, and scrolled rather than clipped when there is not
+                            // enough: every screen stays reachable however narrow a tiling compositor makes
+                            // the window, and nothing here can land on top of the counter or Settings.
+                            egui::ScrollArea::horizontal()
+                                .id_salt("nav_scroll")
+                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                                .show(ui, |ui| {
+                                crate::widget::segmented(
+                                    ui,
+                                    egui::Id::new("nav"),
+                                    &mut self.screen,
+                                    &[
+                                        (Screen::Workspace, t.nav_workspace),
+                                        (Screen::Carp, t.nav_carp),
+                                        (Screen::Validation, t.nav_validation),
+                                        (Screen::Discovery, t.nav_discovery),
+                                        (Screen::Diff, t.nav_diff),
+                                        (Screen::Dictionary, t.nav_dict),
+                                    ],
+                                    crate::widget::Seg::Nav,
+                                );
+                                });
+                        });
                     });
                 });
             });
