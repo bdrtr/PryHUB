@@ -123,7 +123,7 @@ enum Command {
     },
     /// List a car's textures and how its material runs map onto them.
     Textures {
-        /// A car directory or its `GEOMETRY.BIN`.
+        /// A car directory or its `GEOMETRY.BIN`, or a texture pack by itself.
         car: PathBuf,
         /// Only show parts whose name contains this.
         #[arg(long, value_name = "SUBSTR")]

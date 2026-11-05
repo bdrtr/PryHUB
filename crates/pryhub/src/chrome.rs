@@ -9,6 +9,10 @@ use crate::theme::Density;
 use crate::theme::{self, token};
 use egui::{Align, Layout, RichText};
 
+/// How wide the status bar's row must be for the chunk count to stay, in points.
+const STATUS_CHUNKS_FROM: f32 = 560.0;
+/// The same for the selection, which is the longest thing on it.
+const STATUS_SELECTION_FROM: f32 = 780.0;
 /// How wide the top bar's row must be for the brand's subtitle to stay, in points.
 const SUBTITLE_FROM: f32 = 1120.0;
 /// The same for the wordmark, which is worth more than the subtitle and so goes later.
@@ -177,6 +181,9 @@ impl PryHub {
                 );
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
+                    // Nothing on this row may land on the readouts at its right end, and it has no
+                    // way to scroll: what the tree and the top bar already say goes first.
+                    let width = ui.available_width();
                     let small = |ui: &mut egui::Ui, s: String, strong: bool| {
                         let mut txt = RichText::new(s).font(theme::font::mono(10.5));
                         txt = if strong { txt.color(token::TEXT) } else { txt.color(theme::muted(58)) };
@@ -186,8 +193,10 @@ impl PryHub {
                         Some(doc) => {
                             small(ui, doc.file_name(), true);
                             small(ui, format!("{:.2} MB", doc.bytes.len() as f32 / (1024.0 * 1024.0)), false);
-                            small(ui, format!("{} {}", doc.rows.len(), t.st_chunks.of(doc.rows.len())), false);
-                            if let Some(sel) = self.selection.and_then(|o| doc.node_at(o)) {
+                            if width >= STATUS_CHUNKS_FROM {
+                                small(ui, format!("{} {}", doc.rows.len(), t.st_chunks.of(doc.rows.len())), false);
+                            }
+                            if let Some(sel) = self.selection.and_then(|o| doc.node_at(o)).filter(|_| width >= STATUS_SELECTION_FROM) {
                                 // The design's `|`, in the divider's own ink: it separates what is
                                 // true of the file from what is true of the selection.
                                 ui.label(

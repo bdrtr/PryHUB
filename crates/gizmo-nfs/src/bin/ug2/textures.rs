@@ -1,13 +1,21 @@
-//! `ug2 textures` — the car's texture table, and which material run uses which image.
+//! `ug2 textures` — a pack's texture table and, given a car, which material run uses which image.
 
 use crate::paths::{Car, Result};
 use std::path::Path;
 
-pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
-    let car = Car::resolve(car)?;
-    let parts = car.parts()?;
-    let Some(tpk) = car.textures() else {
-        return Err(format!("{}: no readable TEXTURES.BIN", car.dir.display()));
+pub fn run(path: &Path, filter: Option<&str>) -> Result<()> {
+    let (tpk, parts) = if is_pack_file(path) {
+        // A pack by itself, which is what `replace -o` writes: its images are all there, and with no
+        // geometry beside it there are just no runs to list.
+        let bytes = crate::paths::read(path)?;
+        (gizmo_nfs::Tpk::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?, None)
+    } else {
+        let car = Car::resolve(path)?;
+        let parts = car.parts()?;
+        let Some(tpk) = car.textures() else {
+            return Err(format!("{}: no readable TEXTURES.BIN", car.dir.display()));
+        };
+        (tpk, Some(parts))
     };
 
     // What the file declares and what came back as pixels are two numbers, and saying only the
@@ -42,6 +50,7 @@ pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
         );
     }
 
+    let Some(parts) = parts else { return Ok(()) };
     outln!("\n== material runs (shader | texture hash → resolved texture) ==");
     for p in parts.iter().filter(|p| filter.is_none_or(|f| p.name.contains(f))) {
         if p.materials.is_empty() {
@@ -60,4 +69,11 @@ pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `path` is a file that is not a car's geometry. Wheel sets call theirs
+/// `GEOMETRY_<BRAND>.BIN`, hence the prefix.
+fn is_pack_file(path: &Path) -> bool {
+    path.is_file()
+        && !path.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_uppercase().starts_with("GEOMETRY"))
 }
