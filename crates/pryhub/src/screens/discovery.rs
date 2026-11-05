@@ -295,6 +295,9 @@ fn number(ui: &mut egui::Ui, value: &mut usize, max: usize) {
 
 /// The bordered list of fields: one row per column, each saying where it starts and how it is read.
 fn fields(app: &mut PryHub, ui: &mut egui::Ui) {
+    // Here as well as at the top of the screen: a stride chip and the guess button replace the
+    // columns between the two, in the same frame that draws their rows.
+    app.discover.fit_names();
     let list_width = ui.available_width();
     // The margin is the border's own width, so the rows sit flush inside it instead of over it.
     egui::Frame::new()
@@ -631,5 +634,23 @@ fn render(cell: &Cell) -> String {
         // `Cell` is `#[non_exhaustive]`: a kind added to the parser must show as something rather
         // than stop this crate compiling.
         _ => "? ".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stride chip guesses a new set of columns in the same frame that draws their rows, after
+    /// this screen's one `fit_names`: clicking `48×` on a car's `SolidList` took the program down.
+    #[test]
+    fn more_columns_than_names_does_not_take_the_screen_down() {
+        let ctx = egui::Context::default();
+        let chosen = crate::settings::Settings::default();
+        let mut app = PryHub::new(&ctx, chosen, None, None, None);
+        app.discover.schema.columns = vec![Kind::Hex; 3];
+        app.discover.names.clear();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| fields(&mut app, ui));
+        assert_eq!(app.discover.names.len(), 3);
     }
 }
