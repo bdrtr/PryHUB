@@ -14,6 +14,7 @@
 pub mod carparts;
 pub mod edit;
 pub mod install;
+pub mod style;
 
 const REC_SIZE: usize = 0x890;
 const OFF_NAME2: usize = 0x20;

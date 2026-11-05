@@ -2398,3 +2398,34 @@ fn the_drivetrain_lanes_read_like_a_drivetrain() {
     assert_eq!(playable, 31);
     assert_eq!(stepping_back, ["LANCEREVO8"]);
 }
+
+/// The style events: thirty-nine records, every name the scorer was read for resolving through the
+/// language file, and the lanes that say how a power slide and a drift pay.
+#[test]
+fn the_style_events_name_themselves_through_the_language_file() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping style events test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("GLOBAL/GLOBALB.BUN")).expect("read GLOBALB.BUN");
+    let events = gizmo_nfs::globalb::style::style_events(&bytes).expect("walk GLOBALB");
+    assert_eq!(events.len(), 39);
+    let words = std::fs::read(root.join("LANGUAGES/English.bin")).expect("read English.bin");
+    let labels = gizmo_nfs::language::labels(&words);
+    let name = |i: usize| labels.get(&events[i].label).cloned().unwrap_or_default();
+    for (i, e) in events.iter().enumerate() {
+        assert_eq!(e.index as usize, i, "record {i} names itself {}", e.index);
+    }
+    assert_eq!(name(0), "DRIFT");
+    assert_eq!(name(22), "360");
+    assert_eq!(name(25), "J-TURN");
+    assert_eq!(name(34), "POWER SLIDE");
+    assert_eq!(name(35), "HANG TIME");
+    assert_eq!(name(37), "REVERSE");
+    let (drift, slide) = (events[0], events[34]);
+    assert!(drift.continuous && drift.modes == 4 && drift.rate == 120.0 && drift.max_multiplier == 5.0);
+    assert!(slide.continuous && slide.modes & 4 == 0 && slide.rate == 120.0 && slide.threshold == 50.0);
+    // The drift tiers point back at the drift.
+    assert!((8..=14).all(|i| events[i].parent == 0));
+}
+

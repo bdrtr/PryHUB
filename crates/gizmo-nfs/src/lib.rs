@@ -51,6 +51,7 @@ pub mod globalb;
 pub mod profile;
 pub mod hash;
 pub mod inspect;
+pub mod language;
 pub mod parts;
 pub mod placement;
 pub mod reader;
