@@ -363,7 +363,7 @@ fn index_rule(solids: &[&ChunkNode], bytes: &[u8]) -> RuleResult {
         }
         examined += 1;
         let max = data[start..start + want]
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
             .max()
             .unwrap_or(0);

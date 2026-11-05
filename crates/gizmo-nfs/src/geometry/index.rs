@@ -25,7 +25,7 @@ pub(crate) fn parse_indices(ibuf: &[u8], tri_count: usize, vert_count: usize) ->
     // bounds-check each of the 320,000 indices in a car again for nothing.
     let bytes = ibuf.get(start..start + needed).unwrap_or_default();
     let mut indices = Vec::with_capacity(index_count);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0.iter() {
         let i = u32::from(u16::from_le_bytes([pair[0], pair[1]]));
         if i as usize >= vert_count {
             return Err(NfsError::IndexOutOfRange { index: i, vertex_count: vert_count as u32 });

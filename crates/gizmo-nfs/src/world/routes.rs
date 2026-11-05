@@ -193,7 +193,7 @@ pub fn read_nodes(payload: &[u8]) -> NfsResult<Vec<RouteNode>> {
         });
     }
     let mut out = Vec::with_capacity(payload.len() / NODE_LEN);
-    for record in payload.chunks_exact(NODE_LEN) {
+    for record in payload.as_chunks::<NODE_LEN>().0.iter() {
         let mut r = ByteReader::at(record, 0)?;
         let x = r.f32_le()?;
         let y = r.f32_le()?;
@@ -589,7 +589,7 @@ pub fn read_events(payload: &[u8]) -> NfsResult<Vec<RaceEvent>> {
         });
     }
     let mut out = Vec::with_capacity(payload.len() / EVENT_LEN);
-    for record in payload.chunks_exact(EVENT_LEN) {
+    for record in payload.as_chunks::<EVENT_LEN>().0.iter() {
         let mut r = ByteReader::at(record, 0)?;
         let id = r.u16_le()?;
         let count = r.u8()? as usize;
@@ -731,7 +731,7 @@ pub fn read_markers(payload: &[u8]) -> NfsResult<Vec<StartMarker>> {
         });
     }
     let mut out = Vec::with_capacity(body.len() / MARKER_LEN);
-    for record in body.chunks_exact(MARKER_LEN) {
+    for record in body.as_chunks::<MARKER_LEN>().0.iter() {
         let mut r = ByteReader::at(record, 0)?;
         if (r.u32_le()?, r.u32_le()?) != (11, 11) {
             return Err(NfsError::CorruptArchive {
@@ -928,7 +928,7 @@ pub fn read_path_info(payload: &[u8]) -> NfsResult<Vec<PathInfo>> {
         });
     }
     let mut out = Vec::with_capacity(payload.len() / PATH_LEN);
-    for record in payload.chunks_exact(PATH_LEN) {
+    for record in payload.as_chunks::<PATH_LEN>().0.iter() {
         let end = record[..4].iter().position(|b| *b == 0).unwrap_or(4);
         let mut r = ByteReader::at(record, 20)?;
         let id = r.u16_le()?;
@@ -1095,7 +1095,7 @@ pub fn read_segments(payload: &[u8]) -> NfsResult<Vec<RouteSegment>> {
         });
     }
     let mut out = Vec::with_capacity(payload.len() / SEGMENT_LEN);
-    for record in payload.chunks_exact(SEGMENT_LEN) {
+    for record in payload.as_chunks::<SEGMENT_LEN>().0.iter() {
         let mut r = ByteReader::at(record, 0)?;
         let at = [[r.f32_le()?, r.f32_le()?], [r.f32_le()?, r.f32_le()?]];
         if record[16] != 0 || record[19] != 0 {
@@ -1272,7 +1272,7 @@ pub fn read_lanes(payload: &[u8]) -> NfsResult<Vec<Lane>> {
         let mut r = ByteReader::at(&body[..LANE_RECORD], 12)?;
         let bounds = [r.f32_le()?, r.f32_le()?, r.f32_le()?, r.f32_le()?];
         let mut points = Vec::with_capacity(usize::from(count));
-        for record in body[LANE_RECORD..].chunks_exact(LANE_RECORD) {
+        for record in body[LANE_RECORD..].as_chunks::<LANE_RECORD>().0.iter() {
             let mut r = ByteReader::at(record, 0)?;
             points.push(LanePoint { at: [r.f32_le()?, r.f32_le()?], along: r.f32_le()? });
         }

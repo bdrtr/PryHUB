@@ -254,7 +254,7 @@ fn resolve_object_words(paths_file: &Path, tracks: &Path) -> Option<(usize, usiz
 
     let (mut hit, mut miss, mut records) = (0, 0, 0);
     let (mut tex, mut reg) = (0, 0);
-    for r in payload.chunks_exact(36) {
+    for r in payload.as_chunks::<36>().0 {
         records += 1;
         let count = usize::from(r[17]).min(4);
         for i in 0..count {

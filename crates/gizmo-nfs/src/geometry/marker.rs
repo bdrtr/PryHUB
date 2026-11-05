@@ -23,7 +23,7 @@ pub fn parse_markers(data: &[u8]) -> Vec<NfsMarker> {
         off += 4;
     }
     data[off..]
-        .chunks_exact(MARKER_STRIDE)
+        .as_chunks::<MARKER_STRIDE>().0.iter()
         .map(|rec| {
             let u = |o: usize| u32::from_le_bytes([rec[o], rec[o + 1], rec[o + 2], rec[o + 3]]);
             let mut m: Mat4 = [[0.0; 4]; 4];

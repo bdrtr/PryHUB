@@ -127,7 +127,7 @@ pub fn png_pixels(bytes: &[u8]) -> crate::NfsResult<(Vec<u8>, u32, u32)> {
 
     let mut rgba = vec![0u8; w * h * 4];
     let widen = |dst: &mut [u8], src: &[u8], stride: usize, to: fn(&[u8]) -> [u8; 4]| {
-        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(stride)) {
+        for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.chunks_exact(stride)) {
             d.copy_from_slice(&to(s));
         }
     };
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_png_written_here_reads_back_here() {
         let mut t = tex("t", 4, 2);
-        for (i, px) in t.rgba.chunks_exact_mut(4).enumerate() {
+        for (i, px) in t.rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px.copy_from_slice(&[i as u8 * 30, 255 - i as u8 * 20, 7, 200 - i as u8]);
         }
         let bytes = png_bytes(&t).expect("encode");

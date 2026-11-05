@@ -80,7 +80,7 @@ pub fn write_obj(
         };
         if p.materials.is_empty() {
             let _ = writeln!(s, "usemtl {}", material_for(p, 0));
-            for tri in p.indices.chunks_exact(3) {
+            for tri in p.indices.as_chunks::<3>().0.iter() {
                 face(&mut s, tri);
             }
         } else {
@@ -90,7 +90,7 @@ pub fn write_obj(
                     continue;
                 };
                 let _ = writeln!(s, "usemtl {}", material_for(p, run));
-                for tri in slice.chunks_exact(3) {
+                for tri in slice.as_chunks::<3>().0.iter() {
                     face(&mut s, tri);
                 }
             }
@@ -195,7 +195,7 @@ pub fn write_world_obj(
         for (run, offset, count) in runs {
             let Some(slice) = m.indices.get(offset..offset + count) else { continue };
             let _ = writeln!(s, "usemtl {}", material_for(m, run));
-            for t in slice.chunks_exact(3) {
+            for t in slice.as_chunks::<3>().0.iter() {
                 let f = |i: u32| {
                     let v = base + i as usize;
                     if (i as usize) < uvs { format!("{v}/{v}") } else { v.to_string() }

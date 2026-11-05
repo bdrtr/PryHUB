@@ -107,7 +107,7 @@ fn export(path: &Path, out: &Path, y_up: bool) -> Result<()> {
             materials.push(Material {
                 name: format!("tex_{:08X}", k.0),
                 map: Some(name.clone()),
-                map_is_cutout: img.rgba.chunks_exact(4).any(|p| p[3] < 250),
+                map_is_cutout: img.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 250),
                 diffuse: [1.0, 1.0, 1.0],
             });
             images.insert(k.0, name);

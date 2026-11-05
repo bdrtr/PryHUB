@@ -290,7 +290,7 @@ pub(crate) fn unpack_palettised(
     height: usize,
 ) -> Vec<u8> {
     let mut out = vec![0u8; width * height * RGBA];
-    for (dst, &index) in out.chunks_exact_mut(4).zip(src.iter()) {
+    for (dst, &index) in out.as_chunks_mut::<4>().0.iter_mut().zip(src.iter()) {
         // `index` is a byte and `palette` is 256 four-byte entries *by type*, so `e + 3` is at most
         // 1023. The bound is the array's, not a caller's promise, so these need no check.
         let e = index as usize * 4;
@@ -305,7 +305,7 @@ pub(crate) fn unpack_palettised(
 /// Unpack the `0x20` format: 32-bit source stored B,G,R,A → RGBA8, alpha preserved.
 pub(crate) fn unpack_bgra(src: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = vec![0u8; width * height * RGBA];
-    for (dst, s) in out.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+    for (dst, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
         dst.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
     }
     out

@@ -191,7 +191,7 @@ pub fn replace_pixels(
             .ok_or(NfsError::BufferSizeMismatch { detail: "TPK palette out of range" })?;
         // Entries past the ones this image needs keep the bytes they had. They are not read — no
         // index reaches them — and rewriting them would put a diff where there is no change.
-        for (slot, c) in region.chunks_exact_mut(4).zip(colours.iter()) {
+        for (slot, c) in region.as_chunks_mut::<4>().0.iter_mut().zip(colours.iter()) {
             slot.copy_from_slice(&[c[2], c[1], c[0], c[3]]); // stored B,G,R,A
         }
         Some(colours)
@@ -327,7 +327,7 @@ fn downsample(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8>
 
 /// RGBA8 → the `0x20` format's B,G,R,A. The one arm that loses nothing.
 fn write_bgra(rgba: &[u8], dst: &mut [u8]) {
-    for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+    for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0.iter()) {
         d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
     }
 }
@@ -671,7 +671,7 @@ fn write_indices(
     dst: &mut [u8],
     cache: &mut std::collections::HashMap<[u8; 4], u8>,
 ) {
-    for (d, s) in dst.iter_mut().zip(rgba.chunks_exact(4)) {
+    for (d, s) in dst.iter_mut().zip(rgba.as_chunks::<4>().0.iter()) {
         let key = [s[0], s[1], s[2], s[3]];
         *d = *cache.entry(key).or_insert_with(|| nearest(palette, key));
     }
@@ -703,7 +703,7 @@ fn nearest(palette: &[[u8; 4]], c: [u8; 4]) -> u8 {
 /// entirely and is reproduced exactly.
 fn quantise(rgba: &[u8], cap: usize) -> Vec<[u8; 4]> {
     let mut counts: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0.iter() {
         *counts.entry([px[0], px[1], px[2], px[3]]).or_insert(0) += 1;
     }
     let mut colours: Vec<([u8; 4], u32)> = counts.into_iter().collect();
@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(out.len(), buf.len(), "a replacement must not resize the blob");
         // The top mip, read back the way the decoder reads it.
         let back: Vec<u8> = out[..16 * 16 * 4]
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .flat_map(|c| [c[2], c[1], c[0], c[3]])
             .collect();
         assert_eq!(back, px, "the one format that loses nothing must lose nothing");
@@ -897,7 +897,7 @@ mod tests {
         let back = dxt::decode_dxt1(&out[..32 * 32 / 2], 32, 32);
         // Flat quadrants are the easy case for a block encoder; anything more than a couple of
         // levels off means the endpoints or the indices are wrong, not that DXT is lossy.
-        for (i, (a, b)) in back.chunks_exact(4).zip(px.chunks_exact(4)).enumerate() {
+        for (i, (a, b)) in back.as_chunks::<4>().0.iter().zip(px.as_chunks::<4>().0.iter()).enumerate() {
             if b[3] < ALPHA_CUT {
                 assert_eq!(a[3], 0, "pixel {i} should have gone to the transparent slot");
                 continue;
@@ -913,12 +913,12 @@ mod tests {
     fn dxt5_keeps_a_gradient_of_alpha() {
         let (buf, entry) = blob(16, 16, fmt::DXT5, 1);
         let mut px = vec![0u8; 16 * 16 * 4];
-        for (i, p) in px.chunks_exact_mut(4).enumerate() {
+        for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[180, 90, 40, (i * 255 / 255).min(255) as u8]);
         }
         let out = replace_pixels(&buf, &entry, &px, 16, 16).expect("encode");
         let back = dxt::decode_dxt5(&out[..16 * 16], 16, 16);
-        for (i, (a, b)) in back.chunks_exact(4).zip(px.chunks_exact(4)).enumerate() {
+        for (i, (a, b)) in back.as_chunks::<4>().0.iter().zip(px.as_chunks::<4>().0.iter()).enumerate() {
             let d = (a[3] as i32 - b[3] as i32).abs();
             assert!(d <= 12, "alpha at {i}: {} vs {}", a[3], b[3]);
         }
@@ -945,7 +945,7 @@ mod tests {
         // far more colours than that must still not be the first one that does.
         let (buf, entry) = blob(32, 32, fmt::P8_16, 1);
         let mut px = vec![0u8; 32 * 32 * 4];
-        for (i, p) in px.chunks_exact_mut(4).enumerate() {
+        for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[(i * 7 % 256) as u8, (i * 13 % 256) as u8, (i * 29 % 256) as u8, 255]);
         }
         let out = replace_pixels(&buf, &entry, &px, 32, 32).expect("encode");
@@ -1038,7 +1038,7 @@ mod tests {
         // disagreed would make a written pack unreproducible.
         let (buf, entry) = blob(32, 32, fmt::P8, 1);
         let mut px = vec![0u8; 32 * 32 * 4];
-        for (i, p) in px.chunks_exact_mut(4).enumerate() {
+        for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             p.copy_from_slice(&[(i % 256) as u8, (i * 3 % 256) as u8, (i * 5 % 256) as u8, 255]);
         }
         let a = replace_pixels(&buf, &entry, &px, 32, 32).expect("encode");

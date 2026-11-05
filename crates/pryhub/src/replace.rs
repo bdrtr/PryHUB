@@ -361,7 +361,7 @@ mod tests {
         let got = gizmo_nfs::Tpk::decode_one(&after, e2).expect("decode");
         let magenta_pixels = got
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] > 200 && p[1] < 60 && p[2] > 200)
             .count();
         let total = got.rgba.len() / 4;
@@ -409,7 +409,7 @@ mod tests {
                 let n = t.rgba.len() / 4;
                 let hit = t
                     .rgba
-                    .chunks_exact(4)
+                    .as_chunks::<4>().0.iter()
                     .filter(|p| {
                         p.iter().take(3).zip(want.iter()).all(|(a, b)| a.abs_diff(*b) < 60)
                     })
@@ -434,7 +434,7 @@ mod tests {
         let still = stale.decode_textures(&|_, _| {}).expect("decode").0;
         let from_snapshot = still.texture(entry.hash).expect("the texture").rgba.clone();
         let magenta_in_snapshot = from_snapshot
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] > 200 && p[1] < 60 && p[2] > 200)
             .count();
         assert!(
@@ -447,7 +447,7 @@ mod tests {
             .texture(entry.hash)
             .expect("the texture")
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] > 200 && p[1] < 60 && p[2] > 200)
             .count();
         assert!(

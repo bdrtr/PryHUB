@@ -30,7 +30,7 @@ pub fn run(car: &Path, filter: Option<&str>) -> Result<()> {
         let opaque = t.opaque_permille() / 10;
         let texels = (t.rgba.len() / 4).max(1);
         let lum: usize =
-            t.rgba.chunks_exact(4).map(|px| (px[0] as usize + px[1] as usize + px[2] as usize) / 3).sum();
+            t.rgba.as_chunks::<4>().0.iter().map(|px| (px[0] as usize + px[1] as usize + px[2] as usize) / 3).sum();
         outln!(
             "  {:#010x}  {:>4}x{:<4}  {:?}  opaque={opaque:>3}%  lum={:>3}  {}",
             t.hash.0,

@@ -273,7 +273,7 @@ fn index_buffer(node: &ChunkNode, data: &[u8], m: &mut ChunkModel) {
     let usable = data.len().saturating_sub(filler);
     m.fields.push(Field::new("triangles that fit", None, 0, Value::Num((usable / 6) as u64)));
     if let Some(tri) = data.get(filler..filler + 6) {
-        let idx: Vec<u16> = tri.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        let idx: Vec<u16> = tri.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         m.fields.push(Field::new(
             "first triangle",
             Some(node.data_offset + filler),
