@@ -2339,3 +2339,62 @@ fn markers_place_what_the_file_does_not() {
     let [x, y, z] = base.marker("SPOILER").expect("BASE names the spoiler mount").position();
     assert!(x < -1.0 && y.abs() < 1e-3 && z > 0.4, "behind and above, on the centreline: {x} {y} {z}");
 }
+
+/// The drivetrain lanes `SPEED2.EXE`'s engine and gearbox code reads, against the install.
+///
+/// Located by the code, not by sweeping the file — see `Engine::inertia_kgm2`, `Engine::brake_nm`,
+/// `Gearbox::shift_rate` and `Chassis::drag` for the functions. What is asserted is what only the
+/// right offsets give: every playable car has a positive inertia and engine-braking curve, no
+/// gearbox upgrade shifts slower than stock, and drag is positive everywhere.
+#[test]
+fn the_drivetrain_lanes_read_like_a_drivetrain() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping drivetrain test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("GLOBAL/GLOBALB.BUN")).expect("read GLOBALB.BUN");
+    let cars = gizmo_nfs::globalb::parse_cartypeinfos(&bytes);
+    let mut playable = 0;
+    let mut stepping_back: Vec<String> = Vec::new();
+    for car in &cars {
+        let h = &car.handling;
+        let e = h.engine;
+        eprintln!(
+            "{:12} inertia {:.2} kg·m²  brake {:?} N·m  drag {:.5}  shift {:?}",
+            car.name,
+            e.inertia_kgm2,
+            e.brake_nm,
+            h.chassis.drag,
+            h.gearbox.iter().map(|g| g.shift_rate).collect::<Vec<_>>()
+        );
+        assert!(h.chassis.drag > 0.0 && h.chassis.drag < 0.01, "{}: drag {}", car.name, h.chassis.drag);
+        // The rear share of the brake pedal (`0x5A4E90`): just over half everywhere.
+        assert!((0.45..=0.62).contains(&h.chassis.brake_rear), "{}: brake_rear {}", car.name, h.chassis.brake_rear);
+        if (e.limiter_rpm - e.red_line_rpm - 500.0).abs() > 0.01 {
+            continue; // traffic
+        }
+        playable += 1;
+        // Nitrous at the top part: a six-second tank and 0.5 kN·m on every playable car.
+        let [tank, torque] = h.chassis.nitro_full;
+        assert!(tank == 6.0 && (torque - 0.5).abs() < 1e-5, "{}: nitro {tank} s {torque} kN·m", car.name);
+        // The boost curve is there on the turbocharged cars and nowhere else.
+        const TURBO: [&str; 7] = ["GOLF", "ECLIPSE", "3000GT", "SKYLINE", "LANCEREVO8", "RX7", "IMPREZAWRX"];
+        let boosted = e.turbo_nm.iter().any(|t| *t > 0.0);
+        assert_eq!(boosted, TURBO.contains(&car.name.as_str()), "{}: turbo {:?}", car.name, e.turbo_nm);
+        assert!(e.turbo_nm[0] == 0.0 && e.turbo_nm.iter().all(|t| (0.0..=110.0).contains(t)), "{}: turbo {:?}", car.name, e.turbo_nm);
+        assert!(e.inertia_kgm2 > 0.05 && e.inertia_kgm2 < 2.0, "{}: inertia {}", car.name, e.inertia_kgm2);
+        assert!(e.brake_nm.iter().all(|&t| t > 0.0 && t < 1000.0), "{}: brake {:?}", car.name, e.brake_nm);
+        assert!((e.brake_at(e.idle_rpm) - e.brake_nm[0]).abs() < 1e-3);
+        assert!((e.brake_at(e.limiter_rpm) - e.brake_nm[2]).abs() < 1e-3);
+        let rates: Vec<f32> = h.gearbox.iter().map(|g| g.shift_rate).collect();
+        assert!(rates[0] > 0.0, "{}: stock shift rate {}", car.name, rates[0]);
+        // No upgrade shifts slower than stock. Not strictly rising: LANCEREVO8's level 2 reads 10
+        // against level 3's 8, the one car in 31 whose ladder steps back.
+        assert!(rates.iter().all(|&r| r >= rates[0]), "{}: shift rates {rates:?}", car.name);
+        if rates.windows(2).any(|w| w[0] > w[1]) {
+            stepping_back.push(car.name.clone());
+        }
+    }
+    assert_eq!(playable, 31);
+    assert_eq!(stepping_back, ["LANCEREVO8"]);
+}

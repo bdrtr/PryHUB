@@ -34,6 +34,15 @@ const W_LATERAL: usize = 0x1C; // YValue
 const OFF_BODY: usize = 0x224; // length, width, height (m)
 const OFF_RPM: usize = 0x300; // idle, red line, limiter
 const OFF_TORQUE: usize = 0x310; // 9 × f32, kN·m
+/// Engine inertia, t·m² (`0x5A1290` divides the crank torque by it).
+const OFF_ENGINE_INERTIA: usize = 0x30C;
+/// The three-point engine-braking curve, kN·m, idle to limiter (`0x594300`).
+const OFF_ENGINE_BRAKE: usize = 0x358;
+/// The turbo curve: nine points, idle to limiter, kN·m. Right after the torque table, whose ninth
+/// point is `+0x330` — that lane is not a field of its own.
+const OFF_TURBO: usize = 0x334;
+/// Aerodynamic drag, kN per (m/s)² (`0x59E620`).
+const OFF_DRAG: usize = 0x370;
 /// Steering response, as a multiplier. 1.00–1.25 across the install, and **confirmed in the game**:
 /// see [`CarHandling::steer_ratio`].
 const OFF_STEER: usize = 0x380;
@@ -46,6 +55,7 @@ const TORQUE_GAIN_AT: [usize; 4] = [0x530, 0x570, 0x5B0, 0x5F0];
 const G_FINAL_DRIVE: usize = 0x08;
 const G_REAR_DRIVE: usize = 0x10; // 0 = FWD, 1 = RWD; only the stock block is read
 const G_COUNT: usize = 0x18;
+const G_SHIFT_RATE: usize = 0x1C; // clutch travel per second, `0x5949B0`
 const G_RATIOS: usize = 0x20; // reverse, neutral, then up to six forward
 
 // The tuning lanes, read off `SPEED2.EXE`'s own slider-range and physics code — see `Chassis` for
@@ -68,6 +78,10 @@ const OFF_DOWNFORCE: usize = 0x374;
 const OFF_RIDE_DROP: usize = 0x714;
 /// Brake torque, then handbrake torque — one of each for the whole car.
 const OFF_BRAKE: usize = 0x384;
+/// Nitrous, as the fully upgraded car has it: the tank in seconds, then (two lanes on) the torque.
+/// The stock lanes they lerp from, `+0x3B0`/`+0x3BC`, are 0 in every record.
+const OFF_NITRO_FULL: usize = 0x690;
+const N_TORQUE: usize = 0x0C;
 
 // Lanes with a *candidate* meaning and no proof. See `Unproven`, which is where each one's
 // evidence, its rival readings and the experiment that would settle it are written down.
@@ -103,6 +117,40 @@ pub struct Engine {
     pub red_line_rpm: f32,
     /// Where fuel is cut. Always above [`Self::red_line_rpm`].
     pub limiter_rpm: f32,
+    /// The rotating engine's inertia in **kg·m²**, stored in t·m² like every other mass in the
+    /// record (0.00025 → 0.25 for a 240SX). `SPEED2.EXE` divides the crank's net torque by it to
+    /// spin the engine up (`0x5A1290`).
+    pub inertia_kgm2: f32,
+    /// Engine braking in **N·m** at three points evenly spaced from idle to the limiter, stored in
+    /// kN·m. The game's crank torque (`0x594300`) is `curve(rpm) · throttle − (1 − throttle) ·
+    /// this(rpm)`: closing the throttle does not merely stop the drive, it turns the engine into a
+    /// brake. A 240SX reads 120 / 160 / 120. The limiter (`0x5AA760`) cuts fuel 25 rpm short of
+    /// [`Self::limiter_rpm`] and holds the cut until the engine is back under 98.75 % of it, and
+    /// while it is cut this braking is doubled.
+    pub brake_nm: [f32; 3],
+    /// A second nine-point curve in **N·m**, idle to the limiter like the engine braking, stored in
+    /// kN·m right after the torque table. **Non-zero on exactly the seven turbocharged cars** —
+    /// GOLF, ECLIPSE, 3000GT, SKYLINE, LANCEREVO8, RX7, IMPREZAWRX — zero below a third of the range
+    /// and rising from there (a SKYLINE reads 0, 0, 30 … 75): a boost curve.
+    ///
+    /// The engine object keeps it as a third table beside torque and braking (`0x5AA5A0`, at
+    /// `+0x4C`), but **no physics code reads it**: the crank torque (`0x594300`) is the torque curve
+    /// and the engine braking alone. So it is not part of the drive — what reads it (a boost gauge,
+    /// the turbo's sound) has not been found.
+    pub turbo_nm: [f32; 9],
+}
+
+impl Engine {
+    /// The engine-braking torque at `rpm`, N·m, read off [`Self::brake_nm`] the way the game
+    /// reads it: linearly, clamped at the ends.
+    #[must_use]
+    pub fn brake_at(&self, rpm: f32) -> f32 {
+        let span = (self.limiter_rpm - self.idle_rpm).max(1.0);
+        let x = ((rpm - self.idle_rpm) / span * 2.0).clamp(0.0, 2.0);
+        let i = (x as usize).min(1);
+        let f = x - i as f32;
+        self.brake_nm[i] + (self.brake_nm[i + 1] - self.brake_nm[i]) * f
+    }
 }
 
 /// One transmission, at one upgrade level.
@@ -122,6 +170,13 @@ pub struct Gearbox {
     pub forward: [f32; 6],
     /// How many of [`Self::forward`] the car has: 3–6.
     pub count: usize,
+    /// How fast the clutch travels during a gear change, per second. A shift is the clutch
+    /// opening at `3 ×` this and closing at `1.5 ×` this (`0x5949B0` multiplies it by a per-state
+    /// table `[−3, 0, 1.5, 0]`), so a shift takes `0.5 / rate` seconds of which the first third
+    /// has no drive at all and the rest 70 % throttle (`0x5A1400`). Stock boxes read 2 or 4; the
+    /// upgrade levels raise it — a 240SX's four blocks read 2, 4.04, 6.02, 8 — which is what a
+    /// built gearbox buys besides its ratios.
+    pub shift_rate: f32,
 }
 
 impl Gearbox {
@@ -341,6 +396,11 @@ pub struct Chassis {
     /// loads summed read 1.00 / 1.43 / 1.65 / 1.90 × the car's weight at 20 / 60 / 100 / 140 km/h,
     /// and this formula gives 1.00 / 1.41 / 1.69 / 1.97.
     pub downforce: [f32; 2],
+    /// Aerodynamic drag in **kN per (m/s)²**: the aero code (`0x59E620`) pushes back on the body
+    /// with `(2 − throttle) · this · |v| · v`. At full throttle that is this lane exactly — a
+    /// 240SX's 0.0004 is 0.4 N/(m/s)², the `½ρC_dA` of a C_d 0.30, 2.2 m² car — and lifting off
+    /// doubles it, which is most of what the game's coast-down feels like.
+    pub drag: f32,
     /// How far the ride-height slider can lower the car, front then rear, in metres (0.02–0.05).
     /// The slider runs from minus this to zero. 0 on every traffic vehicle.
     pub ride_drop_m: [f32; 2],
@@ -350,6 +410,29 @@ pub struct Chassis {
     /// Handbrake torque per wheel at full lever, in kN·m once the game's fixed `× 10` is applied —
     /// again the stored number.
     pub handbrake: f32,
+    /// The **rear** axle's share of the brake pedal, `+0x38C`, 0.47–0.60.
+    ///
+    /// Settled by the code that splits the pedal (`0x5A4E90`): wheel `i`'s brake input is
+    /// `pedal · 2 · (1 − this)` for the first two wheels and `pedal · 2 · this` for the last two —
+    /// and the last two are the rear, by the record's own wheel order (`+0x120` reads +1.39 m twice,
+    /// then −1.05 m twice on a 240SX) and by the handbrake's per-wheel table beside it (`0x7FC074`:
+    /// `0, 0, 1, 1`). So a 240SX brakes 46.5 % front, 53.5 % rear. The Dyno's brake-bias slider
+    /// shifts this lane and clamps it to `0..1` (`0x5A7530`).
+    ///
+    /// The same code releases the rear brakes while the throttle is past 0.8, the pedal past 0.5 and
+    /// the car under 10 m/s — the game's burnout.
+    pub brake_rear: f32,
+    /// Nitrous with the top nitrous part fitted, as `[tank in seconds, torque in kN·m]` — `[6, 0.5]`
+    /// in all 31 playable records, 0 on traffic.
+    ///
+    /// No car leaves the shop with nitrous: the record's own lanes (`+0x3B0` tank, `+0x3BC` torque)
+    /// are 0 everywhere, and the code that copies the record for the physics (`0x5AC4F0`) moves them
+    /// toward these upper ends only when a nitrous part is fitted — the tank by the part's weight,
+    /// the torque all the way. In the engine (`0x594300`) the torque is added to the crank as
+    /// `throttle · shape(rpm) · this · stage`, `shape` a fixed nine-point table over idle..red line
+    /// (`0x7FBF38`: 0.3 rising to 1.0 one point short of the red line) and `stage` 1.0 / 1.4 / 1.7.
+    /// The tank empties in real time while the button is held (`0x592480`, ticks of 1/4000 s).
+    pub nitro_full: [f32; 2],
 }
 
 /// Lanes that read plausibly and are **not proved**.
@@ -395,8 +478,10 @@ pub struct Unproven {
     /// is a fixed `0..1` rather than this lane, and the per-wheel brake code reads only a pedal it is
     /// handed — where the pedal is split between axles has not been read.
     ///
-    /// **Settles it:** the code that splits the pedal, or set it to 0.02 again and brake hard
-    /// mid-corner. A car that spins is a bias.
+    /// **Settled, and the other way round (2026-11-03):** the code that splits the pedal was read
+    /// (`0x5A4E90`) and this is the **rear** share — see [`Chassis::brake_rear`], which carries the
+    /// same lane as a proved field. Kept here only until the editor's `BrakeBiasFront` field is
+    /// renamed; do not read it as a front fraction.
     pub brake_bias_f: f32,
 }
 
@@ -646,6 +731,7 @@ fn read_gearbox(b: &[u8], base: usize) -> Option<Gearbox> {
         reverse: le_f32(b, base + G_RATIOS)?,
         forward,
         count: count.min(forward.len()),
+        shift_rate: le_f32(b, base + G_SHIFT_RATE)?,
     })
 }
 
@@ -676,6 +762,20 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
             idle_rpm: le_f32(b, rec + OFF_RPM)?,
             red_line_rpm: le_f32(b, rec + OFF_RPM + 4)?,
             limiter_rpm: le_f32(b, rec + OFF_RPM + 8)?,
+            // t·m² and kN·m, the record's kilo convention.
+            inertia_kgm2: le_f32(b, rec + OFF_ENGINE_INERTIA)? * 1000.0,
+            brake_nm: [
+                le_f32(b, rec + OFF_ENGINE_BRAKE)? * 1000.0,
+                le_f32(b, rec + OFF_ENGINE_BRAKE + 4)? * 1000.0,
+                le_f32(b, rec + OFF_ENGINE_BRAKE + 8)? * 1000.0,
+            ],
+            turbo_nm: {
+                let mut t = [0.0f32; 9];
+                for (i, v) in t.iter_mut().enumerate() {
+                    *v = le_f32(b, rec + OFF_TURBO + i * 4)? * 1000.0;
+                }
+                t
+            },
         },
         torque_nm,
         torque_gain_nm,
@@ -709,9 +809,12 @@ fn read_chassis(b: &[u8], rec: usize) -> Option<Chassis> {
         tyre_lateral: axle(GRIP_AT, G_LATERAL)?,
         tyre_grip: [pair(GRIP_AT[0] + G_GRIP)?, pair(GRIP_AT[1] + G_GRIP)?],
         downforce: pair(OFF_DOWNFORCE)?,
+        drag: f(OFF_DRAG)?,
         ride_drop_m: pair(OFF_RIDE_DROP)?,
         brake: f(OFF_BRAKE)?,
         handbrake: f(OFF_BRAKE + 4)?,
+        brake_rear: f(OFF_BRAKE + 8)?,
+        nitro_full: [f(OFF_NITRO_FULL)?, f(OFF_NITRO_FULL + N_TORQUE)?],
     })
 }
 
