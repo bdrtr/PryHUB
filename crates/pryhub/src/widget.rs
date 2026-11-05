@@ -102,6 +102,8 @@ fn segment(ui: &mut Ui, label: &str, active: bool, seg: Seg) -> Response {
     let galley = ui.painter().layout_no_wrap(label.to_owned(), seg.font(), Color32::PLACEHOLDER);
     let pad = seg.pad();
     let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
+    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
 
     // The label crosses to the page colour as the block arrives under it, over the same time — one
     // motion, not a label that switches while the fill is still on its way.
@@ -145,6 +147,8 @@ pub fn action(
     // `clicked()` is false without the caller having to remember to ask.
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
+    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
 
     // `.btn:disabled { opacity: .45 }`, and `.btn-secondary:hover` washes 7 % of the ink over
     // itself — the design's own two answers, applied to its own bare button.
@@ -183,6 +187,8 @@ pub fn seg_button(ui: &mut Ui, label: &str, active: bool, seg: Seg) -> Response 
     let galley = ui.painter().layout_no_wrap(label.to_owned(), seg.font(), Color32::PLACEHOLDER);
     let pad = seg.pad();
     let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
+    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let on = ui.ctx().animate_bool_with_time(resp.id, active, MOVE_TIME);
     let fill = token::SURFACE.lerp_to_gamma(token::ACCENT, on);
     let ink = seg.idle_ink().lerp_to_gamma(token::BG, on);
@@ -230,6 +236,8 @@ pub fn segmented_filling<T: Copy + PartialEq>(
                         Vec2::new(each, galley.size().y + Seg::Small.pad().y * 2.0),
                         Sense::click(),
                     );
+                    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
                     if active {
                         active_rect = Some(rect);
                     }
@@ -504,6 +512,8 @@ pub fn button_secondary(ui: &mut Ui, label: &str) -> Response {
     );
     let (rect, resp) =
         ui.allocate_exact_size(galley.size() + Vec2::new(28.8, 16.0), Sense::click());
+    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let p = ui.painter();
     if resp.is_pointer_button_down_on() {
         p.rect_filled(rect, 0.0_f32, token::WASH_PRESS);
@@ -536,6 +546,8 @@ fn button_filled(
     // `.btn`'s padding: `var(--space-2)` × `calc(var(--space-3) * 1.2)`.
     let (rect, resp) =
         ui.allocate_exact_size(galley.size() + Vec2::new(28.8, 16.0), Sense::click());
+    // Painted by hand, so nothing but this tells a screen reader, or a test, what it is.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let bg = if resp.is_pointer_button_down_on() {
         press
     } else if resp.hovered() {

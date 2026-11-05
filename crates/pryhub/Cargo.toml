@@ -38,3 +38,7 @@ png = { workspace = true }
 # No file-dialog crate: on Linux `rfd` drags in either GTK dev libraries or the xdg-portal +
 # tokio stack, which is a heavy price for one button. A file arrives by drag-and-drop, by the
 # path field on the welcome screen, or as argv[1] — the same way `ug2` takes one.
+
+[dev-dependencies]
+# Drives the real interface without a window: see `src/click_tests.rs`.
+egui_kittest = { version = "=0.34.3", features = ["eframe"] }
