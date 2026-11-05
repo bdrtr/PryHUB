@@ -234,6 +234,14 @@ fn model(
     if parts.is_empty() {
         return Err(t.no_parts.to_owned());
     }
+    // What is exported is what the 3D tab shows: a car assembled, one solid or "every part" as filed.
+    let whole_car = match choice.scope {
+        Scope::All => false,
+        Scope::Build => true,
+        _ => spec.selection.and_then(|o| doc.solid_of(o)).is_none(),
+    };
+    let rigged = if whole_car { doc.rigged(&parts) } else { None };
+    let parts: Vec<&gizmo_nfs::NfsMeshPart> = rigged.as_ref().map_or(parts, |r| r.iter().collect());
     let stem = stem(doc);
     let mtl_name = format!("{stem}.mtl");
 

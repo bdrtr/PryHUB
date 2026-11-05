@@ -57,7 +57,7 @@ pub fn run(car: &Path, config: CarConfig) -> Result<()> {
                 fl.radius,
                 c.mass_kg
             );
-            for (label, w) in ["front-left", "front-right", "rear-left", "rear-right"].iter().zip(&c.wheels) {
+            for (label, w) in ["front-left", "front-right", "rear-right", "rear-left"].iter().zip(&c.wheels) {
                 outln!("    {label:<12} fore/aft {:+.2}  lateral {:+.2}  ride height {:+.2}", w.fore_aft, w.lateral, w.ride_height);
             }
         }

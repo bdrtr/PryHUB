@@ -160,6 +160,9 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
                 None => gizmo_nfs::select_stock_car(&doc.parts),
             },
         };
+        // A car is shown assembled; one solid is shown where the file has it.
+        let rigged = if solid.is_none() { doc.rigged(&parts) } else { None };
+        let parts: Vec<&gizmo_nfs::NfsMeshPart> = rigged.as_ref().map_or(parts, |r| r.iter().collect());
         Counts {
             vertices: parts.iter().map(|p| p.positions.len() as u32).sum(),
             submeshes: parts.len() as u32,
