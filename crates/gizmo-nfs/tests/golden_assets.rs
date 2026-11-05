@@ -2340,6 +2340,37 @@ fn markers_place_what_the_file_does_not() {
     assert!(x < -1.0 && y.abs() < 1e-3 && z > 0.4, "behind and above, on the centreline: {x} {y} {z}");
 }
 
+/// The record's camera tables hold what `SPEED2.EXE`'s chase code reads, and the HUMMER's own seat
+/// is the proof they belong to the car rather than being one table copied 46 times.
+#[test]
+fn every_car_says_where_its_camera_sits() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping camera test");
+        return;
+    };
+    let bytes = std::fs::read(root.join("GLOBAL/GLOBALB.BUN")).expect("read GLOBALB.BUN");
+    let cars = gizmo_nfs::globalb::parse_cartypeinfos(&bytes);
+    assert!(!cars.is_empty());
+    for car in &cars {
+        let povs: Vec<i16> = car.cameras.iter().map(|c| c.pov).collect();
+        assert_eq!(povs, [0, 1, 2, 3, 4, 5], "{}", car.name);
+        let alt: Vec<i16> = car.cameras_alt.iter().map(|c| c.pov).collect();
+        assert_eq!(alt, [0, 1, 2, 3, 4, 5], "{}", car.name);
+        for c in car.cameras.iter().filter(|c| matches!(c.pov, 0 | 1 | 5)) {
+            assert!(c.forward < -3.0 && c.up > 1.0, "{}: a chase seat behind and above: {c:?}", car.name);
+        }
+    }
+    let seat = |name: &str, pov: usize| {
+        let car = cars.iter().find(|c| c.name == name).expect(name);
+        (car.cameras[pov].forward, car.cameras[pov].up)
+    };
+    assert_eq!(seat("240SX", 0), (-5.8, 1.7));
+    assert_eq!(seat("240SX", 1), (-4.7, 1.7));
+    assert_eq!(seat("HUMMER", 0), (-6.7, 2.3));
+    let sky = cars.iter().find(|c| c.name == "240SX").unwrap().cameras[5];
+    assert!((sky.pitch_deg - 16.7).abs() < 0.01, "{sky:?}");
+}
+
 /// The drivetrain lanes `SPEED2.EXE`'s engine and gearbox code reads, against the install.
 ///
 /// Located by the code, not by sweeping the file — see `Engine::inertia_kgm2`, `Engine::brake_nm`,

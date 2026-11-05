@@ -618,6 +618,58 @@ pub struct CarTypeInfo {
     pub mass_kg: f32,
     /// Engine limits, torque curve, gearboxes and the body box.
     pub handling: CarHandling,
+    /// Where the camera sits for this car, one entry per point of view.
+    pub cameras: Vec<CameraView>,
+    /// The record's second camera table, which `SPEED2.EXE` uses instead of [`Self::cameras`] when
+    /// a global mode (`0x8707DC`) is 3. What that mode is has not been read.
+    pub cameras_alt: Vec<CameraView>,
+}
+
+/// One point of view from the record's camera tables (`+0x720`).
+///
+/// `SPEED2.EXE` looks them up by [`Self::pov`] (`0x441140`) and places the camera in a frame that
+/// follows the car (`0x44DE90`). Field names are this crate's reading of how that code uses them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct CameraView {
+    /// Which view this is. `0`, `1` and `5` are chase views, on `0x445A90`'s test.
+    pub pov: i16,
+    /// The view's tilt as a 16-bit angle, in degrees here; `0x44DE90` takes its tangent.
+    pub pitch_deg: f32,
+    /// Metres along the car's nose; negative is behind it.
+    pub forward: f32,
+    /// Metres above the car's origin.
+    pub up: f32,
+    /// Metres to the side.
+    pub side: f32,
+}
+
+/// Where the two tables and their counts sit in the record, and how much room each table has.
+const OFF_CAMERA_COUNTS: usize = 0x720;
+const OFF_CAMERAS: usize = 0x730;
+const OFF_CAMERAS_ALT: usize = 0x790;
+const CAMERA_STRIDE: usize = 16;
+const CAMERA_SLOTS: usize = 6;
+
+/// Read `count` camera entries from `base`, or none if the count is more than the table holds.
+fn read_cameras(b: &[u8], base: usize, count: u32) -> Option<Vec<CameraView>> {
+    let count = count as usize;
+    if count > CAMERA_SLOTS {
+        return Some(Vec::new());
+    }
+    (0..count)
+        .map(|i| {
+            let at = base + i * CAMERA_STRIDE;
+            let head = b.get(at..at + 4)?;
+            Some(CameraView {
+                pov: i16::from_le_bytes([head[0], head[1]]),
+                pitch_deg: f32::from(i16::from_le_bytes([head[2], head[3]])) * 360.0 / 65536.0,
+                forward: le_f32(b, at + 4)?,
+                up: le_f32(b, at + 8)?,
+                side: le_f32(b, at + 12)?,
+            })
+        })
+        .collect()
 }
 
 #[inline]
@@ -674,6 +726,8 @@ fn read_record(b: &[u8], rec: usize) -> Option<CarTypeInfo> {
         // Stored as mass × 1/1000 (a Mustang reads 1.560 → 1560 kg).
         mass_kg: le_f32(b, rec + OFF_MASS)? * 1000.0,
         handling: read_handling(b, rec)?,
+        cameras: read_cameras(b, rec + OFF_CAMERAS, le_u32(b, rec + OFF_CAMERA_COUNTS)?)?,
+        cameras_alt: read_cameras(b, rec + OFF_CAMERAS_ALT, le_u32(b, rec + OFF_CAMERA_COUNTS + 4)?)?,
     })
 }
 
