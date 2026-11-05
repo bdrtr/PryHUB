@@ -143,10 +143,6 @@ pub struct Strings {
     /// After a count of other cars holding unsaved edits.
     pub cp_other_cars: &'static str,
     pub cp_other_cars_note: &'static str,
-    /// The tooltip on a candidate cell, and on the candidate count.
-    pub cp_candidate: &'static str,
-    /// The word after that count.
-    pub cp_candidates: &'static str,
     pub p_tree: &'static str,
     pub p_inspector: &'static str,
     pub p_log: &'static str,
@@ -426,7 +422,7 @@ dolduran iki bölüm var, çünkü dosyanın dört kez sakladığı iki şey var
 ile başlayan dört tork tablosu — oynanabilir 31 aracın hepsinde bir üst tablonun %34'ü ve %68'i. \
 Bunlar kazanç olarak okunuyor, sütunlarda stok + kazanç gösteriliyor. Tork noktalarının devirleri \
 dosyada yazmıyor: rölantiden devir kesiciye sekiz eşit adım, oyunun kendi dinamometresine karşı \
-doğrulandı. Aero arandı ve yok. Frende doğrulanmamış bir aday var, o yüzden satırlar boş duruyor. \
+doğrulandı. Aero arandı ve yok. Fren satırları oyunun kendi kodundan okundu; brake_rear, pedalın arka aksa giden payı. \
 Direksiyondan yalnızca çarpan burada, o da sürülerek doğrulandı. Kaydet, oyunun okuduğu \
 GlobalB.lzc dosyasına yazar ve önce bir .bak yedeği alır.",
     cp_no_install: "Kurulum bulunamadı — GLOBALB.BUN okunamadı",
@@ -446,10 +442,6 @@ GlobalB.lzc dosyasına yazar ve önce bir .bak yedeği alır.",
     cp_other_cars: "başka araçta",
     cp_other_cars_note: "Başka araçlarda da kaydedilmemiş değişiklik var. Kaydet yalnızca \
 seçili aracı yazar; ötekiler listede bir nokta ile işaretli ve sen o araca geçene kadar duruyor.",
-    cp_candidate: "ADAY — bu lane makul okunuyor ama kanıtlanmadı. Ne olduğunu ancak değiştirip \
-kurup sürmek söyler; hücre tam bu yüzden düzenlenebilir. Gerekçesi ve hangi deneyin karar \
-vereceği gizmo_nfs::Unproven içinde yazıyor.",
-    cp_candidates: "aday",
     p_tree: "AĞAÇ",
     p_inspector: "DENETÇİ",
     p_log: "GÜNLÜK",
@@ -670,8 +662,8 @@ fill all four upgrade columns, because the record stores two things four times: 
 and four torque tables from +0x530 — graduated 34 % and 68 % of the top one in every playable car. \
 They read as gains, so the columns show stock + gain. The rpm each torque point sits at is not \
 stored: it is idle to limiter in eight equal steps, checked against the game's own dynamometer. \
-Aero was swept for and is absent. Brakes have a live candidate that is not confirmed, so the rows \
-stay empty. Of the steering only the multiplier is here, and that one was settled by driving it. \
+Aero was swept for and is absent. Brakes were read from the game's own code; brake_rear is the \
+rear axle's share of the pedal. Of the steering only the multiplier is here, and that one was settled by driving it. \
 Save writes GlobalB.lzc, which is the file the game opens, taking a .bak first.",
     cp_no_install: "No install found — GLOBALB.BUN was not readable",
     cp_no_record: "GLOBALB.BUN holds no car record under this name",
@@ -690,10 +682,6 @@ is next to the bundle is always the install's own.",
     cp_other_cars: "on other cars",
     cp_other_cars_note: "Other cars are holding unsaved changes too. Save writes only the \
 selected car; the rest are marked with a dot in the list and keep their edits until you go there.",
-    cp_candidate: "CANDIDATE — this lane reads plausibly and is not proved. Only changing it, \
-installing it and driving says what it is, which is exactly why the cell is editable. The evidence \
-and the experiment that would settle it are in gizmo_nfs::Unproven.",
-    cp_candidates: "candidate",
     p_tree: "TREE",
     p_inspector: "INSPECTOR",
     p_log: "LOG",

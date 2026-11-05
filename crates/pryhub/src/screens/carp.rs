@@ -12,18 +12,16 @@
 //! one record per `CarTypeInfo` car and in the same order. `gizmo_nfs::globalb` reads it, and
 //! `gizmo_nfs::globalb::edit` writes it.
 //!
-//! # Three states, not two
+//! # Two states, and what a third one was for
 //!
-//! A row is **proved**, a **candidate**, or **empty**, and the middle one is new. It exists because
-//! the alternative is worse in both directions: a lane that reads plausibly and is not proved gets
-//! drawn as a dash (and so nobody ever tests it) or gets drawn as a number (and so it becomes a
-//! fact by being printed). Candidates are drawn in the second accent, say so on hover, are counted
-//! separately in the header, and are **editable** — because the only thing that settles one is
-//! changing it, installing it and driving. Each one's evidence, its rival readings and the
-//! experiment that would decide it are in [`gizmo_nfs::Unproven`].
+//! A row has a lane or it is a dash. There used to be a third state between them, the **candidate**:
+//! a lane that read plausibly and was not proved, drawn in a second colour and editable, because the
+//! alternative was a dash nobody would ever test or a number that became a fact by being printed.
+//! There were seven once and every one left by being tested, so the state is gone with the last.
 //!
-//! Fifty-seven of the sixty-four rows have a lane; **fifty-six of those are proved and one is a
-//! candidate**. There were seven candidates once, and every one that left did so by being tested.
+//! Fifty-seven of the sixty-four rows have a lane, and all of them are proved. The last to go was
+//! `brake_bias_f`, which the game's pedal code showed to be the **rear** share, so the row that had
+//! been inviting people to set a front fraction is `brake_rear` now.
 //! The first: `steer_lock` was wired to the per-car angle at `+0x284`, set from
 //! 37° to 12° on a 240SX, installed and driven, and the car steered exactly as before. The row is a
 //! dash again, and the dash means something it did not mean before — *tested*, not *unexamined*.
@@ -52,15 +50,11 @@
 //!   lane, not what a 1.70 of grip is in newtons.
 //! * `[::AERO]` has downforce and no drag. `drag_coef` stays a dash: the slider code reads per-car
 //!   downforce and nothing for drag, which may well be one of the global aero constants.
-//! * `[::BRAKES]` is full now, two rows proved and one a candidate. `brake_force` and `handbrake`
-//!   are `+0x384` and `+0x388`, read in the tyre code as the per-wheel brake and handbrake torques —
-//!   and the second is the lane `cg_height` used to point at, which is why that row is a dash again.
-//!   The candidate is `+0x38C`: 0.47–0.60 in all 46 records, a *front fraction* just over half,
-//!   ordering by drivetrain (FWD 0.564, RWD 0.531, AWD 0.530) so front-heavy cars get more front
-//!   brake, and the game's own tuning text reads "Brake bias controls how much braking the front
-//!   tires do verses the rears." Against it: set to 0.02 on a real 240SX, installed and driven, braking unchanged
-//!   — but a bias moves force between axles and does not change **stopping distance**, so that
-//!   experiment very likely watched the wrong thing.
+//! * `[::BRAKES]` is full. `brake_force` and `handbrake` are `+0x384` and `+0x388`, read in the tyre
+//!   code as the per-wheel brake and handbrake torques — and the second is the lane `cg_height` used
+//!   to point at, which is why that row is a dash again. `brake_rear` is `+0x38C`: the code that
+//!   splits the pedal gives the last two wheels `pedal · 2 · this`. See
+//!   [`gizmo_nfs::Chassis::brake_rear`], which also says why it passed for a front fraction so long.
 //! * `[::STEERING]` is half filled and the two halves are the two ways this screen has been wrong.
 //!   `steer_speed` was ruled out for a good reason about the wrong quantity — the only steering
 //!   *angles* found were a global ±43 — and it is not an angle at all; setting a 240SX's to 0.05
@@ -161,27 +155,11 @@ enum Source {
     /// The steering multiplier — see the module note for why this row exists and its neighbour
     /// does not.
     SteerRatio,
-    /// Candidate: front brake bias at `+0x38C`.
-    BrakeBias,
     /// A lane of [`gizmo_nfs::Chassis`] — suspension, tyre, downforce, ride height or brake — named
     /// by the field it is.
     Chassis(CarField),
     /// Nothing in this install answers it. See the module note.
     NotLocated,
-}
-
-/// How well the lane behind a row is understood. Only meaningful where there is a lane at all.
-///
-/// The distinction is the whole point of this screen. A table that draws a measured number and a
-/// guess in the same ink is worse than one that draws the guess as a dash, because the reader cannot
-/// tell which they are looking at — and this program's own history has that failure in it twice.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Claim {
-    /// Measured across the install, and for several of them settled by driving the car.
-    Proved,
-    /// Reads plausibly and is **not proved**. Drawn marked, and editable — because the experiment
-    /// that settles one is to change it, install it, and drive.
-    Candidate,
 }
 
 /// Which rpm limit a row shows.
@@ -197,7 +175,6 @@ struct Param {
     label: &'static str,
     unit: &'static str,
     source: Source,
-    claim: Claim,
 }
 
 /// One `[::SECTION]` of the design's table.
@@ -208,17 +185,12 @@ struct Section {
 
 /// A parameter with no source.
 const fn gap(label: &'static str, unit: &'static str) -> Param {
-    Param { label, unit, source: Source::NotLocated, claim: Claim::Proved }
+    Param { label, unit, source: Source::NotLocated }
 }
 
 /// A parameter the record answers, and that has been shown to.
 const fn got(label: &'static str, unit: &'static str, source: Source) -> Param {
-    Param { label, unit, source, claim: Claim::Proved }
-}
-
-/// A parameter with a lane behind it and no proof that the lane is the parameter.
-const fn cand(label: &'static str, unit: &'static str, source: Source) -> Param {
-    Param { label, unit, source, claim: Claim::Candidate }
+    Param { label, unit, source }
 }
 
 /// The design's nine sections. Six of the rows it draws have no answer in this game's files and
@@ -314,7 +286,7 @@ static SECTIONS: &[Section] = &[
         name: "[::BRAKES]",
         params: &[
             got("brake_force", "", Source::Chassis(CarField::Brake)),
-            cand("brake_bias_f", "", Source::BrakeBias),
+            got("brake_rear", "", Source::Chassis(CarField::BrakeRear)),
             got("handbrake", "", Source::Chassis(CarField::Handbrake)),
         ],
     },
@@ -441,24 +413,10 @@ pub fn section_index(query: &str) -> Option<usize> {
     SECTIONS.iter().position(|s| bare(s.name).starts_with(&want))
 }
 
-/// How many of the design's parameters this install can put a number against — proved or not.
+/// How many of the design's parameters this install can put a number against.
 #[must_use]
 pub fn located() -> usize {
     SECTIONS.iter().flat_map(|s| s.params.iter()).filter(|p| p.source != Source::NotLocated).count()
-}
-
-/// How many of those are candidates rather than claims.
-///
-/// Reported separately and drawn separately. "31 of 47 have a value" and "seven of the 31 are
-/// guesses" are different facts, and a screen that showed only the first would be doing the thing
-/// this one exists to prevent.
-#[must_use]
-pub fn candidates() -> usize {
-    SECTIONS
-        .iter()
-        .flat_map(|s| s.params.iter())
-        .filter(|p| p.source != Source::NotLocated && p.claim == Claim::Candidate)
-        .count()
 }
 
 /// Every parameter the screen draws.
@@ -501,8 +459,6 @@ pub struct Car {
     gearbox: [(f32, usize, [f32; 6]); 4],
     /// The suspension, tyre and brake lanes. See [`gizmo_nfs::Chassis`].
     chassis: gizmo_nfs::Chassis,
-    /// The lane with a candidate meaning: brake bias. Drawn marked — see [`Claim`].
-    unproven: gizmo_nfs::Unproven,
 }
 
 impl Car {
@@ -529,7 +485,6 @@ impl Car {
             tyre_width_mm,
             gearbox,
             chassis: h.chassis,
-            unproven: h.unproven,
         }
     }
 
@@ -577,7 +532,6 @@ impl Car {
                         *w = v;
                     }
                 }
-                F::BrakeBiasFront => self.unproven.brake_bias_f = v,
                 F::SpringRise(_)
                 | F::Spring(_)
                 | F::Shock { .. }
@@ -590,7 +544,8 @@ impl Car {
                 | F::Downforce(_)
                 | F::RideDropM(_)
                 | F::Brake
-                | F::Handbrake => {
+                | F::Handbrake
+                | F::BrakeRear => {
                     if let Some(x) = chassis_lane(&mut self.chassis, field) {
                         *x = v;
                     }
@@ -799,14 +754,6 @@ fn cell(param: &Param, car: Option<&Car>, level: usize) -> Cell {
         Source::SteerRatio => {
             stock_only(num(car.steer_ratio, CarField::SteerRatio, 2, 0.01, 0.0, 10.0))
         }
-        Source::BrakeBias => stock_only(num(
-            car.unproven.brake_bias_f,
-            CarField::BrakeBiasFront,
-            3,
-            0.005,
-            0.0,
-            1.0,
-        )),
         Source::Chassis(field) => match chassis_lane(&mut car.chassis.clone(), field) {
             // Ride-height drop and travel are a few centimetres — the extension stop below zero —
             // and the brake torques and grips want their third decimal; everything else is a
@@ -816,6 +763,10 @@ fn cell(param: &Param, car: Option<&Car>, level: usize) -> Cell {
             }
             Some(&mut v) if matches!(field, CarField::Travel { .. }) => {
                 stock_only(num(v, field, 3, 0.001, -1.0, 1.0))
+            }
+            // A share of the pedal: the game clamps it to `0..1` too.
+            Some(&mut v) if matches!(field, CarField::BrakeRear) => {
+                stock_only(num(v, field, 3, 0.005, 0.0, 1.0))
             }
             Some(&mut v)
                 if matches!(
@@ -949,6 +900,7 @@ fn chassis_lane(c: &mut gizmo_nfs::Chassis, field: CarField) -> Option<&mut f32>
         F::RideDropM(axle) => c.ride_drop_m.get_mut(axle),
         F::Brake => Some(&mut c.brake),
         F::Handbrake => Some(&mut c.handbrake),
+        F::BrakeRear => Some(&mut c.brake_rear),
         _ => None,
     }
 }
@@ -969,7 +921,6 @@ fn stored_value(car: &Car, field: CarField) -> Option<f32> {
         F::GearCount(level) => car.gearbox.get(level)?.1 as f32,
         F::Gear { level, gear } => *car.gearbox.get(level)?.2.get(gear.checked_sub(1)?)?,
         F::TyreWidthMm(corner) => *car.tyre_width_mm.get(corner)?,
-        F::BrakeBiasFront => car.unproven.brake_bias_f,
         F::SpringRise(_)
         | F::Spring(_)
         | F::Shock { .. }
@@ -982,7 +933,8 @@ fn stored_value(car: &Car, field: CarField) -> Option<f32> {
         | F::Downforce(_)
         | F::RideDropM(_)
         | F::Brake
-        | F::Handbrake => *chassis_lane(&mut car.chassis.clone(), field)?,
+        | F::Handbrake
+        | F::BrakeRear => *chassis_lane(&mut car.chassis.clone(), field)?,
         _ => return None,
     })
 }
@@ -1339,12 +1291,6 @@ fn table_panel(
                     .font(theme::font::mono(d.small_size()))
                     .color(token::ACCENT),
             );
-            ui.label(
-                RichText::new(format!("· {} {}", candidates(), t.cp_candidates))
-                    .font(theme::font::mono(d.small_size()))
-                    .color(token::ACCENT_2_700),
-            )
-            .on_hover_text(t.cp_candidate);
         });
         ui.add_space(token::SPACE_2);
         ui.horizontal(|ui| {
@@ -1412,7 +1358,7 @@ fn table_panel(
                         for level in 0..LEVELS.len() {
                             let cell = cell(param, car, level);
                             let into = state.edits.entry(selected.clone()).or_default();
-                            draw_cell(ui, t, d, &cell, param.claim, into);
+                            draw_cell(ui, t, d, &cell, into);
                         }
                         ui.end_row();
                     }
@@ -1422,17 +1368,11 @@ fn table_panel(
 }
 
 /// One cell: a dash, a word, or something to drag.
-///
-/// A candidate is drawn in the second accent rather than in the text colour, and says so when
-/// hovered. That is the whole visible difference between "this is what the file holds" and "this is
-/// what somebody thinks the file holds", and it has to be visible without hovering — a mark that
-/// only appears on hover is a mark for the person who already suspected.
 fn draw_cell(
     ui: &mut Ui,
     t: &crate::i18n::Strings,
     d: theme::Density,
     cell: &Cell,
-    claim: Claim,
     edits: &mut BTreeMap<CarField, f32>,
 ) {
     match cell {
@@ -1458,36 +1398,10 @@ fn draw_cell(
                 .fixed_decimals(num.decimals);
             // The drive fraction is a number whose value has a name, and the name is the thing
             // anybody reads. Both are shown: `1.00 RWD` is draggable and still says what it means.
-            // Two things this has to get right, and the first draft got neither.
-            //
-            // The colour is `override_text_color`, not the widget's `fg_stroke`: this theme sets
-            // the override, and an override beats a widget stroke, so painting the stroke changed
-            // nothing at all. It looked plausible on screen and a pixel said otherwise — the
-            // candidate cell and the proved one beside it both came back `RGB(32, 30, 29)`, which
-            // is `token::TEXT` twice. Same lesson as the black panel this module already has a
-            // paragraph about, and the same cheap check caught it.
-            //
-            // And it is inside a `scope`, because a `Grid` adds every cell to **one** `Ui`. A style
-            // set in place would not end with the cell; it would tint every remaining cell of the
-            // row, which is worse than no mark at all — a mark that spreads is a mark that lies.
-            let resp = ui
-                .scope(|ui| {
-                    if claim == Claim::Candidate {
-                        ui.visuals_mut().override_text_color = Some(token::ACCENT_2_700);
-                    }
-                    if num.word {
-                        ui.add(drag.custom_formatter(|v, _| {
-                            format!("{v:.2} {}", drive_word(v as f32))
-                        }))
-                    } else {
-                        ui.add(drag)
-                    }
-                })
-                .inner;
-            let resp = if claim == Claim::Candidate {
-                resp.on_hover_text(t.cp_candidate)
+            let resp = if num.word {
+                ui.add(drag.custom_formatter(|v, _| format!("{v:.2} {}", drive_word(v as f32))))
             } else {
-                resp
+                ui.add(drag)
             };
             if resp.changed() {
                 let stored = num.stored(value);
@@ -1523,39 +1437,24 @@ mod tests {
         assert_eq!(SECTIONS[3].params.len(), 9, "the file's nine torque points");
     }
 
-    /// Which rows are **candidates** rather than claims, by name.
+    /// The rows that came out of testing, by what the test bought.
     ///
-    /// The list is spelt out for the same reason the proved one below it is: a row moving from
-    /// candidate to proved is a claim about the game, and it should not be possible to make it
-    /// without editing a test that says so out loud. Every entry's evidence, its rival readings and
-    /// the experiment that would settle it live in `gizmo_nfs::Unproven`.
+    /// The lanes that were once candidates and turned out to be something else: a row moving is a
+    /// claim about the game, so it should not be possible to make it without editing a test that
+    /// says so out loud.
     #[test]
-    fn every_candidate_is_named_as_one() {
-        let named: Vec<&str> = SECTIONS
-            .iter()
-            .flat_map(|s| s.params.iter())
-            .filter(|p| p.source != Source::NotLocated && p.claim == Claim::Candidate)
-            .map(|p| p.label)
-            .collect();
-        assert_eq!(
-            named,
-            vec![
-                "brake_bias_f",  // +0x38C — a front fraction, FWD 0.564 against RWD 0.531
-            ]
-        );
-        assert_eq!(candidates(), 1);
-        assert_eq!(located(), 57, "56 proved and 1 candidate");
+    fn what_testing_settled_stays_settled() {
+        assert_eq!(located(), 57);
 
-        // A candidate is not a gap: it has a lane, and the cell is editable — because the only
-        // thing that settles one is changing it and driving.
+        // `+0x38C` is the rear share of the pedal. The row is editable, because the record holds a
+        // number and the game reads it, and it is stored once, so it stays under STOCK.
         let car = sample();
-        let bias = &SECTIONS[7].params[1];
-        assert_eq!(bias.claim, Claim::Candidate);
-        let Cell::Num(num) = cell(bias, Some(&car), 0) else { panic!("editable") };
-        assert_eq!(num.field, CarField::BrakeBiasFront);
-        assert!(num.field.is_unproven(), "and the parser agrees it is one");
-        // …and it is stored once, so it stays under STOCK.
-        assert_eq!(cell(bias, Some(&car), 1), Cell::Empty);
+        let share = &SECTIONS[7].params[1];
+        assert_eq!(share.label, "brake_rear");
+        let Cell::Num(num) = cell(share, Some(&car), 0) else { panic!("editable") };
+        assert_eq!(num.field, CarField::BrakeRear);
+        assert!((num.value - 0.535).abs() < 1e-6, "{}", num.value);
+        assert_eq!(cell(share, Some(&car), 1), Cell::Empty);
 
         // `cg_height` is a dash again, and that too is a result: its lane, `+0x388`, is the
         // handbrake torque the tyre code reads — `handbrake` under `[::BRAKES]`.
@@ -1571,16 +1470,14 @@ mod tests {
         assert_eq!(steer_lock.source, Source::NotLocated, "tested, refused, and not quietly kept");
     }
 
-    /// Exactly which rows are **proved**. Asserted by name rather than by count, so that promoting
-    /// a row out of `Candidate` has to be done in the open, with this list edited to say so — which
-    /// is a stronger guard than the one this test used to be, when there was nothing between
-    /// "claimed" and "absent" and a guess could only enter by being dressed as a claim.
+    /// Exactly which rows have a lane. Asserted by name rather than by count, so that adding one has
+    /// to be done in the open, with this list edited to say so.
     #[test]
     fn only_what_globalb_answers_is_claimed() {
         let named: Vec<&str> = SECTIONS
             .iter()
             .flat_map(|s| s.params.iter())
-            .filter(|p| p.source != Source::NotLocated && p.claim == Claim::Proved)
+            .filter(|p| p.source != Source::NotLocated)
             .map(|p| p.label)
             .collect();
         assert_eq!(
@@ -1594,22 +1491,22 @@ mod tests {
                 "grip_front", "grip_front_slide", "grip_rear", "grip_rear_slide", "slip_angle_f",
                 "slip_angle_r", "tire_load_f", "tire_load_r", "tire_lat_f", "tire_lat_r",
                 "tire_width_f", "tire_width_r", "downforce_f", "downforce_r", "brake_force",
-                "handbrake", "steer_speed", "spring_f", "spring_rise_f", "bump_f", "rebound_f",
+                "brake_rear", "handbrake", "steer_speed", "spring_f", "spring_rise_f", "bump_f", "rebound_f",
                 "sway_bar_f", "travel_bump_f", "travel_droop_f", "ride_drop_f", "spring_r",
                 "spring_rise_r", "bump_r", "rebound_r", "sway_bar_r", "travel_bump_r",
                 "travel_droop_r", "ride_drop_r",
             ]
         );
-        assert_eq!(located() - candidates(), 56);
         // `AERO` has downforce and no drag: the slider code reads per-car downforce and nothing a
         // drag coefficient could be.
         assert_eq!(SECTIONS[6].params[0].source, Source::NotLocated, "drag_coef has no lane");
         // `BRAKES` is full: the brake and handbrake torques are the lanes the tyre code multiplies
-        // by the pedal and the lever, and the bias stays a candidate. No row may claim a source —
-        // proved or candidate — without the claim being made in the open by editing a test, which
-        // is what `STEERING` made someone do.
+        // by the pedal and the lever, and the third is how the pedal is split. No row may claim a
+        // source without the claim being made in the open by editing a test, which is what
+        // `STEERING` made someone do.
         let brakes = &SECTIONS[7];
         assert_eq!(brakes.params[0].source, Source::Chassis(CarField::Brake));
+        assert_eq!(brakes.params[1].source, Source::Chassis(CarField::BrakeRear));
         assert_eq!(brakes.params[2].source, Source::Chassis(CarField::Handbrake));
         // `STEERING` is half filled, and the halves are not interchangeable: the multiplier is
         // per-car and was confirmed by driving it, the lock angle is a global ±43 and stays a gap.
@@ -1620,7 +1517,6 @@ mod tests {
         // this one is a candidate that was looked at, driven, and refused.
         assert_eq!(steering.params[0].source, Source::NotLocated, "steer_lock was tested and refused");
         assert_eq!(steering.params[1].source, Source::SteerRatio, "steer_speed reads the multiplier");
-        assert_eq!(steering.params[1].claim, Claim::Proved, "and that one was driven");
     }
 
     /// With no record nothing is filled. With one, the two sections the file stores four times vary
@@ -1864,9 +1760,9 @@ mod tests {
         assert!((car.peak_kw(3).0 - 144.8).abs() < 0.2, "{} kW", car.peak_kw(3).0);
     }
 
-    /// `gizmo_nfs::Unproven` is `#[non_exhaustive]` — the parser correctly refusing to be built from
+    /// `gizmo_nfs::Chassis` is `#[non_exhaustive]` — the parser correctly refusing to be built from
     /// outside — so a test that wants one takes it from a synthetic record through the parser.
-    fn record(handbrake: f32, brake_bias: f32, grip: [[f32; 2]; 2]) -> gizmo_nfs::CarHandling {
+    fn record(handbrake: f32, brake_rear: f32, grip: [[f32; 2]; 2]) -> gizmo_nfs::CarHandling {
         let mut b = vec![0u8; 0x890 + 16];
         b[..5].copy_from_slice(b"TESTX");
         b[0x20..0x25].copy_from_slice(b"TESTX");
@@ -1874,7 +1770,7 @@ mod tests {
         b[0x40..0x40 + path.len()].copy_from_slice(path);
         let mut put = |o: usize, v: f32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
         put(0x388, handbrake);
-        put(0x38c, brake_bias);
+        put(0x38c, brake_rear);
         put(0x1ec, grip[0][0]);
         put(0x1f0, grip[0][1]);
         put(0x20c, grip[1][0]);
@@ -1911,7 +1807,6 @@ mod tests {
             gearbox: [five, five, five, six],
             // The 240SX's own lanes, as the record holds them.
             chassis: record(0.5, 0.535, [[1.70, 1.40], [1.67, 1.40]]).chassis,
-            unproven: record(0.5, 0.535, [[1.70, 1.40], [1.67, 1.40]]).unproven,
         }
     }
 }

@@ -154,8 +154,6 @@ fn show(bytes: &[u8], car: &str, bundle: &install::Bundle) -> Result<()> {
             g.final_drive
         );
     }
-    // A `?` in the unit column marks a lane whose *meaning* is a candidate rather than a claim —
-    // see `gizmo_nfs::Unproven`. The field's own name carries it too: those end in `?`.
     outln!("\n  {:<16} {:>12}  {}", "field", "value", "unit");
     let record = &bytes[rec_at..];
     for field in CarField::all() {
@@ -169,12 +167,9 @@ fn show(bytes: &[u8], car: &str, bundle: &install::Bundle) -> Result<()> {
 ///
 /// Two shapes, and the reason for both is that a lane is *named* by how it varies. One car's `0.535`
 /// says nothing; the same lane read across 46 records — ordered by drivetrain, with the traffic
-/// vehicles falling outside the playable range — is what turned `+0x38C` into a brake-bias candidate
-/// and what disqualified a rival reading of `+0x380`. So the wide form (`--csv`) exists to be sorted
-/// and correlated in something else, and the tall form to be read here.
-///
-/// The candidate lanes are in both, with their `?` names intact. They are the ones this table is
-/// most useful for.
+/// vehicles falling outside the playable range — is what first drew attention to `+0x38C` and what
+/// disqualified a rival reading of `+0x380`. So the wide form (`--csv`) exists to be sorted and
+/// correlated in something else, and the tall form to be read here.
 fn show_all(bytes: &[u8], bundle: &install::Bundle, csv: bool) -> Result<()> {
     let cars = gizmo_nfs::globalb::located_cartypeinfos(bytes);
     if cars.is_empty() {
@@ -206,7 +201,7 @@ fn show_all(bytes: &[u8], bundle: &install::Bundle, csv: bool) -> Result<()> {
     outln!("{} records in {}\n", cars.len(), bundle.lzc.display());
     outln!(
         "{:<12} {:>4} {:>7} {:>7} {:>7} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7}",
-        "car", "drv", "kW", "kW L3", "mass", "idle", "red", "limit", "steer", "spr_f", "hbrk", "bias?"
+        "car", "drv", "kW", "kW L3", "mass", "idle", "red", "limit", "steer", "spr_f", "hbrk", "brk_r"
     );
     for (_, info) in &cars {
         let h = &info.handling;
@@ -223,11 +218,10 @@ fn show_all(bytes: &[u8], bundle: &install::Bundle, csv: bool) -> Result<()> {
             h.steer_ratio,
             h.chassis.spring[0],
             h.chassis.handbrake,
-            h.unproven.brake_bias_f
+            h.chassis.brake_rear
         );
     }
-    outln!("\n  ? = a candidate lane, not a claim — see gizmo_nfs::Unproven.");
-    outln!("  --csv gives every field of every car, for sorting somewhere else.");
+    outln!("\n  --csv gives every field of every car, for sorting somewhere else.");
     Ok(())
 }
 
@@ -259,8 +253,8 @@ fn unit(field: CarField) -> &'static str {
         | CarField::TyreGrip { .. }
         | CarField::Downforce(_)
         | CarField::Brake
-        | CarField::Handbrake => "",
-        CarField::BrakeBiasFront => "   ?",
+        | CarField::Handbrake
+        | CarField::BrakeRear => "",
         _ => ":1",
     }
 }

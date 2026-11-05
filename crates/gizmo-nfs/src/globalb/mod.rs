@@ -84,10 +84,6 @@ const OFF_BRAKE: usize = 0x384;
 const OFF_NITRO_FULL: usize = 0x690;
 const N_TORQUE: usize = 0x0C;
 
-// Lanes with a *candidate* meaning and no proof. See `Unproven`, which is where each one's
-// evidence, its rival readings and the experiment that would settle it are written down.
-const U_BRAKE_BIAS: usize = 0x38C;
-
 /// One wheel's mount, in NFSU2 car space (metres).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -281,8 +277,6 @@ pub struct CarHandling {
     /// Suspension, tyres, downforce, ride height and brakes — the lanes the game's own slider and
     /// physics code locate in this record.
     pub chassis: Chassis,
-    /// Lanes that read plausibly and are not proved. Behind a type whose name says so.
-    pub unproven: Unproven,
 }
 
 /// The tuning sliders' lanes, located by **the game's code** rather than by sweeping the file.
@@ -358,6 +352,15 @@ pub struct CarHandling {
 /// * `+0x388` was the strongest candidate for a centre-of-gravity height. It is the **handbrake
 ///   torque**. Raising it to 1.40 and driving left cornering unchanged — which is what a handbrake
 ///   does when nobody pulls it.
+/// * `+0x38C` was read for a long time as the **front** share of the brakes. It is the **rear**
+///   share: see [`Self::brake_rear`].
+///
+/// [NFSU2Forge](https://github.com/justlucasgomes/NFSU2Forge) reads this same record with offsets
+/// relative to the manufacturer string, which is `+0xC0` here, so its claims translate directly.
+/// Where it disagreed with this crate the disagreements were checkable and resolved against it: it
+/// calls `+0x380` a brake force, which is the steering multiplier; it calls a wheel-entry lane front
+/// and rear *grip*, which reads `+0.730, −0.730, −0.730, +0.730` across the four corners and so is a
+/// mirrored coordinate; and its reverse ratio is the first lane of the *next* transmission block.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -422,6 +425,11 @@ pub struct Chassis {
     ///
     /// The same code releases the rear brakes while the throttle is past 0.8, the pedal past 0.5 and
     /// the car under 10 m/s — the game's burnout.
+    ///
+    /// The lane looked like a front fraction first: it is just over half and orders by drivetrain
+    /// (FWD 0.564, RWD 0.531, AWD 0.530). Setting it to 0.02 on a 240SX and driving left braking
+    /// unchanged, which settled nothing either way, since a split between axles need not change how
+    /// far the car takes to stop. The brake upgrade moves it too: a 240SX goes 0.535 → 0.49.
     pub brake_rear: f32,
     /// Nitrous with the top nitrous part fitted, as `[tank in seconds, torque in kN·m]` — `[6, 0.5]`
     /// in all 31 playable records, 0 on traffic.
@@ -434,56 +442,6 @@ pub struct Chassis {
     /// (`0x7FBF38`: 0.3 rising to 1.0 one point short of the red line) and `stage` 1.0 / 1.4 / 1.7.
     /// The tank empties in real time while the button is held (`0x592480`, ticks of 1/4000 s).
     pub nitro_full: [f32; 2],
-}
-
-/// Lanes that read plausibly and are **not proved**.
-///
-/// Everything else this module exposes is either measured across the install, settled by driving,
-/// or located by the game's own code. What is left here was not, and it is a separate struct rather
-/// than another field of [`CarHandling`] for exactly that reason: a consumer has to reach past a
-/// type whose name says "unproven" to show one, so an unproven number cannot be printed beside a
-/// proved one by accident.
-///
-/// **Four have already left, promoted.** `+0x284` (once a refused steering lock) and the two
-/// "spring"/"damper" pairs were located by `SPEED2.EXE`'s slider-range code, and are now
-/// [`Chassis::spring`] and [`Chassis::tyre_grip`]. `+0x388`, the centre-of-gravity candidate, was
-/// read in the tyre code as the **handbrake** torque and is now [`Chassis::handbrake`]. That is the
-/// point of this struct: a candidate that survives contact is promoted, and one that does not is
-/// renamed rather than quietly printed beside a measured one.
-///
-/// [NFSU2Forge](https://github.com/justlucasgomes/NFSU2Forge) reads this same record with offsets
-/// relative to the manufacturer string, which is `+0xC0` here, so its claims translate directly.
-/// Where it disagreed with this crate the disagreements were checkable and resolved against it: it
-/// calls `+0x380` a brake force, which is the steering multiplier; it calls a wheel-entry lane front
-/// and rear *grip*, which reads `+0.730, −0.730, −0.730, +0.730` across the four corners and so is a
-/// mirrored coordinate; and its reverse ratio is the first lane of the *next* transmission block.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Unproven {
-    /// `+0x38C`, the third of a triple whose first two are [`Chassis::brake`] and
-    /// [`Chassis::handbrake`].
-    ///
-    /// **For:** 0.47–0.60 in all 46 records — a *front fraction* just over half — and it orders by
-    /// drivetrain: FWD 0.564, RWD 0.531, AWD 0.530. Front-heavy cars getting more front brake is
-    /// what a bias does. The game's own text agrees on the concept: "Brake bias controls how much
-    /// braking the front tires do verses the rears."
-    ///
-    /// **Against:** it was set to 0.02 on a real 240SX, installed and driven, and braking was
-    /// unchanged. That is the reason this is still not claimed — but it is a weak reason, because a
-    /// bias moves force between axles and does not change **stopping distance**, so the experiment
-    /// very likely watched the wrong thing.
-    ///
-    /// **Neighbours, and a part.** It sits after the brake and handbrake torques, and the brake
-    /// upgrade moves it together with them (a 240SX 0.535 → 0.49). But the brake-bias slider's range
-    /// is a fixed `0..1` rather than this lane, and the per-wheel brake code reads only a pedal it is
-    /// handed — where the pedal is split between axles has not been read.
-    ///
-    /// **Settled, and the other way round (2026-11-03):** the code that splits the pedal was read
-    /// (`0x5A4E90`) and this is the **rear** share — see [`Chassis::brake_rear`], which carries the
-    /// same lane as a proved field. Kept here only until the editor's `BrakeBiasFront` field is
-    /// renamed; do not read it as a front fraction.
-    pub brake_bias_f: f32,
 }
 
 /// Radians per second per rpm — `2π/60`, the conversion torque needs to become power.
@@ -790,7 +748,6 @@ fn read_handling(b: &[u8], rec: usize) -> Option<CarHandling> {
         tyre_width_m,
         steer_ratio: le_f32(b, rec + OFF_STEER)?,
         chassis: read_chassis(b, rec)?,
-        unproven: Unproven { brake_bias_f: le_f32(b, rec + U_BRAKE_BIAS)? },
     })
 }
 

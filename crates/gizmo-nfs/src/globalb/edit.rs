@@ -30,7 +30,7 @@
 use super::{
     read_record, CarTypeInfo, GEARBOX_AT, G_COUNT, G_FINAL_DRIVE, G_RATIOS, G_REAR_DRIVE, OFF_MASS,
     OFF_BRAKE, OFF_DOWNFORCE, OFF_RIDE_DROP, OFF_RPM, OFF_STEER, OFF_TORQUE, OFF_WHEELS, REC_SIZE,
-    S_RISE, S_SHOCK, S_SPRING, S_SWAY, S_TRAVEL, SUSPENSION_AT, TORQUE_GAIN_AT, U_BRAKE_BIAS,
+    S_RISE, S_SHOCK, S_SPRING, S_SWAY, S_TRAVEL, SUSPENSION_AT, TORQUE_GAIN_AT,
     WHEEL_STRIDE, W_RADIUS, W_TYRE_WIDTH, GRIP_AT, G_GRIP, G_LATERAL, G_LOAD, G_SLIP,
 };
 use crate::error::{NfsError, NfsResult};
@@ -138,8 +138,8 @@ pub enum Field {
     Brake,
     /// Handbrake torque. See [`super::Chassis::handbrake`].
     Handbrake,
-    /// Candidate: front brake bias. See [`super::Unproven::brake_bias_f`].
-    BrakeBiasFront,
+    /// The rear axle's share of the brake pedal. See [`super::Chassis::brake_rear`].
+    BrakeRear,
 }
 
 impl Field {
@@ -189,7 +189,7 @@ impl Field {
             Self::RideDropM(axle) if axle < 2 => OFF_RIDE_DROP + axle * 4,
             Self::Brake => OFF_BRAKE,
             Self::Handbrake => OFF_BRAKE + 4,
-            Self::BrakeBiasFront => U_BRAKE_BIAS,
+            Self::BrakeRear => OFF_BRAKE + 8,
             _ => return None,
         };
         (at + 4 <= REC_SIZE).then_some(at)
@@ -261,7 +261,7 @@ impl Field {
             Self::RideDropM(axle) => format!("ride_drop{axle}"),
             Self::Brake => "brake".into(),
             Self::Handbrake => "handbrake".into(),
-            Self::BrakeBiasFront => "brake_bias?".into(),
+            Self::BrakeRear => "brake_rear".into(),
         }
     }
 
@@ -292,9 +292,7 @@ impl Field {
             "final_drive" => Self::FinalDrive(level),
             "brake" => Self::Brake,
             "handbrake" => Self::Handbrake,
-            // The question mark is part of the name, and deliberately awkward to type: these are
-            // candidates, and a command line that spells one should say so.
-            "brake_bias?" => Self::BrakeBiasFront,
+            "brake_rear" => Self::BrakeRear,
             "reverse" => Self::Reverse(level),
             "gear_count" => Self::GearCount(level),
             _ => {
@@ -340,15 +338,6 @@ impl Field {
         field.lane().map(|_| field)
     }
 
-    /// Whether this field's meaning is a candidate rather than a claim.
-    ///
-    /// A caller that shows a value has to be able to ask, so that an unproven lane is never drawn
-    /// like a proved one. The naming carries it too — [`Self::key`] ends these in `?`.
-    #[must_use]
-    pub fn is_unproven(self) -> bool {
-        matches!(self, Self::BrakeBiasFront)
-    }
-
     /// Every field of a record, in the order a table would list them. For a caller that wants to
     /// enumerate rather than name.
     #[must_use]
@@ -368,8 +357,6 @@ impl Field {
         }
         out.extend((0..4).map(Self::TyreWidthMm));
         out.extend((0..4).map(Self::WheelRadiusM));
-        // Last, and named with a `?`, so that a listing reads proved-then-candidate rather than
-        // mixing the two.
         for axle in 0..2 {
             out.push(Self::SpringRise(axle));
             out.push(Self::Spring(axle));
@@ -383,7 +370,7 @@ impl Field {
             out.push(Self::Downforce(axle));
             out.push(Self::RideDropM(axle));
         }
-        out.extend([Self::Brake, Self::Handbrake, Self::BrakeBiasFront]);
+        out.extend([Self::Brake, Self::Handbrake, Self::BrakeRear]);
         out
     }
 }
@@ -528,7 +515,7 @@ pub fn snapshot(info: &CarTypeInfo) -> Vec<Edit> {
     }
     out.push((Field::Brake, c.brake));
     out.push((Field::Handbrake, c.handbrake));
-    out.push((Field::BrakeBiasFront, h.unproven.brake_bias_f));
+    out.push((Field::BrakeRear, c.brake_rear));
     out
 }
 
@@ -629,15 +616,14 @@ mod tests {
         assert_eq!(at(Field::TyreLoad(1)), 0x204);
         assert_eq!(at(Field::TyreLateral(0)), 0x1E8);
         assert_eq!((at(Field::Brake), at(Field::Handbrake)), (0x384, 0x388));
+        assert_eq!(at(Field::BrakeRear), 0x38C);
         // The names these lanes had as candidates meant other lanes — `spring0?` was the front
         // tyre grip, `cg_height?` the handbrake. Refusing them is what stops an old command line
-        // from editing the wrong thing.
-        for old in ["angle284?", "spring0?", "damper1?", "cg_height?"] {
+        // from editing the wrong thing. `brake_bias?` is the right lane under a name that meant the
+        // other axle, so a value written for it would go in backwards.
+        for old in ["angle284?", "spring0?", "damper1?", "cg_height?", "brake_bias?"] {
             assert_eq!(Field::parse(old), None, "{old}");
         }
-        assert!(!Field::Spring(0).is_unproven());
-        assert!(!Field::Handbrake.is_unproven());
-        assert!(Field::BrakeBiasFront.is_unproven());
     }
 
     /// Distinct lanes for distinct fields — the property a table of offsets can quietly break by
