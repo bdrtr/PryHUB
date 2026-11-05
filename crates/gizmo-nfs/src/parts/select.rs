@@ -137,6 +137,57 @@ fn door_zone_verts(p: &NfsMeshPart) -> usize {
 ///
 /// **Body exception** (unchanged from stock): a car with no paintable door skin bakes the door into
 /// a lower body LOD, so its body component picks the LOD with the best [`door_zone_verts`] coverage.
+/// Whether a roof scoop is fitted, which is the one thing that changes a car's roof.
+///
+/// Four of the install's 57 cars — 240SX, CIVIC, G35, RSX — ship two roofs, `ROOF` and `FULLROOF`,
+/// and both used to be selected, so the car rendered with two panels in the same place.
+///
+/// They are not a coin flip, and the game's own behaviour says which is which: NFSU2 *"swaps
+/// `KIT00_ROOF` with `KIT00_FULLROOF` when a roof scoop is installed"* — the swap exists to take
+/// the sunroof away so the scoop has somewhere to sit. So `ROOF` is what a car is built with and
+/// `FULLROOF` is the scooped variant, which is also why only these four have one: they are the
+/// cars with a sunroof to remove.
+///
+/// The file agrees, measured before the behaviour was known. On a car with a single roof — 350Z,
+/// GOLF, SKYLINE — the part has two material runs and nothing else. On these four, `ROOF` carries
+/// a third and fourth: an extra run with its own shader and its own texture, 24 triangles on the
+/// 240SX, which is the sunroof; `FULLROOF` has no such run and 90 fewer triangles. A *full* roof is
+/// an unbroken one. And 25 cars ship only `ROOF` while none ships only `FULLROOF`.
+///
+/// It is a constant rather than a [`CarConfig`] dimension because there is nothing to fit yet: none
+/// of the four carries a scoop part of its own (NFSU2 keeps them in a shared file, the way it keeps
+/// rims), so a config flag would be a lever with nothing on the other end. When scoops are fitted,
+/// this is the line that becomes a field.
+pub const FITS_ROOF_SCOOP: bool = false;
+
+/// Which roof a part is, if it is one: `Some(true)` for the one a car is built with (the sunroof
+/// is in it), `Some(false)` for the unbroken one a roof scoop swaps in.
+///
+/// `FULLROOF` is tested first because it contains `ROOF`, which is the mistake this function exists
+/// to make impossible to write twice.
+fn roof_variant(name: &str) -> Option<bool> {
+    if name.contains("FULLROOF") {
+        Some(false)
+    } else if name.contains("ROOF") {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// The slot a part fills, which is its [`component_key`] except that the two roofs share one.
+///
+/// Borrowed for every part in the file and owned only for the handful of `FULLROOF`s, so the
+/// allocation is four strings per car rather than six hundred.
+fn slot_key(name: &str) -> std::borrow::Cow<'_, str> {
+    let key = component_key(name);
+    if key.contains("FULLROOF") {
+        std::borrow::Cow::Owned(key.replace("FULLROOF", "ROOF"))
+    } else {
+        std::borrow::Cow::Borrowed(key)
+    }
+}
+
 #[must_use]
 pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMeshPart> {
     use std::collections::BTreeMap;
@@ -149,25 +200,29 @@ pub fn select_car<'a>(all: &'a [NfsMeshPart], cfg: &CarConfig) -> Vec<&'a NfsMes
     // result depend on the run: Rust randomises a `HashMap`'s iteration per process, so two exports
     // of the same car came out byte-different and the game drew the same parts in a different order
     // every launch.
-    let mut best: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut best: BTreeMap<std::borrow::Cow<'_, str>, usize> = BTreeMap::new();
     for (i, p) in all.iter().enumerate() {
         // Drop the TRUNK_AUDIO second shell (z-fights the TRUNK) and any hidden/decal Skip parts.
         if !wanted.admits(&p.name) || p.name.contains("TRUNK_AUDIO") || group_of(&p.name) == Grp::Skip {
             continue;
         }
         let prefer_door_fill = fill_body_door && p.name.contains("_BODY");
-        match best.entry(component_key(&p.name)) {
+        match best.entry(slot_key(&p.name)) {
             std::collections::btree_map::Entry::Vacant(slot) => {
                 slot.insert(i);
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
                 let cur = &all[*slot.get()];
-                let better = if prefer_door_fill {
-                    // Door coverage first, triangles as the tie-break.
-                    (door_zone_verts(p), p.triangle_count())
-                        > (door_zone_verts(cur), cur.triangle_count())
-                } else {
-                    p.triangle_count() > cur.triangle_count()
+                let better = match (roof_variant(&p.name), roof_variant(&cur.name)) {
+                    // Two roofs in one slot is a choice, not a contest: the richer one would win on
+                    // triangles every time and that is not what decides which roof a car has.
+                    (Some(mine), Some(theirs)) if mine != theirs => mine != FITS_ROOF_SCOOP,
+                    _ if prefer_door_fill => {
+                        // Door coverage first, triangles as the tie-break.
+                        (door_zone_verts(p), p.triangle_count())
+                            > (door_zone_verts(cur), cur.triangle_count())
+                    }
+                    _ => p.triangle_count() > cur.triangle_count(),
                 };
                 if better {
                     slot.insert(i);
@@ -189,6 +244,53 @@ pub fn select_stock_car(all: &[NfsMeshPart]) -> Vec<&NfsMeshPart> {
 
 #[cfg(test)]
 mod tests {
+    /// Two roofs is one slot, and the choice between them is the constant rather than the
+    /// triangle count — which would otherwise always pick the sunroof one, for the wrong reason.
+    #[test]
+    fn a_car_with_two_roofs_gets_exactly_one() {
+        // `ROOF` is the richer part in all four cars that ship both, so a triangle tie-break and
+        // the constant agree today; the test pins the *reason*, by making the built-with roof the
+        // poorer part and checking the choice follows the constant and not the count.
+        let parts = [
+            part("CAR_KIT00_BODY_A", 100),
+            part("CAR_KIT00_ROOF_A", 20),
+            part("CAR_KIT00_FULLROOF_A", 200),
+        ];
+        let picked = select_stock_car(&parts);
+        let roofs: Vec<&str> = picked
+            .iter()
+            .map(|p| p.name.as_str())
+            .filter(|n| n.contains("ROOF"))
+            .collect();
+        assert_eq!(roofs.len(), 1, "one roof, not two: {roofs:?}");
+        assert_eq!(
+            roofs[0].contains("FULLROOF"),
+            FITS_ROOF_SCOOP,
+            "the constant decides which, not the triangle count"
+        );
+    }
+
+    /// `FULLROOF` contains `ROOF`, so testing for `ROOF` first classifies every unbroken roof as a
+    /// sunroof one. It is one line and it is wrong in a way nothing else would catch.
+    #[test]
+    fn the_unbroken_roof_is_not_read_as_a_sunroof_one() {
+        assert_eq!(roof_variant("CAR_KIT00_FULLROOF_A"), Some(false));
+        assert_eq!(roof_variant("CAR_KIT00_ROOF_A"), Some(true));
+        assert_eq!(roof_variant("CAR_KIT00_HOOD_A"), None);
+        assert_eq!(slot_key("CAR_KIT00_FULLROOF_A"), slot_key("CAR_KIT00_ROOF_A"));
+        assert_ne!(slot_key("CAR_KIT00_HOOD_A"), slot_key("CAR_KIT00_ROOF_A"));
+    }
+
+    /// A car with one roof keeps it whichever one it is — the rule may not delete a car's only roof.
+    #[test]
+    fn a_car_with_one_roof_keeps_it() {
+        for roof in ["CAR_KIT00_ROOF_A", "CAR_KIT00_FULLROOF_A"] {
+            let parts = [part("CAR_KIT00_BODY_A", 100), part(roof, 50)];
+            let picked = select_stock_car(&parts);
+            assert!(picked.iter().any(|p| p.name == roof), "{roof} went missing");
+        }
+    }
+
     /// The order parts come back in is the order they sit in the file.
     ///
     /// This used to be a `HashMap`'s iteration order, which Rust randomises per process — so an

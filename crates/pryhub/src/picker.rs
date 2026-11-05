@@ -55,6 +55,10 @@ pub fn available() -> bool {
 
 /// `PATH` üzerinde bulunan ilk seçici.
 fn chooser() -> Option<&'static str> {
+    // `click_tests` tıklamaları masaüstünde gerçek bir pencere açmasın.
+    if cfg!(test) {
+        return None;
+    }
     CHOOSERS.iter().copied().find(|name| {
         std::process::Command::new("sh")
             .arg("-c")

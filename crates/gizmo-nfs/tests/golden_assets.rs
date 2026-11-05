@@ -207,7 +207,7 @@ fn vinyls_pack_decodes_as_palettised() {
     // margin, so a grey or a muddy pixel votes for neither side.
     let clarion = clarion.expect("240SX_AEM_CLARION present");
     let (mut red, mut blue) = (0usize, 0usize);
-    for px in clarion.rgba.chunks_exact(4) {
+    for px in clarion.rgba.as_chunks::<4>().0 {
         let (r, g, b, a) = (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32);
         if a < 128 {
             continue;
@@ -959,7 +959,7 @@ fn several_images_go_into_a_pack_in_one_pass() {
         // Flat colour through a block encoder: near, not exact, and near is the claim.
         let off = got
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p.iter().zip(want.iter()).any(|(a, b)| a.abs_diff(*b) > 12))
             .count();
         assert!(off * 20 < got.rgba.len() / 4, "{}: {off} pixels missed the paint", t.name);
@@ -1080,12 +1080,17 @@ fn tool_compiled_packs_relocate_too() {
 
 /// The one tool-made shape that is *not* an ordinary pack, and is refused rather than guessed at.
 ///
-/// `PEUGOT/TEXTURES.BIN` has no `0x33320002`: its directory is followed by raw compressed blocks,
+/// A pack of this shape has no `0x33320002`: its directory is followed by raw compressed blocks,
 /// and the tolerant walk reads the first block's `JDLZ` magic as a chunk id. Four packs made on
 /// purpose with NFS-CarToolkit do not look like this, so it is a rarer variant rather than "what a
-/// compiler does". It is a third-party mod, downloaded rather than built, so what wrote it cannot be
-/// asked and a second sample cannot be produced — which is why it stays refused rather than being
-/// supported on one artefact.
+/// compiler does". The sample it was measured on is a third-party mod, downloaded rather than
+/// built, so what wrote it cannot be asked and a second sample cannot be produced — which is why it
+/// stays refused rather than being supported on one artefact.
+///
+/// It is looked for under `CARS/PEUGOT/`, where that mod installs, but **identified by shape**. A
+/// stock `PEUGOT` pack has the blob chunk and relocates like any other, so an install that never
+/// had the mod has nothing here to refuse. Demanding the refusal on the strength of the path alone
+/// made this test pass or fail on which copy of the game it ran against.
 #[test]
 fn the_chunkless_pack_is_refused_by_name() {
     let Some(root) = root() else {
@@ -1096,6 +1101,15 @@ fn the_chunkless_pack_is_refused_by_name() {
         eprintln!("no PEUGOT pack in this install — skipping");
         return;
     };
+    // Ask what `relocate` asks, through the walk options it uses: is the blob chunk there? If it
+    // is, this copy is an ordinary pack and there is no refusal to demand.
+    const BLOBS: u32 = 0x3332_0002;
+    let opts = gizmo_nfs::chunk::WalkOptions { stop_on_overrun: true, ..Default::default() };
+    let roots = gizmo_nfs::chunk::ChunkNode::parse_with(&bytes, opts).expect("parse chunk tree");
+    if roots.iter().any(|r| r.header.id == BLOBS || r.find(BLOBS).is_some()) {
+        eprintln!("this install's PEUGOT pack has a {BLOBS:#010x} chunk — an ordinary pack, not the chunkless variant; skipping");
+        return;
+    }
     // It still *reads*: the directory is a normal one and every texture decodes.
     let tpk = gizmo_nfs::texture::Tpk::parse(&bytes).expect("a chunkless pack still parses");
     assert!(!tpk.textures.is_empty(), "its textures decode");
@@ -1249,7 +1263,7 @@ fn truncation_hides_masks_that_the_hash_finds() {
                 hidden += 1;
                 // Every one of these is a full-coverage image; that is why mistaking one matters.
                 let texels = (tex.rgba.len() / 4).max(1);
-                let opaque = tex.rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
+                let opaque = tex.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 200).count();
                 assert!(opaque * 10 >= texels * 9, "{}: a mask should be opaque", tex.name);
             }
         }
@@ -1690,6 +1704,608 @@ fn handling_reads_the_real_records() {
     // Front-wheel drive reads as the other end of the same lane.
     let civic = cars.iter().find(|c| c.name == "CIVIC").expect("the CIVIC is in the roster");
     assert_eq!(civic.handling.rear_drive, 0.0);
+}
+
+/// The city's solid headers, against the two regions small enough to state exactly.
+///
+/// What this pins is not a count but a *reading*. A `STREAM*.BUN` prefixes the `0x00134011` record
+/// with `0x11` filler on most of its objects, and a reader that ignores it still returns a matrix —
+/// built from the wrong floats. The tell is the matrix's last element, which the format fixes at
+/// `1.0`: read correctly it is `1.0` in all 175 of `STREAML4RH`'s headers, read at the nominal
+/// offsets in only the 46 that had no filler. Asserting the identity/placed split is how that stays
+/// true, because the wrong read reports `(44 identity, 131 placed)` where the right one reports
+/// `(169, 6)` — both plausible for a city, only one correct.
+///
+/// The names carry their own proof: `bStringHash(name)` equals the stored hash in every header of
+/// these two regions, which locks the name offset and the hash offset against each other. Regions
+/// with longer names do not reach 100 % — `STREAML4RC` is 639 of 772 — and that is truncation, not
+/// a bad read, which is what `name_is_whole` exists to say.
+#[test]
+fn world_solid_headers_read_through_their_filler() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping world header goldens");
+        return;
+    };
+    use gizmo_nfs::chunk::ChunkNode;
+    use std::collections::BTreeMap;
+
+    // (region, objects, identity, placed, names whole)
+    for &(region, objects, identity, placed, whole) in
+        &[("STREAML4RH", 175usize, 169usize, 6usize, 175usize), ("STREAML4RR", 482, 480, 2, 482)]
+    {
+        let path = root.join(format!("TRACKS/{region}.BUN"));
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        let roots = ChunkNode::parse(&bytes).expect("parse chunk tree");
+        let mut headers = Vec::new();
+        for r in &roots {
+            for n in std::iter::once(r).chain(r.find_all(0x0013_4011)) {
+                if n.header.id == 0x0013_4011 {
+                    headers.push(gizmo_nfs::world::read_header(n.data(&bytes)).expect("header"));
+                }
+            }
+        }
+
+        assert_eq!(headers.len(), objects, "{region}: object count");
+        let n_placed = headers.iter().filter(|h| h.is_placed()).count();
+        assert_eq!((headers.len() - n_placed, n_placed), (identity, placed), "{region}: placement");
+        assert_eq!(
+            headers.iter().filter(|h| h.name_is_whole()).count(),
+            whole,
+            "{region}: names proved by their own hash"
+        );
+        // Every matrix's last element is 1.0 — the discriminator itself, asserted directly.
+        assert!(
+            headers.iter().all(|h| h.matrix[3][3] == 1.0),
+            "{region}: a header's matrix did not end in 1.0, so the filler was not skipped"
+        );
+
+        // Filler widths are a property of the file, so state them: L4RH is 46/36/49/44.
+        if region == "STREAML4RH" {
+            let mut hist: BTreeMap<usize, usize> = BTreeMap::new();
+            for r in &roots {
+                for n in r.find_all(0x0013_4011) {
+                    let p = n.data(&bytes);
+                    *hist.entry(p.len() - 192).or_default() += 1;
+                }
+            }
+            assert_eq!(
+                hist.into_iter().collect::<Vec<_>>(),
+                vec![(0, 46), (4, 36), (8, 49), (12, 44)],
+                "{region}: filler histogram"
+            );
+        }
+    }
+}
+
+/// Every region's manifest, in exact numbers.
+///
+/// This is the whole city stated once: 28,985 objects, 3,667,007 vertices and 2,544,154 triangles
+/// across eight bundles and 324 MB, read without decoding a vertex. The totals are the reason the
+/// engine work is sequenced the way it is — 3.67 M vertices is 84 MB at the file's 24-byte stride
+/// and 322 MB expanded to a 92-byte one, so the city fits in memory and what it strains is draw
+/// calls, not RAM.
+///
+/// The per-region splits are here because they are what catches a reader that regressed rather than
+/// broke. `identity` counts objects whose vertices are already world-space (road and terrain);
+/// `placed` counts those carrying a transform. A reader that stopped skipping the `0x11` filler
+/// still returns numbers, and they are still plausible — L4RH would read `(44, 131)` instead of
+/// `(169, 6)` — so the split is asserted rather than just the total.
+///
+/// `truncated` is a property of the data, not a defect: the name field is fixed-width, and 8,495 of
+/// the city's names do not fit it. Two regions have none, which is what makes the other six's
+/// counts meaningful.
+#[test]
+fn world_manifest_counts_hold_for_every_region() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping world manifest goldens");
+        return;
+    };
+
+    struct Region {
+        name: &'static str,
+        objects: usize,
+        vertices: u64,
+        triangles: u64,
+        identity: usize,
+        placed: usize,
+        negative_det: usize,
+        truncated: usize,
+    }
+    const REGIONS: &[Region] = &[
+        Region { name: "STREAML4RA", objects: 10735, vertices: 1_304_563, triangles: 899_273,
+                 identity: 4393, placed: 6342, negative_det: 45, truncated: 3428 },
+        Region { name: "STREAML4RB", objects: 2642, vertices: 384_527, triangles: 280_673,
+                 identity: 1543, placed: 1099, negative_det: 8, truncated: 868 },
+        Region { name: "STREAML4RC", objects: 772, vertices: 143_054, triangles: 104_958,
+                 identity: 394, placed: 378, negative_det: 3, truncated: 133 },
+        Region { name: "STREAML4RD", objects: 11135, vertices: 1_367_985, triangles: 941_066,
+                 identity: 4406, placed: 6729, negative_det: 49, truncated: 3488 },
+        Region { name: "STREAML4RF", objects: 773, vertices: 135_284, triangles: 93_526,
+                 identity: 49, placed: 724, negative_det: 1, truncated: 41 },
+        Region { name: "STREAML4RG", objects: 2271, vertices: 245_114, triangles: 183_538,
+                 identity: 1480, placed: 791, negative_det: 0, truncated: 537 },
+        Region { name: "STREAML4RH", objects: 175, vertices: 20_610, triangles: 10_832,
+                 identity: 169, placed: 6, negative_det: 0, truncated: 0 },
+        Region { name: "STREAML4RR", objects: 482, vertices: 65_870, triangles: 30_288,
+                 identity: 480, placed: 2, negative_det: 0, truncated: 0 },
+    ];
+
+    let (mut seen, mut all_objects, mut all_verts, mut all_tris) = (0usize, 0usize, 0u64, 0u64);
+    for reg in REGIONS {
+        let (region, objects, vertices, triangles) =
+            (reg.name, reg.objects, reg.vertices, reg.triangles);
+        let (identity, placed, neg_det, truncated) =
+            (reg.identity, reg.placed, reg.negative_det, reg.truncated);
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let m = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+
+        assert_eq!(m.len(), objects, "{region}: objects");
+        assert_eq!(m.iter().map(|o| u64::from(o.vertices)).sum::<u64>(), vertices, "{region}: verts");
+        assert_eq!(m.iter().map(|o| u64::from(o.triangles)).sum::<u64>(), triangles, "{region}: tris");
+
+        let n_placed = m.iter().filter(|o| o.header.is_placed()).count();
+        assert_eq!((m.len() - n_placed, n_placed), (identity, placed), "{region}: placement split");
+        assert_eq!(
+            m.iter().filter(|o| o.header.basis_determinant() < 0.0).count(),
+            neg_det,
+            "{region}: mirrored objects — `should_place` would drop these on the origin"
+        );
+        assert_eq!(
+            m.iter().filter(|o| !o.header.name_is_whole()).count(),
+            truncated,
+            "{region}: names the fixed-width field cut short"
+        );
+
+        // Filler is only ever a whole number of 0x11 words, and only these four widths.
+        assert!(
+            m.iter().all(|o| matches!(o.filler, 0 | 4 | 8 | 12)),
+            "{region}: a header carried a filler width the format has not shown before"
+        );
+
+        all_objects += m.len();
+        all_verts += m.iter().map(|o| u64::from(o.vertices)).sum::<u64>();
+        all_tris += m.iter().map(|o| u64::from(o.triangles)).sum::<u64>();
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(all_objects, 28_985, "the city's objects");
+        assert_eq!(all_verts, 3_667_007, "the city's vertices");
+        assert_eq!(all_tris, 2_544_154, "the city's triangles");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}
+
+/// The city's texture packs, and every one of its textures decoded.
+///
+/// The point is that nothing here is inferred. The record states width, height, mip count and the
+/// pixel format, so this asserts what the file says and then checks the file against itself: the
+/// `+0x40` top-mip size must equal `level_size(width, height, +0x4A)` for every record, and the
+/// furthest extent in a pack must land exactly on the end of its filler-stripped pool. Both of
+/// those fail loudly if the pool base or a field offset is off by so much as a byte, where a
+/// plausible-looking image would not.
+///
+/// Decoding all 5,087 is the other half. A format read rather than guessed at is only worth
+/// something if every tag the city uses is one the crate can actually unpack.
+#[test]
+fn every_city_texture_decodes_from_a_stated_format() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city texture goldens");
+        return;
+    };
+    const REGIONS: &[&str] = &[
+        "STREAML4RA", "STREAML4RB", "STREAML4RC", "STREAML4RD",
+        "STREAML4RF", "STREAML4RG", "STREAML4RH", "STREAML4RR",
+    ];
+
+    let (mut seen, mut packs_n, mut records_n, mut decoded, mut whole) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut tags: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+
+    for region in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+        packs_n += packs.len();
+
+        for pack in &packs {
+            // Every pack strips the same 120 bytes of `0x11`.
+            assert_eq!(pack.filler, 120, "{region}: pool filler");
+            // The furthest extent lands exactly on the pool's end — the proof that the base is
+            // the filler-stripped payload and not the raw one.
+            let furthest = pack
+                .textures
+                .iter()
+                .map(|t| {
+                    let img = t.image_offset as usize + t.image_size as usize;
+                    let pal = if t.palette_size == 0 {
+                        0
+                    } else {
+                        t.palette_offset as usize + t.palette_size as usize
+                    };
+                    img.max(pal)
+                })
+                .max()
+                .unwrap_or(0);
+            assert_eq!(furthest, pack.pixels.len(), "{region}: pool does not close exactly");
+
+            for tex in &pack.textures {
+                records_n += 1;
+                *tags.entry(tex.compression).or_default() += 1;
+                if tex.name_is_whole() {
+                    whole += 1;
+                }
+                // Both statements of the top mip's size agree, so `top_mip` cannot refuse one.
+                let image = pack.image(tex).expect("image in the pool");
+                assert!(image.len() >= tex.top_mip_size as usize, "top mip fits in the chain");
+
+                let out = pack.decode(tex).expect("every city texture decodes");
+                assert_eq!((out.width, out.height), (u32::from(tex.width), u32::from(tex.height)));
+                assert_eq!(out.rgba.len(), tex.rgba_bytes() as usize);
+                decoded += 1;
+            }
+        }
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(packs_n, 502, "texture packs in the city");
+        assert_eq!(records_n, 5_087, "textures the city declares");
+        assert_eq!(decoded, 5_087, "textures that decode");
+        // Three tags, all of them ones `texture::decode` already names. No DXT5 in the city.
+        assert_eq!(
+            tags.into_iter().collect::<Vec<_>>(),
+            vec![(0x08, 91), (0x22, 4_464), (0x24, 532)],
+            "the stated pixel formats"
+        );
+        assert_eq!(whole, 4_635, "names that survived the 23-character field");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}
+
+/// The smallest pack, stated record by record — the one place the whole layout is written out.
+#[test]
+fn l4rh_texture_pack_reads_field_for_field() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping L4RH pack golden");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/STREAML4RH.BUN")) else {
+        eprintln!("no STREAML4RH in this install — skipping");
+        return;
+    };
+    let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+    assert_eq!(packs.len(), 1, "L4RH carries one pack");
+    let pack = &packs[0];
+    assert_eq!(pack.textures.len(), 4);
+
+    // name, format tag, width, height — and the P8 one is first, ahead of three DXT1.
+    let got: Vec<(&str, u8, u16, u16)> = pack
+        .textures
+        .iter()
+        .map(|t| (t.name.as_str(), t.compression, t.width, t.height))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("RDP_PARKING_NL_AA_KT", 0x08, 64, 64),
+            ("TRN_GRASSC", 0x22, 256, 256),
+            ("OBJ_BLKPLAS", 0x22, 128, 128),
+            ("OBJ_PYLON", 0x22, 64, 128),
+        ],
+        "the four records, in file order"
+    );
+    // Not every city texture is square — the assumption a size-inferring reader has to make.
+    assert_ne!(pack.textures[3].width, pack.textures[3].height);
+
+    // The palettised record has a palette and the others do not, whatever `+0x34` says on them.
+    assert!(pack.palette(&pack.textures[0]).unwrap().is_some());
+    for t in &pack.textures[1..] {
+        assert_eq!(pack.palette(t).unwrap(), None, "{}: no palette", t.name);
+        assert_eq!(t.palette_offset, 0x400, "{}: stale offset is still stored", t.name);
+    }
+
+    // Lookup by the key a mesh's `0x00134012` slot names, not by the name.
+    let key = pack.textures[1].key;
+    assert_eq!(pack.get(key).map(|t| t.name.as_str()), Some("TRN_GRASSC"));
+}
+
+/// The mesh → texture link, region by region.
+///
+/// The link is an index, not a search: a solid's `0x00134012` is an ordered list of keys and a
+/// `0x00134B02` group names one of them by position. So what the parser owes a caller is the list
+/// *in file order with nothing dropped*, and this pins that — every city solid carries the chunk,
+/// every payload is a whole number of 8-byte entries, and unlike a car not one of the 70,439
+/// entries is a zero key.
+///
+/// The resolution figures are the other half, and they are the reason the tier order is the
+/// caller's business rather than this crate's. 98.17 % of slots resolve in their own bundle's
+/// packs; the rest are in `TRACKS/LOC4DYNTEX.BIN` (which is the *car* pack variant) or under
+/// `GLOBAL/`, and 111 references resolve nowhere in the install at all. L4RH looks broken at 66 %
+/// and is not: 88 of its 272 slots want one key that exists in no pack anywhere.
+#[test]
+fn city_texture_slots_resolve_against_their_own_bundle() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping texture-slot goldens");
+        return;
+    };
+    // region, slots, slots resolving in that bundle's own packs
+    const REGIONS: &[(&str, usize, usize)] = &[
+        ("STREAML4RA", 27_987, 27_443),
+        ("STREAML4RB", 5_265, 5_189),
+        ("STREAML4RC", 1_834, 1_809),
+        ("STREAML4RD", 28_855, 28_425),
+        ("STREAML4RF", 2_184, 2_110),
+        ("STREAML4RG", 3_558, 3_514),
+        ("STREAML4RH", 272, 180),
+        ("STREAML4RR", 484, 480),
+    ];
+
+    let (mut seen, mut all_slots, mut all_hit, mut empty) = (0usize, 0usize, 0usize, 0usize);
+    for &(region, slots, resolving) in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        seen += 1;
+        let objects = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let packs = gizmo_nfs::world::packs(&bytes).expect("packs");
+
+        // Every solid declares the chunk, so the list is never absent — only sometimes empty.
+        let n_slots: usize = objects.iter().map(|o| o.texture_slots.len()).sum();
+        assert_eq!(n_slots, slots, "{region}: texture slots");
+        empty += objects.iter().filter(|o| o.texture_slots.is_empty()).count();
+        assert!(
+            objects.iter().all(|o| o.texture_slots.iter().all(|k| k.0 != 0)),
+            "{region}: a zero key — cars have those, the city does not"
+        );
+
+        let hit = objects
+            .iter()
+            .flat_map(|o| &o.texture_slots)
+            .filter(|k| packs.iter().any(|p| p.get(**k).is_some()))
+            .count();
+        assert_eq!(hit, resolving, "{region}: slots resolving in their own bundle");
+
+        all_slots += n_slots;
+        all_hit += hit;
+    }
+
+    if seen == REGIONS.len() {
+        assert_eq!(all_slots, 70_439, "the city's texture slots");
+        assert_eq!(all_hit, 69_150, "slots resolving bundle-locally");
+        assert_eq!(empty, 79, "solids whose slot list is present but empty");
+    } else {
+        eprintln!("{seen} of {} regions present — city totals not checked", REGIONS.len());
+    }
+}
+
+/// `TRACKS/LOC4DYNTEX.BIN` is the **car** pack variant, and the existing reader already handles it.
+///
+/// Worth a test because it is the one place the two pack shapes meet: the city's own packs have no
+/// `0x33310003` and this shared one has nothing else, so a resolver walking the tiers has to try
+/// both readers rather than assume a directory implies a format. It holds the two keys both
+/// `SKYDOME` objects in every region ask for.
+#[test]
+fn the_shared_track_pack_is_the_car_variant() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping LOC4DYNTEX test");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/LOC4DYNTEX.BIN")) else {
+        eprintln!("no LOC4DYNTEX.BIN in this install — skipping");
+        return;
+    };
+    // The city reader finds nothing here: there is no `0x33310004` at all.
+    assert!(
+        gizmo_nfs::world::packs(&bytes).expect("packs").is_empty(),
+        "LOC4DYNTEX has no track-variant record table"
+    );
+    // The car reader reads all of it.
+    let entries = gizmo_nfs::texture::Tpk::directory(&bytes).expect("car-variant directory");
+    assert_eq!(entries.len(), 58, "descriptors");
+    let keys: Vec<u32> = entries.iter().map(|e| e.hash.0).collect();
+    for skydome in [0x2414A01Eu32, 0x5FB8BCD1] {
+        assert!(keys.contains(&skydome), "{skydome:#010X}: the skydome key is here");
+    }
+}
+
+/// The city's geometry, read region by region and checked against its own manifest.
+///
+/// The manifest reads counters and the mesh reader reads buffers, so making the two agree is the
+/// test: every object must come back, in the same order, with exactly the vertices and triangles
+/// the mesh header declared. A stride that was inferred rather than checked, or a filler that was
+/// not skipped, breaks that agreement instead of producing a plausible mesh.
+///
+/// The two smallest regions are read in full. The four big ones are not: `STREAML4RD` alone is
+/// 1.37 M vertices, and expanding all eight at once is several hundred megabytes for no more proof.
+#[test]
+fn city_geometry_agrees_with_its_own_manifest() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city geometry goldens");
+        return;
+    };
+    // region, objects, vertices, triangles — the same numbers the manifest golden pins.
+    const REGIONS: &[(&str, usize, usize, usize)] = &[
+        ("STREAML4RH", 175, 20_610, 10_832),
+        ("STREAML4RR", 482, 65_870, 30_288),
+        ("STREAML4RC", 772, 143_054, 104_958),
+    ];
+
+    for &(region, objects, vertices, triangles) in REGIONS {
+        let Ok(bytes) = std::fs::read(root.join(format!("TRACKS/{region}.BUN"))) else {
+            eprintln!("no {region} in this install — skipping it");
+            continue;
+        };
+        let info = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let meshes = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+
+        assert_eq!(meshes.len(), objects, "{region}: objects");
+        assert_eq!(meshes.len(), info.len(), "{region}: mesh and manifest disagree on the count");
+
+        let mut n_verts = 0usize;
+        let mut n_tris = 0usize;
+        for (m, i) in meshes.iter().zip(&info) {
+            assert_eq!(m.header, i.header, "{region}: the two readers disagree on an object");
+            // Every declared vertex was read, at the 24-byte stride, with its filler skipped.
+            assert_eq!(
+                m.positions.len(),
+                i.vertices as usize,
+                "{region}/{}: vertices read vs declared",
+                m.header.name
+            );
+            assert_eq!(m.triangles(), i.triangles as usize, "{region}/{}", m.header.name);
+            // Every parallel array is the same length — a short one would texture or light wrong.
+            assert_eq!(m.normals.len(), m.positions.len(), "{region}: normals");
+            assert_eq!(m.colours.len(), m.positions.len(), "{region}: colours");
+            assert_eq!(m.uvs.len(), m.positions.len(), "{region}: uvs");
+            // Indices address the vertices they belong to.
+            assert!(
+                m.indices.iter().all(|&x| (x as usize) < m.positions.len().max(1)),
+                "{region}/{}: an index past the end of its own buffer",
+                m.header.name
+            );
+            // Every run lies inside the index buffer it splits.
+            for g in &m.groups {
+                assert!(
+                    g.index_offset + g.index_count <= m.indices.len(),
+                    "{region}/{}: a material run past the index buffer",
+                    m.header.name
+                );
+                // The city ships no shaders, so none is ever claimed.
+                assert_eq!(g.shader.0, 0, "{region}: a shader hash the city does not have");
+            }
+            n_verts += m.positions.len();
+            n_tris += m.triangles();
+        }
+        assert_eq!(n_verts, vertices, "{region}: vertices");
+        assert_eq!(n_tris, triangles, "{region}: triangles");
+    }
+}
+
+/// The city's vertices are where the city is, which is what says the stride was read right.
+///
+/// A wrong stride still yields floats. What it does not yield is a coherent world: read at 36 the
+/// positions scatter across `1e38`, and read at 24 they sit inside a bounded box a city fits in.
+/// `STREAML4RH` is the arena region, so its span is small and stated exactly.
+#[test]
+fn city_positions_land_inside_the_world() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city bounds golden");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("TRACKS/STREAML4RH.BUN")) else {
+        eprintln!("no STREAML4RH in this install — skipping");
+        return;
+    };
+    let meshes = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for m in &meshes {
+        for p in &m.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+    }
+    for a in 0..3 {
+        assert!(lo[a].is_finite() && hi[a].is_finite(), "axis {a}: not finite");
+        assert!(
+            lo[a] > -20_000.0 && hi[a] < 20_000.0,
+            "axis {a} spans {}..{} — a city does not, so the stride is wrong",
+            lo[a],
+            hi[a]
+        );
+    }
+    // Z is up in this file's frame, and a region is far flatter than it is wide.
+    let (wide, tall) = ((hi[0] - lo[0]).max(hi[1] - lo[1]), hi[2] - lo[2]);
+    assert!(tall < wide, "the Z span ({tall}) is not the short axis ({wide}) — axes swapped?");
+}
+
+/// **The city reads whole:** every solid decodes to exactly the geometry its own header declares.
+///
+/// This is the check that did not exist, and its absence is measured rather than supposed. 234 of
+/// the install's 28,985 city solids use the standard 36-byte vertex record while `world::object`
+/// demanded exactly 24, so every one of them came back with empty arrays — and an empty object is
+/// skipped without comment by everything downstream, so the city lost its road signs, median poles
+/// and chevrons and no number anywhere moved. Reintroducing that bug makes this test fail with 234
+/// named solids; it was tried, to be sure the test can fail at all.
+///
+/// It leans on the promise `world::meshes` makes in its own doc — an unreadable solid is returned
+/// with empty arrays *rather than dropped* — so the comparison is a zip. That promise is asserted
+/// first, because a zip over lists that have drifted compares unrelated solids and finds nothing.
+#[test]
+fn the_city_decodes_to_what_it_declares() {
+    let Some(root) = root() else {
+        eprintln!("NFSU2_ROOT unset — skipping city read-whole test");
+        return;
+    };
+    let tracks = root.join("TRACKS");
+    let mut bundles: Vec<PathBuf> = std::fs::read_dir(&tracks)
+        .expect("read TRACKS")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("STREAM") && n.ends_with(".BUN"))
+        })
+        .collect();
+    bundles.sort();
+    assert!(!bundles.is_empty(), "no STREAM*.BUN under {}", tracks.display());
+
+    let (mut solids, mut declared_v, mut decoded_v) = (0usize, 0u64, 0u64);
+    for bundle in &bundles {
+        let bytes = std::fs::read(bundle).expect("read bundle");
+        let name = bundle.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+
+        let declared = gizmo_nfs::world::manifest(&bytes).expect("manifest");
+        let decoded = gizmo_nfs::world::meshes(&bytes).expect("meshes");
+        assert_eq!(
+            declared.len(),
+            decoded.len(),
+            "{name}: manifest and reader disagree on how many solids there are, \
+             so the one-to-one alignment they both promise is gone"
+        );
+
+        for (info, mesh) in declared.iter().zip(&decoded) {
+            assert_eq!(
+                mesh.positions.len(),
+                info.vertices as usize,
+                "{name}: {} declares {} vertices and decoded {}",
+                info.header.name,
+                info.vertices,
+                mesh.positions.len()
+            );
+            assert_eq!(
+                mesh.triangles(),
+                info.triangles as usize,
+                "{name}: {} declares {} triangles and decoded {}",
+                info.header.name,
+                info.triangles,
+                mesh.triangles()
+            );
+        }
+        solids += declared.len();
+        declared_v += declared.iter().map(|o| u64::from(o.vertices)).sum::<u64>();
+        decoded_v += decoded.iter().map(|m| m.positions.len() as u64).sum::<u64>();
+    }
+
+    // A floor on the totals as well as the per-solid equality: an install that somehow declared
+    // nothing would satisfy every assertion above and mean the test read no city at all.
+    assert_eq!(declared_v, decoded_v, "city-wide vertex totals disagree");
+    assert!(solids > 20_000, "only {solids} city solids — this install is not whole");
+    assert!(declared_v > 3_000_000, "only {declared_v} city vertices — this install is not whole");
 }
 
 /// The markers say where the parts the file does not place go. Structure, not the 240SX's own

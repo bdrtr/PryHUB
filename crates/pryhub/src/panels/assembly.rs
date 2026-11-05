@@ -135,8 +135,20 @@ pub fn panel(app: &mut PryHub, ui: &mut egui::Ui) {
     let Some(doc) = app.doc.clone() else { return };
     let list = rows(&doc.parts);
     let on = list.iter().filter(|r| !app.unmounted.contains(&r.key)).count();
-    let total: usize =
-        list.iter().filter(|r| !app.unmounted.contains(&r.key)).map(|r| r.triangles).sum();
+    // What the picture holds, once it holds this build: a row counts a part once, and the car draws
+    // its wheel four times. Until then the rows' sum, for the one frame between a click and the
+    // upload that follows it, which is why that frame asks for another.
+    let current = crate::gpu::preview::MeshKey::Build(build_key(app, &doc.parts));
+    let total = match app.preview.as_ref().filter(|p| p.mesh_key() == Some(current)) {
+        Some(preview) => preview.triangles() as usize,
+        None => {
+            // With no GPU there is no upload coming, and asking would spin forever.
+            if app.render_state.is_some() {
+                ui.ctx().request_repaint();
+            }
+            list.iter().filter(|r| !app.unmounted.contains(&r.key)).map(|r| r.triangles).sum()
+        }
+    };
 
     widget::caption_strip(ui, t.asm_mounted, |ui| {
         ui.label(

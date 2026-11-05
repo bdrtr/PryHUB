@@ -11,7 +11,7 @@ use crate::types::{AssetHash, NfsMaterialRange};
 /// The list mixes shader/material hashes with the solid's texture hash(es), in no fixed
 /// order, so all non-zero hashes are returned and the texture is resolved downstream against
 /// the `TEXTURES.BIN` pack.
-pub(super) fn ordered_hashes(data: &[u8]) -> Vec<AssetHash> {
+pub(crate) fn ordered_hashes(data: &[u8]) -> Vec<AssetHash> {
     let count = data.len() / 8;
     let mut hashes = Vec::with_capacity(count);
     let mut r = ByteReader::new(data);
@@ -29,7 +29,7 @@ pub(super) fn ordered_hashes(data: &[u8]) -> Vec<AssetHash> {
 /// `matidx` into `ordered` (the solid's `0x00134012` hash list). The entries are the trailing
 /// `n * 60` bytes; leading bytes are `0x11` alignment filler. Runs whose slice falls outside
 /// the index buffer are skipped rather than trusted (panic-free against untrusted input).
-pub(super) fn material_ranges(
+pub(crate) fn material_ranges(
     data: &[u8],
     ordered: &[AssetHash],
     shaders: &[AssetHash],

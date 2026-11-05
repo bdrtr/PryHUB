@@ -40,7 +40,10 @@ mod probe;
 mod profile;
 mod replace;
 mod textures;
+mod track;
 mod tune;
+mod verify;
+mod world;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -120,7 +123,7 @@ enum Command {
     },
     /// List a car's textures and how its material runs map onto them.
     Textures {
-        /// A car directory or its `GEOMETRY.BIN`.
+        /// A car directory or its `GEOMETRY.BIN`, or a texture pack by itself.
         car: PathBuf,
         /// Only show parts whose name contains this.
         #[arg(long, value_name = "SUBSTR")]
@@ -264,6 +267,55 @@ enum Command {
         #[arg(long)]
         matrices: bool,
     },
+    /// What a city bundle declares: objects, vertex/triangle totals, and the checks that say
+    /// whether the reader is right (`0x11` filler widths, identity/placed split, determinant signs).
+    ///
+    /// Decodes no geometry — it reads the `0x00134011` headers and the 68-byte mesh headers and
+    /// stops, so a 120 MB bundle costs a walk rather than its vertex data.
+    World {
+        /// A `STREAM*.BUN`, or the `TRACKS` directory to do all of them.
+        path: PathBuf,
+        /// Emit one CSV row per bundle instead of the readable report.
+        #[arg(long)]
+        csv: bool,
+        /// Write the city as OBJ + MTL + PNG into this directory instead of reporting.
+        #[arg(long, value_name = "DIR")]
+        export: Option<PathBuf>,
+        /// Rotate the export to Y-up, which is what an OBJ importer left on its defaults expects.
+        /// Without it the file keeps the game's own Z-up coordinates and Blender lays it on its side.
+        #[arg(long)]
+        y_up: bool,
+    },
+    /// Decode every solid of a city bundle and check it against what the file declares.
+    ///
+    /// `world` reads the headers and stops; this one also reads the buffers, so it can answer the
+    /// question that matters — did anything go missing on the way in. Exits non-zero if it did.
+    Verify {
+        /// A `STREAM*.BUN`, or the `TRACKS` directory to do all of them.
+        path: PathBuf,
+        /// How many offending solids to name before summarising.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        list: usize,
+    },
+    /// Read the route files' node tables and check them against themselves.
+    ///
+    /// A route file declares no counts to compare against, so the check is the record's own
+    /// consistency: three of its fields are indices into the very table they sit in. Exits
+    /// non-zero if any of them is not.
+    Track {
+        /// A `Paths*.bin`, a `ROUTES*` directory, or `TRACKS` to do all of them.
+        path: PathBuf,
+        /// How many offending files to name before summarising.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        list: usize,
+        /// Also print every start-marker group: its track, its slots, and where it puts them.
+        #[arg(long)]
+        grids: bool,
+        /// Resolve `0x0003414D`'s trailing words against the region's own bundle and say how many
+        /// are object hashes. Needs the bundles beside the `ROUTES*` directories.
+        #[arg(long)]
+        objects: bool,
+    },
     /// Compare two asset files chunk by chunk.
     Diff {
         /// The file to read as the "before".
@@ -360,6 +412,9 @@ fn main() -> ExitCode {
             axes.and_then(|a| import::run(&file, &obj, part.as_deref(), &out, force, a))
         }
         Command::Probe { car, filter, matrices } => probe::run(&car, filter.as_deref(), matrices),
+        Command::World { path, csv, export, y_up } => world::run(&path, csv, export.as_deref(), y_up),
+        Command::Verify { path, list } => verify::run(&path, list),
+        Command::Track { path, list, grids, objects } => track::run(&path, list, grids, objects),
         Command::Diff { left, right, all, max } => diff::run(&left, &right, all, max),
         Command::Export { car, out, config, all, no_textures, format, jobs } => {
             export::run(&car, &out, config.into(), all, !no_textures, &format, jobs)

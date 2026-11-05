@@ -68,7 +68,10 @@ are all in the two `VINYLS.BIN` that are not real: `IMPREZA` and `LANCER` ship ~
 descriptors whose embedded header fails its own hash self-check, so those two files yield nothing.
 That is a descriptor the header formula does not fit, not a pixel format nobody has read.
 
-What is not decoded is the world: `STREAM*.BUN` and `L4RA.BUN`, the city itself.
+The city is decoded too: `STREAM*.BUN` gives up **28,985 objects and 5,087 textures**, all of which decode. Its records are the ones
+`GEOMETRY.BIN` uses, with three differences that each break a reader written for cars — a `0x11` filler in front of the solid header, a
+24-byte vertex, and a texture pack with no `0x33310003` whose records state the pixel format outright. What is left is the route files
+(`ROUTES*/Paths*.bin`) and the companion `L4R*.BUN`.
 
 Several of these sub-formats have **no public byte-level spec**. Their offsets and constants are
 locked *empirically* against a legally-owned install using `ug2 dump` / `ug2 probe`, never by

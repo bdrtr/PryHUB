@@ -57,14 +57,17 @@ impl Camera {
     /// `autoRotateSpeed: 0.9` in three.js's units — 0.9 turns per minute, in radians a second.
     const SPIN: f32 = 0.094;
 
-    /// Put the whole of `bounds` in view.
-    fn frame(&mut self, bounds: ([f32; 3], [f32; 3])) {
+    /// Put the whole of `bounds` in view, in an image of `aspect`.
+    ///
+    /// The lens is stated vertically, so a pane taller than it is wide sees less across than up and
+    /// has to stand back by that much, or a car comes out cut off at both ends.
+    fn frame(&mut self, bounds: ([f32; 3], [f32; 3]), aspect: f32) {
         let (lo, hi) = bounds;
         let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
         let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
         let radius = (extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]).sqrt() * 0.5;
         self.target = centre;
-        self.distance = (radius * 2.4).clamp(0.4, 400.0);
+        self.distance = (radius * 2.4 / aspect.min(1.0)).clamp(0.4, 400.0);
     }
 
     /// Back to the view the tab opens at. Distance and target are not restored but *forgotten*:
@@ -160,6 +163,9 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
                 None => gizmo_nfs::select_stock_car(&doc.parts),
             },
         };
+        // A car is shown assembled; one solid is shown where the file has it.
+        let rigged = if solid.is_none() { doc.rigged(&parts) } else { None };
+        let parts: Vec<&gizmo_nfs::NfsMeshPart> = rigged.as_ref().map_or(parts, |r| r.iter().collect());
         Counts {
             vertices: parts.iter().map(|p| p.positions.len() as u32).sum(),
             submeshes: parts.len() as u32,
@@ -168,13 +174,6 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         preview.upload(&state, key, &parts, tpk.as_deref(), paint);
         app.camera.framed = None;
     }
-    if app.camera.framed != Some(key) {
-        if let Some(bounds) = preview.bounds() {
-            app.camera.frame(bounds);
-        }
-        app.camera.framed = Some(key);
-    }
-
     // The viewport itself. The design's 3D pane is `inset: 0` — the picture butts straight against
     // the tab strip's rule and the tree and inspector dividers — so it reaches back out through the
     // centre panel's own margin (`workspace::panel_frame`, 6 × 4) and through the gap the layout
@@ -186,6 +185,15 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         pos2(avail.right() + 6.0, avail.bottom() + 4.0),
     )
     .intersect(ui.clip_rect());
+    // Framed here rather than when the mesh lands, because how far back to stand depends on the
+    // pane's shape. Only then: a window resized later keeps the view the hand left it at, and Reset
+    // frames again.
+    if app.camera.framed != Some(key) {
+        if let Some(bounds) = preview.bounds() {
+            app.camera.frame(bounds, pane.width().max(1.0) / pane.height().max(1.0));
+        }
+        app.camera.framed = Some(key);
+    }
     let response = ui.allocate_rect(pane, egui::Sense::click_and_drag());
     // The picture is painted into a slot reserved now and filled once the camera has settled, so
     // the toolbar below draws — and hit-tests — on top of it.
@@ -229,7 +237,7 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
         ),
     );
 
-    overlay(app, ui, pane);
+    overlay(app, ui, pane, bar);
 }
 
 /// The camera's own controls, top-right over the picture.
@@ -270,7 +278,7 @@ fn toolbar(app: &mut PryHub, ui: &mut egui::Ui, pane: Rect) -> Rect {
 
 /// The corner readouts the design puts over the viewport: what is shown, what it is made of, which
 /// way is up, and how to move the camera.
-fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect) {
+fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect, bar: Rect) {
     let t = app.lang.strings();
     let p = ui.painter();
     let Some(preview) = &app.preview else { return };
@@ -320,13 +328,17 @@ fn overlay(app: &PryHub, ui: &egui::Ui, rect: Rect) {
         rect.left_top() + Vec2::splat(INSET),
         vec2(token::RULE + 10.0 + text_w + 10.0, text_h + 12.0),
     );
-    p.rect_filled(chip, 0.0_f32, fill);
-    theme::draw::accent_left_bar(p, chip);
-    let mut y = chip.top() + 6.0;
-    for line in lines {
-        let height = line.size().y;
-        p.galley(pos2(chip.left() + token::RULE + 10.0, y), line, token::TEXT);
-        y += height + LEAD;
+    // In a narrow pane the readout gives way: it is drawn after the toolbar, so it would sit on top
+    // of buttons that still have to be pressed, and the tree and the inspector say the same things.
+    if !chip.intersects(bar) {
+        p.rect_filled(chip, 0.0_f32, fill);
+        theme::draw::accent_left_bar(p, chip);
+        let mut y = chip.top() + 6.0;
+        for line in lines {
+            let height = line.size().y;
+            p.galley(pos2(chip.left() + token::RULE + 10.0, y), line, token::TEXT);
+            y += height + LEAD;
+        }
     }
 
     // Bottom-left: the badge that makes the status bar's `1u = 1m · Z↑` visible in the picture, and

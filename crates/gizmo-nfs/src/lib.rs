@@ -59,6 +59,7 @@ pub mod texture;
 pub mod types;
 pub mod validate;
 pub mod viv;
+pub mod world;
 
 pub use error::{NfsError, NfsResult};
 pub use geometry::{parse_geometry, parse_geometry_reporting, SkipReason, Skipped};

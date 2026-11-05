@@ -94,7 +94,14 @@ pub fn show(app: &mut PryHub, ui: &mut egui::Ui) {
                 0.0_f32,
                 token::DIVIDER,
             );
-            action = preview(app, ui, tpk, selected);
+            // Scrolled, because a panel's content taller than the panel does not stop at its edge:
+            // egui grows the parent to hold it, and the sheet beside it then lays itself out into
+            // that height and draws down over the log and the status bar.
+            action = egui::ScrollArea::vertical()
+                .id_salt("texture_preview_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| preview(app, ui, tpk, selected))
+                .inner;
         });
 
     egui::CentralPanel::default()

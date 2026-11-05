@@ -101,7 +101,7 @@ fn header(ui: &mut egui::Ui, brand_sub: &str, mark: Option<crate::logo::Mark>) {
         .painter()
         .layout_job(theme::tracked("PryHUB", -0.03, theme::font::heading(68.0), token::TEXT));
     let sub = ui.painter().layout_no_wrap(
-        format!("{brand_sub}\nv0.1 · gizmo-nfs"),
+        format!("{brand_sub}\nv{} · gizmo-nfs", env!("CARGO_PKG_VERSION")),
         theme::font::body(13.0),
         theme::muted(60),
     );

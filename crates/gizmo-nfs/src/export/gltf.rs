@@ -437,8 +437,8 @@ mod tests {
             u32::from_le_bytes(glb[20 + json_len..24 + json_len].try_into().unwrap()) as usize
         };
         let floats: Vec<f32> = glb[bin_start..]
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         assert!(floats.windows(2).any(|w| (w[0] - 0.25).abs() < 1e-6 && (w[1] - 0.75).abs() < 1e-6));
     }

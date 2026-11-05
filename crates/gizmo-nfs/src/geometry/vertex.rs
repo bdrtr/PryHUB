@@ -71,7 +71,7 @@ pub fn standard_vertex_layout(vert_count: usize, vbuf_len: usize) -> bool {
 /// here would be a claim this file cannot support. Callers that need them derive them from the
 /// triangles, where the winding is.
 #[allow(clippy::type_complexity)]
-pub(super) fn parse_vertices_with(
+pub(crate) fn parse_vertices_with(
     vbuf: &[u8],
     count: usize,
     layout: Layout,
@@ -92,12 +92,11 @@ pub(super) fn parse_vertices_with(
     let mut uvs = Vec::with_capacity(count);
     // One record at a time as a fixed-size array. The range was bounds-checked once above, so
     // reading through a cursor would pay for nine more checks per vertex — 134,000 vertices in a car
-    // and it showed: this loop was two thirds of the geometry pass. Copying the record into
+    // and it showed: this loop was two thirds of the geometry pass. Taking each record as a
     // `[u8; 36]` also means every index below is provably in range, so there is no panic path and
     // no check left to elide.
     let records = vbuf.get(start..start + needed).unwrap_or_default();
-    for record in records.chunks_exact(VERTEX_STRIDE) {
-        let Ok(v) = <[u8; VERTEX_STRIDE]>::try_from(record) else { continue };
+    for v in records.as_chunks::<VERTEX_STRIDE>().0 {
         let f = |o: usize| f32::from_le_bytes([v[o], v[o + 1], v[o + 2], v[o + 3]]);
         positions.push([f(0), f(4), f(8)]);
         normals.push([f(12), f(16), f(20)]);
@@ -129,8 +128,7 @@ fn parse_packed(
     let mut colours = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);
     let records = vbuf.get(start..start + needed).unwrap_or_default();
-    for record in records.chunks_exact(PACKED_VERTEX_STRIDE) {
-        let Ok(v) = <[u8; PACKED_VERTEX_STRIDE]>::try_from(record) else { continue };
+    for v in records.as_chunks::<PACKED_VERTEX_STRIDE>().0 {
         let f = |o: usize| f32::from_le_bytes([v[o], v[o + 1], v[o + 2], v[o + 3]]);
         positions.push([f(0), f(4), f(8)]);
         // Stored B,G,R,A and handed back R,G,B,A — the same convention as the 36-byte record's
@@ -151,9 +149,9 @@ fn parse_packed(
 /// A vertex no triangle references — and a degenerate triangle, whose cross product is zero —
 /// leaves `+Y`. A zero normal is worse than a wrong one: it makes the surface unlit rather than
 /// lit oddly, and it propagates as `NaN` through any normalisation downstream.
-pub(super) fn normals_from_triangles(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+pub(crate) fn normals_from_triangles(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut out = vec![[0.0f32; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0.iter() {
         let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         let (Some(pa), Some(pb), Some(pc)) =
             (positions.get(a), positions.get(b), positions.get(c))

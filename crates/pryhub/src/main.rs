@@ -25,6 +25,8 @@ mod settings;
 mod shot;
 mod theme;
 mod tune;
+#[cfg(test)]
+mod click_tests;
 mod widget;
 
 fn main() -> eframe::Result {

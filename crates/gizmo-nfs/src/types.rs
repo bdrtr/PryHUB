@@ -275,7 +275,7 @@ impl NfsTexture {
     pub fn opaque_permille(&self) -> u32 {
         let (opaque, seen) = self
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .step_by(4)
             .fold((0u32, 0u32), |(o, n), px| (o + u32::from(px[3] > 200), n + 1));
         if seen == 0 {
@@ -291,7 +291,7 @@ impl NfsTexture {
     /// map makes a whole panel vanish in some importers.
     #[must_use]
     pub fn has_transparency(&self) -> bool {
-        self.rgba.chunks_exact(4).any(|px| px[3] < 250)
+        self.rgba.as_chunks::<4>().0.iter().any(|px| px[3] < 250)
     }
 
     /// Whether this texture is another one's `_MASK` companion — **seeing through truncation**.

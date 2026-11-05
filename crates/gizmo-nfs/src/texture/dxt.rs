@@ -197,7 +197,7 @@ mod tests {
         let rgba = decode_dxt1(&block, 4, 4);
         assert_eq!(rgba.len(), 4 * 4 * 4);
         // Every pixel should be (255, 0, 0, 255).
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0.iter() {
             assert_eq!(px, &[255, 0, 0, 255]);
         }
     }
@@ -211,7 +211,7 @@ mod tests {
         // set all 16 indices to 3 -> 0b11 repeated = 0xFFFFFFFF
         block[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         let rgba = decode_dxt1(&block, 4, 4);
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0.iter() {
             assert_eq!(px[3], 0, "index 3 must be transparent in punch-through mode");
         }
     }
@@ -225,7 +225,7 @@ mod tests {
         // alpha indices all 0 -> alpha = a0 = 0
         block[8..10].copy_from_slice(&0xFFFFu16.to_le_bytes()); // c0 white
         let rgba = decode_dxt5(&block, 4, 4);
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0.iter() {
             assert_eq!(px[3], 0);
         }
     }

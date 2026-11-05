@@ -80,7 +80,7 @@ pub fn write_obj(
         };
         if p.materials.is_empty() {
             let _ = writeln!(s, "usemtl {}", material_for(p, 0));
-            for tri in p.indices.chunks_exact(3) {
+            for tri in p.indices.as_chunks::<3>().0.iter() {
                 face(&mut s, tri);
             }
         } else {
@@ -90,7 +90,7 @@ pub fn write_obj(
                     continue;
                 };
                 let _ = writeln!(s, "usemtl {}", material_for(p, run));
-                for tri in slice.chunks_exact(3) {
+                for tri in slice.as_chunks::<3>().0.iter() {
                     face(&mut s, tri);
                 }
             }
@@ -116,6 +116,94 @@ pub fn write_mtl(materials: &[Material]) -> String {
                 let _ = writeln!(s, "map_d {map}");
             }
         }
+    }
+    s
+}
+
+/// Apply a world solid's own placement to one of its vertices.
+///
+/// Row-vector convention, basis in rows 0-2 and translation in row 3, applied as-is: the layout is
+/// byte-identical to a column-major OpenGL matrix, so transposing it puts the whole city on the
+/// origin. Identity is checked rather than multiplied because 12,914 of the city's objects carry it.
+#[must_use]
+pub fn place_world_point(header: &crate::world::WorldSolidHeader, p: [f32; 3]) -> [f32; 3] {
+    if !header.is_placed() {
+        return p;
+    }
+    let m = &header.matrix;
+    [
+        p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0],
+        p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1],
+        p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2],
+    ]
+}
+
+/// Build the OBJ text for a set of world solids, naming each run's material via `material_for`.
+///
+/// **`y_up` is about the reader, not the data.** The city is authored Z-up and so is Blender's
+/// world, which is why this first shipped writing the file's own coordinates and calling the matter
+/// closed. It is not: OBJ carries no axis convention, so every importer picks one, and the ones
+/// that matter default to **Y-up** — Blender's arrives set to `Forward -Z, Up Y` and quietly turns
+/// a Z-up model on its side. The file was right and the city stood up sideways anyway.
+///
+/// So both are offered and neither is hidden. `false` keeps the game's own frame, where a vertex in
+/// the viewport is the same number `ug2` prints and the notes quote — which is worth something in a
+/// tool whose whole job is locating things. `true` rotates `(x, y, z)` to `(x, z, -y)`, which is
+/// what an importer left on its defaults expects, and the model comes in upright.
+///
+/// `material_for(mesh, run_index)` returns the `newmtl` name to reference; a solid with no runs is
+/// emitted as one run with index 0 so geometry is never dropped for want of a material.
+#[must_use]
+pub fn write_world_obj(
+    meshes: &[crate::world::WorldMesh],
+    mtl_file: &str,
+    y_up: bool,
+    material_for: impl Fn(&crate::world::WorldMesh, usize) -> String,
+) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "# exported by gizmo-nfs — NFSU2 world coordinates, {}",
+        if y_up { "rotated to Y-up for importers left on their defaults" } else { "Z-up as authored" }
+    );
+    let _ = writeln!(s, "mtllib {mtl_file}");
+    let mut base = 1usize;
+    for m in meshes {
+        if m.positions.is_empty() || m.indices.is_empty() {
+            continue;
+        }
+        let _ = writeln!(s, "\no {}", m.header.name);
+        for v in &m.positions {
+            let g = place_world_point(&m.header, *v);
+            let g = if y_up { [g[0], g[2], -g[1]] } else { g };
+            let _ = writeln!(s, "v {:.5} {:.5} {:.5}", g[0], g[1], g[2]);
+        }
+        for uv in &m.uvs {
+            // OBJ's V axis runs the other way from the one the game samples with.
+            let _ = writeln!(s, "vt {:.5} {:.5}", uv[0], 1.0 - uv[1]);
+        }
+        let uvs = m.uvs.len();
+        let runs: Vec<(usize, usize, usize)> = if m.groups.is_empty() {
+            vec![(0, 0, m.indices.len())]
+        } else {
+            m.groups
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (i, g.index_offset, g.index_count))
+                .collect()
+        };
+        for (run, offset, count) in runs {
+            let Some(slice) = m.indices.get(offset..offset + count) else { continue };
+            let _ = writeln!(s, "usemtl {}", material_for(m, run));
+            for t in slice.as_chunks::<3>().0.iter() {
+                let f = |i: u32| {
+                    let v = base + i as usize;
+                    if (i as usize) < uvs { format!("{v}/{v}") } else { v.to_string() }
+                };
+                let _ = writeln!(s, "f {} {} {}", f(t[0]), f(t[1]), f(t[2]));
+            }
+        }
+        base += m.positions.len();
     }
     s
 }

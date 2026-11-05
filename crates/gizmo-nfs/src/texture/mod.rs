@@ -82,7 +82,7 @@
 pub mod dxt;
 pub mod encode;
 pub mod write;
-mod decode;
+pub(crate) mod decode;
 mod directory;
 
 pub use directory::TpkEntry;

@@ -30,7 +30,7 @@ mod walk;
 pub use dump::{dump, DumpOptions};
 pub use header::{BinSectionHeader, ChunkKind, CONTAINER_FLAG};
 pub use tree::ChunkNode;
-pub use walk::{walk, walk_with, Visit, WalkOptions, DEFAULT_MAX_DEPTH};
+pub use walk::{walk, walk_positions, walk_with, Visit, WalkOptions, DEFAULT_MAX_DEPTH};
 
 #[cfg(test)]
 pub(crate) mod tests {

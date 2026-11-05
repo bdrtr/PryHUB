@@ -136,6 +136,9 @@ pub struct Doc {
     /// The parts, when the file is a `GEOMETRY.BIN` that parses.
     #[allow(dead_code)]
     pub parts: Vec<NfsMeshPart>,
+    /// Where this car's wheels go, when the file sits in an install whose bundle has a record for
+    /// it. A file copied out on its own has none, and neither does a set of rims.
+    pub wheel_mounts: Option<[gizmo_nfs::globalb::WheelSpec; 4]>,
     /// What the checks concluded. Computed once at open; the tree, the log and the validation
     /// screen are three views of this one report.
     pub report: gizmo_nfs::validate::Report,
@@ -171,6 +174,7 @@ impl Doc {
         let t_rows = t.elapsed();
 
         let parts = geometry(&bytes, &mut notes);
+        let wheel_mounts = if parts.is_empty() { None } else { wheel_mounts_of(path) };
         let t_geom = t.elapsed();
 
         // The checks run once, here — never per frame.
@@ -196,7 +200,16 @@ impl Doc {
             kind: NoteKind::Opened { chunks: rows.len(), parts: parts.len() },
         });
 
-        Ok(Self { path: path.to_path_buf(), bytes, codec, roots, rows, parts, report, notes })
+        Ok(Self { path: path.to_path_buf(), bytes, codec, roots, rows, parts, wheel_mounts, report, notes })
+    }
+
+    /// `selected` assembled as a car — wheels on, brakes and exhaust hung — when this file has a
+    /// record to say where. `None` means show the parts as they are.
+    ///
+    /// For the views of a car only: one solid picked in the tree is that solid, where the file has it.
+    pub fn rigged(&self, selected: &[&NfsMeshPart]) -> Option<Vec<NfsMeshPart>> {
+        let mounts = self.wheel_mounts.as_ref()?;
+        Some(gizmo_nfs::parts::rig_car(selected, &gizmo_nfs::select_stock_car(&self.parts), mounts))
     }
 
     /// The node whose header sits at `offset`.
@@ -536,6 +549,15 @@ fn chunk_tree(bytes: &[u8], notes: &mut Vec<Note>) -> Vec<ChunkNode> {
             Vec::new()
         }
     }
+}
+
+/// This car's wheel mounts, from the bundle of the install `path` sits in. The record is named after
+/// the car's folder, which is how `CARS/<name>/` and `GLOBALB` tie together.
+fn wheel_mounts_of(path: &Path) -> Option<[gizmo_nfs::globalb::WheelSpec; 4]> {
+    let car = path.parent()?.file_name()?.to_str()?;
+    let bundle = gizmo_nfs::globalb::install::find(path)?;
+    let bytes = gizmo_nfs::globalb::install::read(&bundle).ok()?;
+    gizmo_nfs::globalb::find_car(&bytes, car).map(|c| c.wheels)
 }
 
 /// Parse the geometry, and name every solid that yielded no part.

@@ -514,7 +514,7 @@ impl Preview {
         // and looks identical, where a hash set over 150k pairs would cost the upload it saves.
         let ink = linear(token_rgb(theme::token::NEUTRAL_800));
         let mut edges = Vec::with_capacity(indices.len() * 2);
-        for tri in indices.chunks_exact(3) {
+        for tri in indices.as_chunks::<3>().0 {
             edges.extend_from_slice(&[tri[0], tri[1], tri[1], tri[2], tri[2], tri[0]]);
         }
         // The wireframe wants a flat ink where the surface wants a normal, and both read the same

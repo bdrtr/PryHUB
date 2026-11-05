@@ -10,9 +10,11 @@
 mod config;
 mod group;
 mod name;
+mod rig;
 mod select;
 
 pub use config::CarConfig;
 pub use group::{group_of, Grp};
 pub use name::component_key;
+pub use rig::rig_car;
 pub use select::{select_car, select_stock_car};

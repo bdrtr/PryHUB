@@ -16,7 +16,7 @@
 
 use crate::paths::{Car, Result};
 use gizmo_nfs::export::{self, MaterialPlan};
-use gizmo_nfs::parts::{group_of, select_car, CarConfig, Grp};
+use gizmo_nfs::parts::{group_of, rig_car, select_car, CarConfig, Grp};
 use gizmo_nfs::{NfsMeshPart, NfsTexture};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -121,6 +121,10 @@ fn one(
 ) -> Result<String> {
     let parts = car.parts()?;
     let selected = chosen(car, &parts, config, all)?;
+    // `--all` is every part as the file holds it; the configured car is the car, wheels on. A folder
+    // with no record — a set of rims, the aftermarket spoilers — has no car to assemble.
+    let rigged = if all { None } else { car.car_type_info().map(|c| rig_car(&selected, &selected, &c.wheels)) };
+    let selected: Vec<&NfsMeshPart> = rigged.as_ref().map_or(selected, |r| r.iter().collect());
     let tpk = want_textures.then(|| car.textures()).flatten();
 
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
