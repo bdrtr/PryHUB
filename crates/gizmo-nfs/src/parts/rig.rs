@@ -80,9 +80,7 @@ pub fn rig_car(selected: &[&NfsMeshPart], stock: &[&NfsMeshPart], mounts: &[Whee
     let mut out = Vec::with_capacity(selected.len() + 8);
     for &part in selected {
         if group_of(&part.name) == Grp::Wheel {
-            if !is_one_wheel(part) {
-                out.push(part.clone());
-            } else if !wheel_done {
+            if !wheel_done {
                 wheel_done = true;
                 out.extend(wheels(part, mounts));
             }
@@ -119,20 +117,15 @@ pub fn rig_car(selected: &[&NfsMeshPart], stock: &[&NfsMeshPart], mounts: &[Whee
     out
 }
 
-/// Whether a wheel part is a single wheel: a circle about the axle, so centred on `z = 0`.
-///
-/// Eight traffic vehicles (`BUS`, `PICKUP`, `MINIVAN`, ...) ship something else under the same name,
-/// standing on the ground from `z = 0` and spread across the car's centre line. What the game does
-/// with it is not known here, so it stays as the file has it rather than being copied four times.
-fn is_one_wheel(part: &NfsMeshPart) -> bool {
-    placed_centre(part)[2].abs() < 0.05
-}
-
 /// The wheel at its four mounts: centred, and with its rim facing out.
+///
+/// The part's own matrix is dropped, as a brake's is. Every wheel of the 44 recorded cars is the same
+/// raw shape, `x` and `z` out to the record's radius and `y` from 0 to its width, and the matrix is
+/// not its pose: on the traffic vehicles it swaps two axes and scales them apart, 1.68 and 2.41 on
+/// `BUS`, which is why a `BUS` wheel placed by its matrix is 2.5 m across.
 fn wheels(part: &NfsMeshPart, mounts: &[WheelSpec; 4]) -> Vec<NfsMeshPart> {
     let part = without_filler(part);
-    let apply = should_place(&part.transform, &part_centroid(&part));
-    let centre = placed_centre(&part);
+    let centre = raw_centre(&part);
     mounts
         .iter()
         .zip(CORNERS)
@@ -141,8 +134,8 @@ fn wheels(part: &NfsMeshPart, mounts: &[WheelSpec; 4]) -> Vec<NfsMeshPart> {
             bake(
                 &part,
                 format!("{}_{corner}", part.name),
-                |p| add(flip(sub(place_point(&part.transform, p, apply), centre)), at),
-                |n| flip(place_dir(&part.transform, n, apply)),
+                |p| add(flip(sub(p, centre)), at),
+                flip,
             )
         })
         .collect()
@@ -154,7 +147,7 @@ fn wheels(part: &NfsMeshPart, mounts: &[WheelSpec; 4]) -> Vec<NfsMeshPart> {
 /// raw geometry is already in the wheel's frame.
 fn brakes(part: &NfsMeshPart, frame: Option<&NfsMeshPart>, mounts: &[WheelSpec; 4], front: bool) -> Vec<NfsMeshPart> {
     let part = without_filler(part);
-    let centre = frame.map_or([0.0; 3], placed_centre);
+    let centre = frame.map_or([0.0; 3], raw_centre);
     let marker = frame
         .and_then(|w| w.marker("MARKER_BRAKE"))
         .map_or([0.0; 3], crate::NfsMarker::position);
@@ -252,12 +245,10 @@ fn is_unplaced(part: &NfsMeshPart) -> bool {
     (sum[0] / n).hypot(sum[1] / n).hypot(sum[2] / n) < UNPLACED
 }
 
-/// The middle of a part's bounds, where its own matrix puts it.
-fn placed_centre(part: &NfsMeshPart) -> [f32; 3] {
-    let apply = should_place(&part.transform, &part_centroid(part));
+/// The middle of a part's bounds, as the file holds them.
+fn raw_centre(part: &NfsMeshPart) -> [f32; 3] {
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for &p in &part.positions {
-        let p = place_point(&part.transform, p, apply);
+    for p in &part.positions {
         for k in 0..3 {
             lo[k] = lo[k].min(p[k]);
             hi[k] = hi[k].max(p[k]);
@@ -339,7 +330,7 @@ mod tests {
         for (corner, mount) in CORNERS.iter().zip(mounts()) {
             let copy = named(&out, &format!("CAR_KIT00_FRONT_WHEEL_A_{corner}"));
             assert_eq!(copy.transform, IDENTITY, "a copy leaves nothing for a writer to apply");
-            let centre = placed_centre(copy);
+            let centre = raw_centre(copy);
             for (got, want) in centre.iter().zip(mount_point(&mount)) {
                 assert!((got - want).abs() < 1e-5, "{corner}: {centre:?}");
             }
@@ -421,13 +412,24 @@ mod tests {
         assert!(rig_car(&[&exhaust], &[&exhaust], &mounts()).is_empty());
     }
 
-    /// The shape eight traffic vehicles ship as `TIRE_FRONT`: on the ground and across the centre.
+    /// What `BUS` ships: a wheel of the usual shape, under a matrix that swaps two axes and scales.
     #[test]
-    fn a_tire_part_that_is_not_one_wheel_is_left_as_filed() {
-        let t = part("BUS_TIRE_FRONT_A", vec![[-0.9, -1.3, 0.0], [0.9, 1.3, 0.8]]);
-        let out = rig_car(&[&t], &[&t], &mounts());
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].positions, t.positions);
+    fn a_wheels_own_matrix_is_not_its_pose() {
+        let mut w = wheel();
+        w.name = "BUS_TIRE_FRONT_A".to_owned();
+        w.transform = [
+            [-1.68, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.68, 0.0],
+            [0.0, 2.41, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let out = rig_car(&[&w], &[&w], &mounts());
+        assert_eq!(out.len(), 4);
+        let right = named(&out, "BUS_TIRE_FRONT_A_FR");
+        // Still 0.2 wide across the car and 0.6 across the circle, on the mount.
+        assert!((right.bbox_max[1] - right.bbox_min[1] - 0.2).abs() < 1e-5);
+        assert!((right.bbox_max[2] - right.bbox_min[2] - 0.6).abs() < 1e-5);
+        assert!((right.bbox_min[0] - 1.1).abs() < 1e-5, "{:?}", right.bbox_min);
     }
 
     /// A file that places a spoiler itself is right and is left alone.

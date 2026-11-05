@@ -58,13 +58,11 @@ fn every_recorded_car_stands_on_four_wheels() {
             }
             let (lo, hi) = bounds(std::slice::from_ref(part));
             let middle = (lo[1] + hi[1]) * 0.5;
-            let unrigged = group_of(&part.name) == Grp::Wheel && out.iter().filter(|p| group_of(&p.name) == Grp::Wheel).count() == 1;
-            assert!(unrigged || middle.abs() > 0.3, "{name}: {} sits on the centre line at y={middle}", part.name);
+            assert!(middle.abs() > 0.3, "{name}: {} sits on the centre line at y={middle}", part.name);
         }
 
         let wheels: Vec<&NfsMeshPart> = out.iter().filter(|p| group_of(&p.name) == Grp::Wheel).collect();
-        // The traffic vehicles whose tire part is not one wheel stay as filed: see `is_one_wheel`.
-        if wheels.len() < 2 {
+        if wheels.is_empty() {
             continue;
         }
         with_wheels += 1;
@@ -78,10 +76,16 @@ fn every_recorded_car_stands_on_four_wheels() {
         for wheel in wheels {
             let (lo, hi) = bounds(std::slice::from_ref(&wheel.clone()));
             assert!(lo[0] > blo[0] && hi[0] < bhi[0], "{name}: {} past the car's ends", wheel.name);
+            // The size the record states, within what the meshes' tyres add. A wheel scaled by its
+            // own matrix fails this: `BUS` comes out at 2.5 times its record.
+            let radius = (hi[2] - lo[2]) * 0.5;
+            let stated = info.wheels[0].radius;
+            assert!((radius - stated).abs() < stated * 0.25, "{name}: radius {radius} against {stated}");
             assert!(lo[1] > blo[1] - 0.2 && hi[1] < bhi[1] + 0.2, "{name}: {} [{}, {}] outside body [{}, {}]",
                 wheel.name, lo[1], hi[1], blo[1], bhi[1]);
         }
     }
     eprintln!("{cars} recorded cars rigged, {with_wheels} with a wheel part");
     assert!(cars >= 40, "only {cars} recorded cars found");
+    assert_eq!(with_wheels, cars, "a recorded car with nothing to roll on");
 }
