@@ -207,7 +207,7 @@ fn vinyls_pack_decodes_as_palettised() {
     // margin, so a grey or a muddy pixel votes for neither side.
     let clarion = clarion.expect("240SX_AEM_CLARION present");
     let (mut red, mut blue) = (0usize, 0usize);
-    for px in clarion.rgba.chunks_exact(4) {
+    for px in clarion.rgba.as_chunks::<4>().0 {
         let (r, g, b, a) = (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32);
         if a < 128 {
             continue;
@@ -959,7 +959,7 @@ fn several_images_go_into_a_pack_in_one_pass() {
         // Flat colour through a block encoder: near, not exact, and near is the claim.
         let off = got
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p.iter().zip(want.iter()).any(|(a, b)| a.abs_diff(*b) > 12))
             .count();
         assert!(off * 20 < got.rgba.len() / 4, "{}: {off} pixels missed the paint", t.name);
@@ -1263,7 +1263,7 @@ fn truncation_hides_masks_that_the_hash_finds() {
                 hidden += 1;
                 // Every one of these is a full-coverage image; that is why mistaking one matters.
                 let texels = (tex.rgba.len() / 4).max(1);
-                let opaque = tex.rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
+                let opaque = tex.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 200).count();
                 assert!(opaque * 10 >= texels * 9, "{}: a mask should be opaque", tex.name);
             }
         }
