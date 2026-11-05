@@ -1,0 +1,36 @@
+# The same two commands `release.yml` holds a release to, on every push, so a red one is found when
+# it is written rather than on the day of a tag.
+#
+# A runner has no game install and must not have one, so everything that reads `NFSU2_ROOT` skips
+# itself here, the click tests included. Green means the parser's synthetic tests and the lints; a
+# change to a screen or to what the real files say still has to be run against an install by hand.
+
+name: ci
+
+on:
+  push:
+    branches: [main, world-manifest]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: system libraries for the interface
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev
+      - run: cargo test --workspace --features gizmo-nfs/tools
+      - run: cargo clippy --workspace --all-targets --features gizmo-nfs/tools -- -D warnings
